@@ -1,0 +1,125 @@
+ 	.sbttl Command processor	; -*-palx-*-
+
+; The command processor works as a co-routine.  Upon recognition of
+; a command character, the user should call CMDPRC.  Following the call
+; should be a pointer to a co-routine which CMDPRC may return through to
+; get the next input character.  When CMDPRC has satisfied its thirst for
+; input characters, it will return to .+2.  CMDPRC will make use of the echo
+; channel for typing messages and echoing the users input (ECHCHR).
+
+; CMDPRC - called by VCALL CMDPRC
+;	ARGS:					VALS:
+; R0 -> TCB as usual				(none)
+;       (here only for ECHCHRs use)
+; R1 ->	clobbered
+; returns to . for another character, .+2 when done.
+
+cmdprc:	push r2,r3		; save some registers
+	ech #340		; echo "start of command"
+	jsr pc,@(r5)		; read command character
+	bic #177640,r1		; eliminate parity and case
+	cmpb r1,#'?-40		; ? of course, help
+	if eq,<
+	  echcns ^"
+L - List connection table
+O - Open connection
+C - Close connection
+S - print Status of this connection
+"
+	  br cdone
+	  >
+	cmp r1,#'O		; open command?
+	if eq,<
+	  echcns ^"Open #"
+	  jsr pc,cprsnm		; read a number into R2
+	  dec r2		; to make one based
+	  jsr pc,close		; close any existing connections
+	  jsr pc,gtotcb		; look up output TCB of this guy
+	  tst r3
+	  if ne,<		; make sure there really is an output TCB
+	    mov r3,i.olnk(r0)	; create connection from our keyboard
+	    mov r3,t.sp(r3)	; reset his stack
+	    add #t.stck+<maxstk*2>-2,t.sp(r3)
+	    mov o.strt(r3),@t.sp(r3) ; set him back to his restart address
+	    >
+	  else <		; there wasn't any output TCB, was there
+	    jsr pc,gtitcb	; at least an input TCB?
+	    tst r3
+	    if eq,<
+	      echcns ^"Non existant port"
+	      >
+	    >
+	  jsr pc,gtitcb		; look up input TCB of this guy
+	  tst r3
+	  if ne,<
+	    mov i.elnk(r0),i.olnk(r3) ; create connection to our screen
+	    mov r3,i.blnk(r0)	; remember back link
+	    mov r3,t.sp(r3)	; reset his stack
+	    add #t.stck+<maxstk*2>-2,t.sp(r3)
+	    mov i.strt(r3),@t.sp(r3) ; set him back to his restart address
+	    >
+	  br cdone
+	  >
+	cmpb r1,#'C		; close
+	if eq,<
+	  echcns ^"Close"
+	  jsr pc,close
+	  br cdone
+	  >
+;	cmpb r1,#'L		; List command
+;	if eq,<
+;	  mov #itcbs,r2		; we'll make our listing based on input things
+	  
+
+	vcall echstr
+	.string ^"Bad command."
+cdone:	ech #341
+	pop r3,r2		; restore R2
+	tst (r5)+		; return after funarg ptr
+	vreturn
+
+close:  clr i.olnk(r0)		; clear any keyboard link we may have had
+	mov i.blnk(r0),r3	; check for a back link
+	if ne,<			; there is one,
+	  clr i.olnk(r3)	; clear their link to us
+	  clr i.blnk(r0)	; clear our back link
+	  >
+	rts pc
+
+; CPRSNUM a command procesor routine, reads a number.
+; returns octal in R2 for now
+cprsnm:	clr r2			; accumulate number
+loop <	  jsr pc,@(r5)		; get a char
+	  bic #177600,r1	; ignore parity
+	  cmp r1,#'0		; is it a numeral?
+	  if his,<
+	    cmp r1,#'9
+	    if los,<
+	      vcall echchr	; echo the number
+	      sub #'0,r1
+	      ash #3,r2
+	      add r1,r2
+	      rptl
+	      >
+	    >
+	  >			; fall out of loop when char not numeral
+	rts pc			; return with value in R2, break char in R1
+
+
+; GTITCB - take a port number and return a ptr to an input TCB
+; GTOTCB - same thing for an output TCB
+;	VALS:			  ARGS:
+; R2 ->	port number	    R3 -> input TCB ptr
+gtitcb:	mov #itcbs,r3
+	br gtcom
+gtotcb:	mov #otcbs,r3
+gtcom:	cmp r2,devcnt		; out of range?
+	if hi,<
+	  clr r3
+	  rts pc
+	  >
+	add r2,r3		; add to base of table
+	add r2,r3		; wants to be word index
+	mov (r3),r3		; pick up ptr to a TCB, one based
+	rts pc
+

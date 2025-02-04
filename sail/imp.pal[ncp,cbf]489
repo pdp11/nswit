@@ -1,0 +1,1311 @@
+;;; -*-MIDAS-*-
+%imp2===%fnam2
+
+.title IMP Interface
+
+;;; The module supports the ARPAnet Host-IMP protocol (BBN Report No. 1822).
+
+
+rsntto == 60.*15.		; reset timeout, these ought to respond fast..
+clsgto == 60.*65.		; close timeout, make these a little longer than
+opngto == 60.*65.		; open timeout   the IMP timeouts
+rfnmto == 60.*90.
+
+
+.if eq asmchi
+;;; define some symbols describing the imp interface
+
+;impiin=impvec+0
+;impoin=impvec+4
+impist=impcsr+0
+impwai=impcsr+4
+impwci=impcsr+6
+impost=impcsr+10
+impwao=impcsr+14
+impwco=impcsr+16
+
+hstrly==4
+irdy==200
+istoen==10
+ieom==20000
+inrst==2
+igo==hstrly+istoen+1
+ordy==200
+oweom==4
+outrst==2
+ogo==1
+
+.endc
+
+.sbttl	Low Level Input Process
+
+.if ne asmchi
+intsk1:	call ttysnd,<#clsmsg,#clslen>
+intsk:	clr conect		;tell outtsk that there is no imp conn. yet
+1$:	call chopen,<#20_8+1,#3,#impctn>,r1	;try and open a connection
+	bcc 2$			;we are winning
+	 tst r1 		;did we get a reason?
+	 beq 1$ 		;no
+	  mov r1,r0
+	  kcall frepck
+	  br 1$ 		;try again
+2$:	mov r1,conect		;let the outtsk guy start to win.
+	mov r1,impcon		;save this for later
+	call ttysnd,<#opnmsg,#opnlen>
+.iff
+intsk:	kcall impini
+.endc	; asmchi
+
+inloop:	kcall rdfimp		;get packet from the imp
+.if ne asmchi
+	bcs intsk1
+.endc
+	call print,#s.gotm
+	cmpb il.fmt(r3),#17	;was this last a new style leader?
+	bne quitrd		;we are not interested in old leaders
+	call gethte,r3,r2	;find host table entry for this msg.
+	movb il.typ(r3),r0	;get the msg typ
+	cmp r0,#10.		;upper limit
+	bhi quitrd
+	asl r0			;for indexing
+	inc msgcnt(r0)		;count number of each.
+	jmp @rdrtbl(r0)		;branch to handler
+
+rdrtbl:	.word typ0		;  0 Regular Message
+	.word ldrerr		;  1 Error in Leader
+	.word quitrd		;  2 IMP Going Down
+	.word quitrd		;  3 Unused
+	.word quitrd		;  4 NOP
+	.word rfnm		;  5 RFNM
+	.word dead		;  6 Dead Host Status
+	.word dead		;  7 Destination Host or IMP Dead
+	.word resend		;  8 Error in Data
+	.word incplt		;  9 Incomplete Transmission
+	.word hreset		; 10 Interface Reset
+
+
+quitrd:
+.if ne asmchi			; free packet if chaos input (hardware input
+				; used a fixed buffer)
+	mov itskpk,r0
+	kcall frepck
+.endc
+quitr1:	cocall			;this is where typ0 comes.
+	br inloop
+
+.if ne asmchi
+rdfimp:	mov impcon,r1		;get the connection to the imp
+1$:	call chdati,r1,r0	;try to read a packet
+	bcc 4$
+	 cmpb #%csopn,cnstat(r1)	;is the imp conn. still open?
+	 beq 2$
+	  kcall frepck		;free the reason packet if any
+	  call chcls,<r1,#0>	;close out the connection and
+	  clr conect		;tell outtsk we are losing
+	  mov #hstble,r0	;close the connections to all hosts.
+3$:	  call hstdwn,<r0,#scemil>
+	  add #hte.ln,r0
+	  cmp r0,#hstend	;have we got all the hosts
+	  blo 3$
+	  sec			;we have lost
+	  rts pc
+2$:	 kcall prococ		;wait for a packet
+	 br 1$
+4$:	mov r0,itskpk
+	mov r0,r3
+	add #pkdat,r3		;point to imp leader
+	clc
+	rts pc
+
+;;; This routine is called from the intsk process to read the rest of an
+;;; ARPA net packet in from the chaos net.  It is passed the first chaos
+;;; packet and copies it into the area specified in the second argument
+;;; along with the text of any following chaos packets.  A pointer to the
+;;; full arpa packet is returned.
+
+getrst:	proc 1,1,<r0,r1,r2,r3>
+	mov itskpk,r0		;get the old chaos packet
+	movb pkop(r0),r1	;extract the packet size.
+	bic #177700,r1		;get the low 6 bits.
+	ash #5,r1		;convert to bytes
+	add #msg.ln,r1		;enough for header too
+	call allmsg,<arg1(fp),r1>,r2	;get the area he wants it in
+	clr ms.nxt(r2)		;we need to clear this field so it can be freed
+	mov r2,out1(fp)		;return this to the user
+	add #msg.ln,r2		;get ptr to data area
+1$:	mov r0,r3		;get from ptr
+	add #pkdat,r3
+	mov pklen(r0),r1	;get number of bytes to copy
+	bic #pkfcnt,r1
+	asr r1			;round down to word count
+	;; note: carry tested below (unchanged by MOV/SOB)
+	if ne,<
+  loop <    mov (r3)+,(r2)+ 	;do the copy
+	    sorl r1
+	    >
+	  >
+	if cs,<			;length was odd
+	  movb (r3)+,(r2)+	;get the last one
+	  >
+	movb pkop(r0),r1	;get the opcode
+	kcall frepck		;free the old packet
+	aslb r1			;was it the last one (100 bit set)?
+	bmi 5$			;yes, we're done
+	kcall rdfimp		;get the next one
+	bcc 1$
+	call fremsg,<arg1(fp),out1(fp)>	; free message
+	rtnerr
+5$:	return
+
+itskpk:	.blkw 1
+
+opnmsg:	.ascii "IMP connection open
+"
+opnlen==.-opnmsg
+clsmsg:	.ascii "IMP connection closed
+"
+clslen==.-clsmsg
+	.even
+
+.iff	; asmchi
+
+impini:	mov #inrst,@#impist	;reset the imp
+	mov #outrst,@#impost
+	mov #10000.,r0		;wait for imp to notice
+	sob r0,.
+	bis #hstrly,@#impist	;tell the imp we are up
+	mov #10000.,r0		;wait for relay to settle
+	sob r0,.
+	kretrn
+
+
+rdfimp:
+loop <	  bit #irdy,@#impist	;is the imp ready yet?
+	  exitl ne		;yes, its ready
+	  cocall
+	  rptl
+	  >
+	
+	mov #ilbuf,r0
+	call phyadd
+	mov r1,@#impwai
+	mov #-lilbuf,@#impwci
+	bis #igo,r0
+	mov r0,@#impist
+loop <	  bit #irdy,@#impist
+	  exitl ne
+	  cocall
+	  rptl
+	  >
+
+	cmpb ilbuf+il.lnk,#227	; is this is for link 227 (octal)?
+	if ne,<			; no
+	  mov #ilbuf,r3
+	  kretrn
+	  >
+	;; link 227: insert into chaosnet
+	tstb ilbuf+il.typ	;is this a type 0 message?
+	bne rdfimp		; no, ignore
+
+	mov ilbuf+il.msl,r3	; get message length in bits
+	swab r3			; IMP bytes are backward
+	add #15.,r3		; convert to words
+	ash #-4,r3		; ...
+				; ALCSIZ arg: R3 = size in words
+	kcall alcsiz		; allocate chaos packet to hold data
+
+	call phyadd
+	mov r1,@#impwai
+	neg r3
+	mov r3,@#impwci
+	bis #igo,r0
+	mov r0,@#impist
+loop <	  bit #irdy,@#impist
+	  exitl ne
+	  cocall
+	  rptl
+	  >
+	bit #ieom,@#impist
+	if eq,<
+	  bpt
+	  >
+
+	clr (r0)		;clear the link field
+	swab pktyp(r0)		;swap the packet header
+	swab pklen(r0)
+	swab pkdhst(r0)
+	swab pkdidx(r0)
+	swab pkshst(r0)
+	swab pksidx(r0)
+	swab pkpkn(r0)
+	swab pkakn(r0)
+	cmpb pkop(r0),#%coopn	;see if we have to swab the packet
+	beq 16$
+	cmpb pkop(r0),#%corut	;see if we have to swab the packet
+	beq 16$
+	cmpb pkop(r0),#%costs	;see if we have to swab the packet
+	beq 16$
+	cmpb pkop(r0),#300	;see if we have to swab the packet
+	blo 17$			;no, give it to the user
+16$:	mov pklen(r0),r2	;get packet size in r2
+	bic #pkfcnt,r2		;clear forwarding count
+	inc r2			;round up to nearest word
+	asr r2			;divide by two
+	beq 17$			;nothing to swap
+	mov r0,r3		;point to packet data area
+	add #pkdat,r3
+loop <	  swab (r3)+		;swap the data
+	  sorl r2		;loop
+	  >
+17$:	lock mxcilv		;add packet to rcvpkl
+	mov r0,@rcvpke		;thread onto end of list
+	mov r0,rcvpke		;last packet on list
+	unlock			;all done with critical code
+	jmp rdfimp
+
+lilbuf==<ipl.ln+1>/2		; length of IMP leader buffer in words
+ilbuf:	.blkw lilbuf		; IMP leader buffer
+
+
+getrst:	proc 1,1,<r0,r1,r3>
+	mov ilbuf+il.msl,r3	; get message length in bits
+	swab r3			; IMP bytes are backward
+	add #15.+32.,r3		; round up to words and add a few for
+				; trailer lossage
+	ash #-4,r3		; ...
+	mov r3,r0		; convert to bytes
+	asl r0			; ...
+	add #msg.ln+ipl.ln,r0		; add our overhead
+	call allmsg,<arg1(fp),r0>,r0	; allocate storage to hold it
+	clr ms.nxt(r0)		;we need to clear this field so it can be freed
+	mov r0,out1(fp)		;return this to the user
+
+	add #msg.ln,r0
+.rept lilbuf
+	mov ilbuf+<.rpcnt*2>,(r0)+
+.endr
+	neg r3
+	if ne,<
+	mov r3,@#impwci
+	call phyadd
+	mov r1,@#impwai
+	bis #igo,r0
+	mov r0,@#impist
+loop <	  bit #irdy,@#impist
+	  exitl ne
+	  cocall
+	  rptl
+	  >
+	>
+	bit #ieom,@#impist
+	if eq,<
+	  bpt
+	  >
+	call mapmsg,arg1(fp)
+	return
+
+.endc	; asmchi
+
+rfnm:	call print,#s.grfn
+	tstb il.lnk(r3)		;was it rfnm for a control link?
+	bne 3$			;regular link this is the hard part.
+	bitb #n.rfnm,he.nst(r2)	;was it in rfnm state?
+	beq 8$			;no, spurious rfnm
+	bicb #n.rfnm,he.nst(r2)	;host up and not waiting for rfnm
+	inc rf0cam
+	clr he.rft(r2)
+;	mov he.lms(r2),r1	;get msg to free
+;	clr he.lms(r2)
+;1$:	mov tcbout,r2		;outputed msgs are always here
+;	call fremsg,<tb.are(r2),r1>	;free the message
+	jmp quitrd
+
+3$:	call lnkscn,<il.lnk(r3),r2>,r1	;search for the socket
+	tst r1
+	beq 8$			;no known link
+	bitb #n.rfnm,sk.nst(r1)	;is this socket waiting for rfnm?
+	beq 8$			;spurious rfnm!
+	bicb #n.rfnm,sk.nst(r1)	;not RFNM waiting
+	inc rf1cam
+	clr sk.rft(r1)
+	mov r1,r2
+;	mov sk.lms(r2),r1	;get msg to free
+;	clr sk.lms(r2)
+;	br 1$
+	jmp quitrd
+
+8$:	inc sprfnm		;count spurious rfnms
+	call print,#s.srfn
+	jmp quitrd
+
+
+incplt:	call print,#s.glos
+	tstb il.lnk(r3)		;was it rfnm for a control link?
+	bne 3$			;regular link this is the hard part.
+	call hstdwn,<r2,#scemhd>	;host is dead
+	jmp quitrd
+
+3$:	call lnkscn,<il.lnk(r3),r2>,r2	;search for the socket
+	tst r2
+	beq 8$			;no known link
+	mov sk.hst(r2),r1	;mark the hte as free too
+	call hstdwn,<r1,#scemhd>
+8$:	jmp quitrd		;spurious msg!
+
+;;; The IMP detected an error in the leader of last msg
+ldrerr:	mov lstmsg,r1
+	call atring,<#lderrs,r1>	;keep a record of such things.
+	mov ms.hst(r1),r2	;get the hte.
+	add #ms.txt,r1		;get ptr to imp leader
+	movb il.stp(r1),r3	;get sub type
+	bic #177760,r3		;only four bits...
+	add #'0,r3		;turn it to ascii
+	movb r3,s.errn		;stuff into msg.
+	call print,#s.lerr
+	jmp quitrd
+
+hreset:	mov lstmsg,r1
+;	mov #-1,ms.nxt(r1)	;mark it so it won't get freed
+	call atring,<#rserrs,r1>
+	call print,#s.hrst
+	jmp quitrd
+
+dead:	call hstdwn,<r2,#scemhd>	;say it is dead
+	jmp quitrd
+
+resend:	jmp quitrd		;ignore these for now
+
+.if ne asmchi
+intskj:	jmp intsk1
+.endc
+
+typ0:	call print,#s.typ0
+	clr r0
+	bisb il.lnk(r3),r0	;is this for the control link?
+	if eq,<			; link 0: message for NCP
+	  mov tcbncp,r3
+	  call getrst,tb.are(r3),r4
+.if ne asmchi
+	  bcs intskj
+.endc
+	  >
+	else <			; nonzero link: message for socket
+	  call lnkskt,<r0,r2>,r0	;get the socket ptr for this link
+	  tst r0
+	  if eq,<		;no such link
+1$:	    jmp quitrd
+	    >
+	  cmpb #s.open,sk.sts(r0)	;is the socket in the open state
+	  bne 1$			;no, then just through it away
+
+	  call getrst,sk.are(r0),r4
+.if ne asmchi
+	  bcs intskj		;error while reading from imp
+.endc
+
+	  movb msg.ln+ipl.ln+hl.bsz(r4),r1	;get byte size
+	  mov msg.ln+ipl.ln+hl.nby(r4),r3	;get number of bytes
+	  swab r3
+	  mul r3,r1		;get 16-bit product bit size of msg
+	  sub r1,sk.bsl(r0)	;credit the bit allocation
+	  sbc sk.bsh(r0)
+	  ash #-3,r1		;convert to bytes
+	  sub r1,outalc		;update outstanding allocation
+	  sub #1,sk.nms(r0)	;use up a message allocation
+
+	  cmp #-1,sk.nms(r0)	;did we overshoot our message allocation?
+	  if eq,<		;he over shot.
+3$:	    inc noaloc		;If he sends a message w/o allocation
+	    call print,#s.noal
+	    br 4$		;we want to know when this happens...
+	    >
+	  cmp sk.nms(r0),sk.mma(r0)	;is msg allocation below min?
+	  blos 4$		;send him more.
+	  cmp #-1,sk.bsh(r0)	;what about bit allocation
+	  beq 3$		;over shot
+	  if lt,<		;more than 64K bits: plenty
+	    cmp sk.bsl(r0),sk.mba(r0)	;below the minimum?
+	    if los,<		;no, he has enough of both.
+4$:	      call sndalc,r0	;send allocation for this connection
+	      if cs,<
+		bisb #n.sdal,sk.nst(r0)	;send allocation to this guy later
+		>
+	      >
+	    >
+	  >
+
+	mov msg.ln+il.msl(r4),r1	;calculate the length
+	swab r1			;cause the bytes are backwards....
+	add #17,r1
+	bic #17,r1
+	ash #-3,r1		;bits to bytes
+	add #ipl.ln,r1		;room for msg header and IMP leader
+	mov r1,ms.len(r4)	;fill in the length field
+	mov r0,ms.skp(r4)	;fill in the socket
+	mov r2,ms.hst(r4)	;fill in the hte
+	makptr r4,ms.txt,r1	;now r1 has ptr to real start
+	mov r1,ms.hdr(r4)	;initialize these guys too
+	mov r1,ms.hsb(r4)
+	tst r0			;is there a socket?
+	if eq,<			; no
+	  mov r4,r2
+	  jsr pc,putmsg		;r2=msg, r3=tcb, send to the ncptsk
+	  inc rf0rcv		;count incomming h-h control msgs
+	  >
+	else <
+	  inc sk.nqm(r0)	;count queued msgs
+	  mov sk.lqm(r0),r3	;queue the msg on the right socket
+	  mov r4,sk.lqm(r0)
+	  clr ms.nxt(r4)
+	  tst r3
+	  if eq,<mov r4,sk.fqm(r0)>
+	  else <mov r4,ms.nxt(r3)>
+	  inc rf1rcv		;count incomming data msgs
+	  >
+	jmp quitr1
+
+	.sbttl	Low Level Output Process
+
+;;; This process accepts messages and sends them to the IMP.
+outtsk:	proc 0,0,<>,<outmsg,outcon,initsp>
+
+	mov sp,initsp(fp)
+
+.if ne asmchi
+outts1:	mov conect,r1		;wait for a connection
+	bne 1$
+	 cocall
+	 br outts1
+1$:	mov cnlidx(r1),outcon(fp)	;save uid of this connection
+.endc
+
+	mov #nopmsg,r1
+	jsr pc,sndhti		;send IMP three nops to make it happy
+	jsr pc,sndhti
+	jsr pc,sndhti
+
+;;; This is the place where the output task sweeps over the entire world
+;;; looking for things to do.  Since it is looking over the entire world
+;;; anyway it is responsible for checking all the time outs too.
+
+chkmsg:	mov curtsk,r0		;first see if new msgs have arrived
+	call mapmsg,tb.are(r0)	;map in the area for the TCB messages
+	mov tb.fqm(r0),r1	;get msg ptr in r1
+	beq chkhst		;check all hosts for queued msgs
+	promap <call print,#s.outr>	;we got a msg
+	mov ms.nxt(r1),tb.fqm(r0)	;thread the msg out of the queue
+	if eq,<clr tb.lqm(r0)>
+	jsr pc,catmsg		;categorize this new msg.
+	br chkmsg		;check for more messages
+
+chkhst:	mov #hstble,r0		;scan through the host table
+1$:	cmpb #h.rsnt,he.sts(r0)	;check time out of rst sent
+	bne 5$
+	mov clock,r1		;has it timed out?
+	sub he.rst(r0),r1
+	cmp r1,#rsntto
+	blos 5$
+	movb #h.dead,he.sts(r0)	;return him to the grave
+	inc rtocnt
+	br 3$
+
+5$:	bitb #n.rfnm,he.nst(r0)	;is the host rdy for a msg?
+	beq 4$			;yes, see if there's a msg
+	mov clock,r1
+	sub he.rft(r0),r1
+	cmp r1,#rfnmto
+	blos 3$			;this is validly rfnm waiting.
+	bicb #n.rfnm,he.nst(r0)	;un rfnm wait this host
+	inc rf0cnt
+	clr he.rft(r0)
+;	mov he.lms(r0),r1
+;	mov tcbout,r2
+;	call fremsg,<tb.are(r2),r1>
+
+4$:	mov he.fqm(r0),r1	;looking for hosts with queued msgs.
+	if ne,<			;if zero check next host
+	  mov ms.nxt(r1),he.fqm(r0)	;thread this msg out of the list
+	  if eq,<clr he.lqm(r0)>
+	  dec he.nqm(r0)
+	  jsr pc,sndhhz		;send host-to-host link zero msg
+	  >
+3$:	add #hte.ln,r0
+	cmp r0,#hstend
+	blo 1$			;check for msgs
+
+chkskt:	mov #sktble,r0		;now check through all the sockets
+14$:	cmpb sk.sts(r0),#s.clsg	;check TOs.  If the user closed but it
+	 			;timed out, simulate a close comming
+	 			;back.
+	bne 12$
+	mov clock,r1
+	sub sk.ctm(r0),r1
+	cmp r1,#clsgto
+	blos 13$
+	movb #s.free,sk.sts(r0)	;make the socket free
+	inc ctocnt
+	promap <call hstdwn,<sk.hst(r0),#scemto>>	;mark the host as down
+	jmp 7$
+
+12$:	cmpb sk.sts(r0),#s.opng	;did the guy fail to respond to RFC?
+	bne 13$
+	mov clock,r1
+	sub sk.ctm(r0),r1
+	cmp r1,#opngto
+	blos 13$
+	movb #s.clsd,sk.sts(r0)	;make the socket closed
+	inc otocnt
+	promap <call hstdwn,<sk.hst(r0),#scemto>>	;mark the host as down
+	jmp 7$
+
+13$:	bitb #n.rfnm,sk.nst(r0)
+	beq 1$
+	mov clock,r1
+	sub sk.rft(r0),r1
+	cmp r1,#rfnmto
+	bhi 16$			;rfnm waiting so go to next socket
+	jmp 7$
+16$:	bicb #n.rfnm,sk.nst(r0)
+	inc rf1cnt
+	clr sk.rft(r0)
+;	mov sk.lms(r0),r1
+;	mov tcbout,r2
+;	call fremsg,<tb.are(r2),r1>	;free the message if any.
+
+1$:	cmpb sk.sts(r0),#s.open	;make sure socket is open
+	bne 7$
+	bit #1,sk.mys(r0)	;make sure it is a transmit socket
+	bne 10$
+	bitb #n.sdal,sk.nst(r0)	;if recieve socket does he need alloc?
+	beq 7$			;no
+	call sndalc,r0		;send him some
+	bcs 7$			;still no allocation to send
+	bicb #n.sdal,sk.nst(r0)	;he has been taken care of
+	br 7$
+10$:	mov sk.fqm(r0),r1	;get msgs queued on this socket
+	beq 7$			;no msgs, try next socket
+	tst sk.nms(r0)		;is there a msg allocation?
+	beq 7$			;nope
+	movb sk.siz(r0),r3	;we must have at least 1 byte of bits
+	bit #7,r3		;see if the byte size is reasonable
+	beq 11$
+	bpt
+11$:	tst sk.bsh(r0)		;is there enough bit allocation?
+	bne 2$			;yes
+	cmp sk.bsl(r0),r3
+	blo 7$			;not enough for even one byte
+2$:	mul ms.nby(r1),r3	;get msg size in bits
+	cmp r3,#8000.		;we want min(msg-len,8000,allocation)
+	ble 3$
+	mov #8000.,r3
+3$:	tst sk.bsh(r0)
+	bne 4$			;plenty of bit allocation
+	mov sk.bsl(r0),r4
+	bic #17,r4		;round allocation to 16 bits
+	cmp r3,r4
+	blos 4$
+	mov r4,r3
+4$:	tst r3			;now min's in r3 and we want to figure
+	beq 7$
+	clr r2
+	movb sk.siz(r0),r4	;out how many sk.siz-bit bytes to send
+	div r4,r2		;r2 get quotient (number of bytes)
+	mov r4,r3		;get bits rounded to nearest byte
+	mul r2,r3
+
+	push r2
+	push r3
+	mov ms.hsb(r1),r2	;move the header if necessary
+	beq 9$			;not on this msg
+	mov ms.hdr(r1),r3
+	cmp r2,r3		;is header already in the right place
+	beq 9$			;yup.
+	mov r2,ms.hdr(r1)	;they will be the same
+	add #ipl.ln+hsl.ln,r2	;copy from end to beginning so overlap
+	add #ipl.ln+hsl.ln,r3	;comes out right
+8$:	movb -(r3),-(r2)
+	cmp r2,ms.hsb(r1)	;are we there yet?
+	bhi 8$
+9$:	pop r3
+	pop r2
+
+	dec sk.nms(r0)		;we are committed, use up allocation
+	sub r3,sk.bsl(r0)
+	sbc sk.bsh(r0)
+	ash #-3,r3		;r2 is n-bit bytes, r3 is 8-bit bytes
+	mov ms.hdr(r1),r4
+	mov r2,ipl.ln+hl.nby(r4)	;fill in the host-to-host field
+	mov r3,ms.len(r1)	;tell sndhti how much to send.
+	add #<ipl.ln+hsl.ln>,ms.len(r1)
+	sub r2,ms.nby(r1)	;update number of bytes left
+	if ne,<			;are we done with this yet?
+	  add r3,ms.hsb(r1)	;where the header will be next time
+	  jsr pc,sndhhn		;send host-to-host non-zero link msg
+	  >
+	else <			;we are done, unthread the msg
+	  dec sk.nqm(r0)	;one less msg queued
+	  mov ms.nxt(r1),sk.fqm(r0)	;thread msg out of queue if done
+	  if eq,<clr sk.lqm(r0)>
+	  jsr pc,sndhhn		;send host-to-host non-zero link msg
+	  mov curtsk,r2
+	  call fremsg,<tb.are(r2),r1>
+	  >
+7$:	add #skt.ln,r0		;go to next socket
+	cmp r0,#sktend
+	bhis 15$
+	jmp 14$
+
+15$:	cocall			;we are all out of things to do
+.if eq asmchi
+	jmp chkmsg
+.iff
+	mov conect,r1		;is there still a connection open
+	beq 17$ 		;we are losing
+	cmp cnlidx(r1),outcon(fp)	;is it the same as it was?
+	bne 17$ 		;we are losing again
+	jmp chkmsg		;so check everything again
+17$:
+	clr conect
+	jmp outts1		;reset everything
+.endc
+
+catmsg:	mov ms.skp(r1),r2	;is there a socket for this msg?
+	if ne,<
+	  cmpb #s.open,sk.sts(r2)	;is the connection still open?
+	  if ne,<
+	    mov curtsk,r3	;if not flush the msg and return
+	    call fremsg,<tb.are(r3),r1>
+	    rts pc
+	    >
+	  mov sk.lqm(r2),r3
+	  if eq,<
+	    mov r1,sk.fqm(r2)
+	    >
+	  else <
+	    mov r1,ms.nxt(r3)
+	    >
+	  mov r1,sk.lqm(r2)	;NOTE: we don't inc sk.nqm since that is done
+				;by hhdsnd to avoid losing packets in the mill.
+	  br 8$
+	  >
+	else <
+	  mov ms.hst(r1),r2	;is there a host specified for this?
+	  if ne,<
+	    mov he.lqm(r2),r3	;do the host to host stuff
+	    if eq,<
+	      mov r1,he.fqm(r2)
+	      >
+	    else <
+	      mov r1,ms.nxt(r3)
+	      >
+	    mov r1,he.lqm(r2)
+	    inc he.nqm(r2)	;update count of queued msgs
+
+8$:	    clr ms.nxt(r1)	;last msg has no next
+	    makptr r1,ms.txt,r2	;get ptr to imp leader
+	    mov r2,ms.hdr(r1)	;initialize the headers
+	    mov r2,ms.hsb(r1)
+	    rts pc
+	    >
+	  else <		;if neither host nor socket then
+	    jsr pc,sndhti	;this is a host to imp msg so send it
+	    mov curtsk,r0
+	    call fremsg,<tb.are(r0),r1>	;free the message
+	    rts pc
+	    >
+	  >
+
+
+;;; This routine sends a host to host message on a non-zero link to the IMP.
+;;; r1 contains the message ptr, r0 contrains the socket ptr that the msg
+;;; is being sent on.
+
+sndhhn:	push r2
+	push r3
+	mov ms.hdr(r1),r3	;get ptr to header
+	clrb il.dsn(r3)
+	clrb il.flg(r3)
+	clrb il.typ(r3)
+	clrb il.hdl(r3)
+	clrb il.stp(r3)
+	movb sk.lnk(r0),il.lnk(r3)
+	mov sk.hst(r0),r2	;get hte to fill in host parameters
+	movb he.hst(r2),il.fhs(r3)
+	mov he.imp(r2),il.fip(r3)
+	swab il.fip(r3)
+	movb sk.siz(r0),ipl.ln+hl.bsz(r3)
+	swab ipl.ln+hl.nby(r3)	;they want the bytes backwards
+	jsr pc,sndhti		;now just send it out normally
+	mov r1,sk.lms(r0)	;save last msg for debugging
+	bisb #n.rfnm,sk.nst(r0)
+	inc rf1snt
+	mov clock,sk.rft(r0)
+	pop r3
+	pop r2
+	rts pc
+
+;;; This routine sends host to host messages on link zero to the IMP.  Upon
+;;; entry r1 points to the message.
+
+sndhhz:	push r2
+	clrb msg.ln+il.dsn(r1)
+	clrb msg.ln+il.flg(r1)
+	clrb msg.ln+il.typ(r1)
+	clrb msg.ln+il.hdl(r1)
+	clrb msg.ln+il.stp(r1)
+	clrb msg.ln+il.lnk(r1)
+	mov ms.hst(r1),r2	;get hte to fill in host parameters
+	movb he.hst(r2),msg.ln+il.fhs(r1)
+	mov he.imp(r2),msg.ln+il.fip(r1)
+	swab msg.ln+il.fip(r1)
+	movb #8.,msg.ln+ipl.ln+hl.bsz(r1)
+	mov ms.nby(r1),msg.ln+ipl.ln+hl.nby(r1)
+	swab msg.ln+ipl.ln+hl.nby(r1)	;they want the bytes backwards
+	jsr pc,sndhti		;now just send it out normally
+	mov r1,he.lms(r0)
+	mov curtsk,r2
+	call fremsg,<tb.are(r2),r1>
+	bisb #n.rfnm,he.nst(r0)
+	inc rf0snt
+	mov clock,he.rft(r0)
+	pop r2
+	rts pc
+
+;;; This routine is called to send messages to the IMP.  It is called by
+;;; sndhhn and sndhhz among others.  R1 contains a ptr to the message
+;;; to send.  It bashes r2 and r3.
+
+.if eq asmchi
+
+sndhti:	push r0,r1
+	mov ms.hdr(r1),r0	;get header ptr
+	movb #17,il.fmt(r0)
+
+	;; wait for IMP ready
+loop <	  bit #ordy,@#impost
+	  exitl ne
+	  cocall
+	  rptl
+	  >
+
+	call phyadd
+	mov r1,@#impwao		;tell the interface
+	mov (sp),r1
+	mov ms.len(r1),r2
+	inc r2			; convert to words
+	asr r2			; ...
+	neg r2			;tell the imp how many words
+	mov r2,@#impwco
+	bis #ogo+oweom,r0
+	mov r0,@#impost
+
+	;; wait for it to be sent (some routines free the message after we
+	;; return).
+loop <	  cocall
+	  tst @#impwco
+	  rptl ne
+	  >
+
+	pop r1
+	call atring,<#outlst,r1>	;keep all output msgs in a ring buffer
+	mov r1,lstmsg
+	promap <call print,#s.asnt>
+	pop r0
+	rts pc
+
+.iff	; asmchi
+
+sndhti:	push r0,r1,r4
+	mov ms.hdr(r1),r4	;get header ptr
+	movb #17,il.fmt(r4)
+	mov ms.len(r1),outmsg(fp)	;get ptr to end
+
+1$:	mov outmsg(fp),r2
+	beq sndhtd
+	cmp r2,#pkmdsz		;can we send the whole thing?
+	if gt,<
+	  mov #pkmdsz,r2 	;send as much as possible
+	  >
+	sub r2,outmsg(fp)	;this is all we have left
+	mov r2,r3		;allocate a packet big enough
+	add #pkdat+1,r3
+	asr r3			;convert to words.
+loop <	  kcall alcsiz
+	  exitl cc
+	  kcall prococ
+	  rptl
+	  >
+	mov r2,pklen(r0)
+	movb #200,pkop(r0)	;this is the normal opcode
+	tst outmsg(fp)		;is there any stuff left?
+	if eq,<
+	  incb pkop(r0)
+	  >
+	mov r0,r3
+	add #pkdat,r3		;get the ptr to the packet data area
+	inc r2
+	asr r2			;copy by words (round up)
+loop <	  mov (r4)+,(r3)+
+	  sorl r2
+	  >
+	mov conect,r1		;get the chaos connection to the imp
+	beq otabrt		;we are losing
+	cmp cnlidx(r1),outcon(fp)	;is it the same as it was?
+	bne otabrt		;we are losing again
+loop <	  call chdato,<r0,r1>	;send the packet
+	  bcc 1$		;go around again
+	  cmpb #%csopn,cnstat(r1)	;connection open?
+	  bne otabrt		;we are losing
+	  kcall prococ
+	  rptl
+	  >
+
+otabrt:	tst r1
+	if ne,<call chcls,<r1,#0>>	;close the connection
+	clr conect
+	kcall frepck		;get rid of the chaos packet
+	pop r4,r1		;get msg back from the stack
+	call fremap,r1		;free the msg in the last mapped in area
+	mov initsp(fp),sp	;non local goto
+	jmp outts1
+
+sndhtd:	pop r4,r1		;get the original msg back
+	call atring,<#outlst,r1>	;keep all output msgs in a ring buffer
+	mov r1,lstmsg
+	promap <call print,#s.asnt>
+	pop r0
+	rts pc
+
+.endc	; asmchi
+
+
+nopmsg:	.word -1		;ms.nxt
+	.word ipl.ln-2		;ms.len (won't send msl for NOPs)
+	.word 0			;hte
+	.word 0			;socket ptr
+	.word 0
+	.word 1$		;header ptr
+	.word 0
+1$:	.word 17		;new type leader
+	.word 2000		;nop type msg
+	.word 1000		;host #
+	.word 12400		;imp #
+	.word 0
+	  .sbttl  Various Support Routines
+
+;;; gethte (imp-leader) (hte)
+;;; this routine is called with a pointer to an imp leader and returns
+;;; a pointer to the appropriate host table entry.
+gethte:	proc 1,1,<r0,r1>
+
+	mov arg1(fp),r0		;get our argument: ptr to imp leader.
+	mov il.fip(r0),r1	;get the word representing imp number
+	swab r1			;words come in backwards.
+	movb il.fhs(r0),r0	;get the foreign host number
+	bic #177400,r0
+
+	call makhte,<r1,r0>,out1(fp)
+	tst out1(fp)
+	bne 1$
+	bpt 			;blow out if failure
+1$:	return
+
+;;; makhte (imp, host) (hte)
+;;; this routine creates and/or returns an hte for the imp/host specified.
+makhte:	proc 2,1,<r0,r1,r2>
+
+	clr out1(fp)		;no known empty host table entries.
+	mov arg1(fp),r1		;get imp
+	mov arg2(fp),r0		;get host
+	mov #hstble,r2		;start looking through the host table
+4$:	cmpb he.hst(r2),r0	;does the host # match?
+	bne 2$			;no
+	cmp he.imp(r2),r1	;how about the imp #?
+	beq 1$			;got a match so return it
+2$:	tstb he.cnt(r2)		;if this is empty remember for later.
+	bne 3$			;some one has it already
+	bitb #n.rfnm,he.nst(r2)	;but is it waiting for rfnm?
+	bne 3$			;its waiting so can't gc it yet.
+	mov r2,out1(fp)		;this can be gc'ed if no match
+3$:	add #hte.ln,r2		;in any case go to next hte.
+	cmp r2,#<hte.ln*nhosts+hstble>	;past end?
+	blo 4$			;no, keep looking
+
+	mov out1(fp),r2		;use the empty one if no match found
+	if eq,<rtnerr>		;no free ones either.
+	movb r0,he.hst(r2)
+	mov r1,he.imp(r2)
+	movb #h.dead,he.sts(r2)	;initialize host status
+;	mov #htearp,he.are(r2)	;set up the area pointer for the HTE
+
+1$:	mov r2,out1(fp)
+	return
+
+	.sbttl Routines to hack msgs scattered to the wind
+;;; These are the subroutines that manage the mapping in of areas containing
+;;; messages.  The general arrangement is that each socket, host table entry,
+;;; the tcbncp, intcb and tcbout are assigned an area for the messages chained
+;;; off them.  In addition there is the standard area which is in a section
+;;; of the address space which is always mapped in and available to every
+;;; task.  The format of an area pointer is a word whose high byte is the NM
+;;; page number of the area and the low byte is the offset in that page in
+;;; units of 16. words.  Thus 1_8+3 as an area pointer is NM page 1, and
+;;; word 3*16.=48. (byte 96.)  Note tha some operation on the standard area
+;;; are illegal.
+
+fremap: proc 1,0,<r0,r1>	;free a message in the active area given ptr
+	mov arg1(fp),r1		;get pointer to message
+	cmp #-1,ms.nxt(r1)	;should we not free this message?
+	if ne,<
+	  cmp r1,#maplo		;is this msg in the std area?
+	  if lo,<		;if so then
+	    mov bgheap,r0	;use standard area
+	    >
+	  else <
+	    mov curare,r0	;get address of the area
+	    >
+	  jsr pc,freeb		;free the message
+	  >
+	return			;we are all done here
+
+fremsg:	proc 2,0,<r0,r1>	;free a msg given area ptr and address
+	mov arg2(fp),r1		;get address of msg
+	mov arg1(fp),r0		;get area pointer
+	cmp r0,stdare		;standard area?
+	if eq,<
+	  mov bgheap,r0		;address of standard area
+	  cmp #-1,ms.nxt(r1)	;don't free flag set?
+	  if ne,<		;then don't free
+	    jsr pc,freeb	;free it
+	    >
+	  >
+	else <
+	  pushp6
+	  promap <		;save the mapping
+	    call mapmsg,r0	;map in the area
+	    cmp #-1,ms.nxt(r1)	;don't free flag set?
+	    if ne,<
+	      mov curare,r0	;get address of the are
+	      jsr pc,freeb	;free it
+	      >
+	    >			;restore the mapping
+	  popp6
+	  >
+	return
+
+allmsg:	proc 2,1,<r0,r1,r2>	;allocate a message in an area, map it in
+	mov arg1(fp),r1		;get the area pointer
+	cmp r1,stdare		;allocate in standard area?
+	if eq,<			;if so then we use it, no need to map
+	  mov bgheap,r1		;get address of the area
+	  >
+	else <
+	  call mapmsg,r1	;map in the area
+	  mov curare,r1		;get address of the area
+	  >
+	mov arg2(fp),r0		;get the size to allocate
+	mov r1,r2		;save area ptr in r2
+loop  <	jsr pc,allocb		;attempt to allocate
+	exitl cc		;we got our msg
+	kcall prococ		;wait for more room
+	mov r2,r1		;restore pointer to area
+	rptl
+	>
+	mov r1,out1(fp)		;return address to user
+	return
+
+mapmsg:	proc 1,0,<r0>		;map in an area given area pointer
+	mov arg1(fp),r0		;get the area pointer
+	beq 1$			;zero is not a legal area pointer
+	cmp r0,stdare		;is this the standard area?
+	if eq,<
+1$:	  bpt			;no one should ever do this
+	  >
+	clrb r0			;get the page address portion
+.if eq asmmap
+	swab r0			;shift into the low byte
+.iff
+	ror r0			;Note: carry clear from CLRB
+	asr r0
+.endc
+	mov r0,curpag		;save this information away
+	map r0			;map into the 3rd NM window
+	clr r0			;get argument minus page number
+	bisb arg1(fp),r0	;...
+	ash #5,r0		;convert from units of 16 words to bytes
+	add #maplo,r0		;convert to window 3 pointer
+	mov r0,curare		;save the address of the area
+	return
+
+movmsg:	proc 2,1,<r0,r1,r2,r3,r4>	;move a message currently mapped in to
+				;the specified area and map in the new area
+				;Take the new area pointer, address of msg and
+				;returns a pointer to the new message
+
+	mov arg2(fp),r0		;get pointer to the original msg
+	mov r0,out1(fp)		;in the easy case just return the old message.
+	mov -2(r0),r4		;get the size of the message
+	cmp r0,#maplo		;is source message in mapped memory?
+	if lo,<			;no, then must be in standard area
+ 	  cmp arg1(fp),stdare	;are we attempting to move to the std area?
+	  beq 2$		;yes, return
+1$:	  ;; copy from mapped to unmapped memory or vice versa
+	  call allmsg,<arg1(fp),r4>,r2
+	  mov r2,out1(fp)	;return the block
+	  inc r4		;round up to nearest word
+	  asr r4
+  loop	  < mov (r0)+,(r2)+	;move from old msg to new
+	    sorl r4
+	    >
+	  call fremap,arg2(fp)	;free the old message
+	  >
+	else <			;source message is in mapped memory
+	  cmp arg1(fp),stdare	;going to the standard area?
+	  beq 1$		;yes, do common code
+	  ;; copy from one mapped area to another
+	  mov curpag,-(sp)	;we compute an area pointer for current area
+.if eq asmmap
+	  swab (sp)		;move page number to the top
+.iff
+	  asl (sp)
+	  asl (sp)
+.endc
+	  mov curare,r2		;get the current area address in r2
+	  sub #maplo,r2		;remove fixed offset
+	  ash #-5,r2		;convert to multiple of 16 words
+	  add r2,(sp)		;now have std area pointer for old area
+	  cmp (sp),arg1(fp)	;two areas eq?
+	  if ne,<		;no
+	    mov curpag,r1	;still we need this for now
+	    call allmsg,<arg1(fp),r4>,r2	;get new msg. Note
+				;that our storage allocator puts size in the
+				;word before the block of storage.  We are
+				;also now in the new area.
+	    mov r2,out1(fp)	;return pointer to user
+	    mov curpag,r3	;page address for new area in r3
+	    inc r4		;round up
+	    asr r4		;round to words
+
+;;; We are now all set to move the message.  We have a pointer to the old
+;;; message in r0, the old page in r1, the new message in r2, the new page in
+;;; r3.  The length in words of the message is in r4.  We now move the msg.
+
+	    push r5		;save the fp, we need the register right now
+
+  loop	    < map r1		;map in the old page
+	      mov (r0)+,r5	;pick up a word
+	      map r3		;map in the new page
+	      mov r5,(r2)+	;place word into new message
+	      sorl r4		;loop
+	      >
+	    pop r5		;get r5 back
+	    mov (sp),r1		;get area pointer
+	    call fremsg,<r1,arg2(fp)>	;free the old message
+	    >
+	  pop r1		;get area pointer to the old area
+	  >
+2$:	return			;all done
+
+;;; atring (ring-buffer, item)
+;;; add-to-ring-buffer takes and object and pushes it on a ring buffer.
+dsect <
+rg.cep:: .blkw 1		;this is a pointer to the next slot to be used.
+rg.cnt:: .blkw 1		;this is the size of the ring buffer in bytes.
+rg.slt:: .blkw 0		;here start rg.cnt/2 ring buffer slots.
+	>,rng.ln
+
+atring:	proc 2,0,<r0,r1,r2>
+
+	mov arg1(fp),r0
+	beq 1$			;punt!
+	mov rg.cep(r0),r1	;get the buffer ptr.
+	cmp r1,r0
+	blo 1$			;must be larger than the header ptr.
+	mov r0,r2		;make a ptr to the end of the ring buffer.
+	add rg.cnt(r0),r2
+	add #rng.ln,r2
+	cmp r1,r2		;compare the cep with the buffer end
+	blo 2$			;ok to use.
+	bhi 1$			;over stepped!
+	mov r0,r1		;wrap to first element of buffer.
+	add #rg.slt,r1
+2$:	mov arg2(fp),(r1)+
+	mov r1,rg.cep(r0)	;save the new entry ptr
+	return
+
+1$:	bpt
+	br 1$
+
+;;; lnkskt (receive-link-number, hte) (socket-ptr)
+;;; this routine takes a link number and an hte for the message and
+;;; converts it to a socket ptr with error checking.  this is
+;;; only good for receive links.
+lnkskt:	proc 2,1,r0
+
+	mov arg1(fp),r0		;get link number (first argument)
+	asl r0			;for index
+	sub #50,r0		;all my links will be greater than 24o
+	cmp r0,#nlinks*2	;is this a real link?
+	bhis lnkbad		;illegal link return zero
+	mov lnktbl(r0),r0	;get corresponding socket ptr
+	beq lnkbad		;no one is using this link
+	cmpb #s.free,sk.sts(r0)	;is the socket still existing?
+	beq lnkbad
+	cmp arg2(fp),sk.hst(r0)	;was the message from the right host?
+	bne lnkbad
+	cmpb arg1(fp),sk.lnk(r0)	;internally consistant?
+	bne conbad
+	tst sk.own(r0)		;anyone own this connection?
+	beq conbad
+	mov r0,out1(fp)
+lnkrtn: return
+
+lnkbad: clr out1(fp)
+	br lnkrtn
+
+conbad: bpt
+	br lnkbad
+
+;;; lnkscn (transmit-link-number, hte) (socket-ptr)
+;;; this scans the socket table for a transmit connection to the specified
+;;; host on the specified link and returns the socket-ptr.
+lnkscn:	proc 2,1,<r0,r1,r2>
+
+	mov arg1(fp),r0		;get the link
+	beq 1$			;return nothing
+	mov arg2(fp),r2		;get the hte.
+	beq 1$			;is it valid?
+
+	mov #sktble,r1		;prepare to scan socket table for this link
+4$:	cmp sk.hst(r1),r2	;from the right host?
+	bne 6$			;no, go to next socket
+	cmpb sk.lnk(r1),r0	;right link to right host?
+	bne 6$			;no
+	bit #1,sk.mys(r1)	;is it a transmit socket?
+	beq 6$			;if even (receive) keep looking
+	mov r1,out1(fp)
+2$:	return
+6$:	add #skt.ln,r1		;step to next socket.
+	cmp r1,#sktend		;are we out of sockets?
+	blo 4$			;keep looking
+1$:	clr out1(fp)
+	br 2$
+
+;;; getmsg returns in r2 the next message in the current users queue.
+;;; if no messages are available then the routine waits until one
+;;; shows up.  The message is threaded out of the queue but not freed
+;;; the caller must do that explicitly.
+getmsg:
+	push r0
+	mov curtsk,r0
+1$:	mov tb.fqm(r0),r2	;get first message
+	bne 2$
+	cocall
+	br 1$
+2$:	call mapmsg,tb.are(r0)	;make sure the message is addressable
+	mov ms.nxt(r2),tb.fqm(r0)	;get next msg ptr
+	bne 3$
+	clr tb.lqm(r0)		;no msgs left.
+3$:	pop r0
+	rts pc
+
+;;; putmsg takes a tcb pointer in r3 and a message pointer in r2 and
+;;; threads the message into the queue for that process.
+putmsg:
+	pushp6
+	promap <
+	  push r0
+	  call movmsg,<tb.are(r3),r2>,r2	;map the message into TCB area
+	  mov tb.lqm(r3),r0
+	  mov r2,tb.lqm(r3)	;this msg is the new last
+	  clr ms.nxt(r2)	;last msg has no next
+	  tst r0		;is there an old last?
+	  bne 1$		;yes
+	  mov r2,tb.fqm(r3)	;if not then msg is first AND last
+	  br 2$
+1$:	  mov r2,ms.nxt(r0)	;last msg is next msg of old last
+2$:	  pop r0
+	>
+	popp6
+	rts pc
+
+.sbttl  Strings of various types
+
+s.gret: .asciz	/NCP Machine Running
+/
+s.gotm: .asciz	/intsk: msg ** /
+s.grfn: .asciz	/intsk: RFNM ** /
+s.srfn: .asciz	/intsk: spurious RFNM ** /
+s.noal:	.asciz	/intsk: insufficient allocation ** /
+s.glos: .asciz	/intsk: msg incomplete ** /
+s.lerr: .ascii	/intsk: leader error, sub type #/
+s.errn: .asciz	/0. ** /
+s.hrst: .asciz	/intsk: host reset ** /
+;s.oerr: .asciz	/outtsk: output error ** /
+s.typ0: .asciz	/intsk: type zero ** /
+s.outr: .asciz	/outtsk: msg ** /
+s.asnt: .asciz	/outtsk: sent ** /
+;s.cmsg: .asciz	/Type ESC 4 times to quit/<12><15>
+;s.meta: .asciz	/M-/
+;s.halt: .asciz	/$ (Halting to ODT)/
+arcntn:	.asciz /ARPA/
+svctn:	.asciz /SERVER/
+impctn:	.asciz /IMP/
+.even
+
+clrdat::
+
+rtocnt:	.word 0			; # of RST timeouts
+ctocnt:	.word 0			; # of unreciprocated closes
+otocnt:	.word 0			; # of RTS or STRs not responded to
+rf0cnt:	.word 0			; # of RFNMs on link zero lost
+rf1cnt:	.word 0			; # of RFMNs on non zero links lost
+rf0cam:	.word 0			; # of rfnms received on link zero
+rf1cam:	.word 0			; # of rfnms received on non zero links
+rf0snt:	.word 0			; # of msgs sent on link zero
+rf1snt:	.word 0			; # of msgs sent on non zero links
+rf0rcv:	.word 0			; # of link zero msgs received
+rf1rcv:	.word 0			; # of msgs received on non zero links
+
+.if ne asmchi
+conect:	.word 0
+impcon:	.word 0
+.endc
+
+sprfnm:	.word 0			; # of spurious rfnms
+noaloc:	.word 0			; # of msgs recieved without msg allocation 
+ncpgar:	.word 0			; # of garbage packets received by NCP
+spurrp:	.word 0			; # of spurious rrp
+nignor:	.word 0			; # of h-h commands ignored by the NCP
+
+hhlock:	.word 0			; hhsend uses impure data so only one task
+				; at a time can be in these routines.
+openmc:	.word 0			; signal to open connection to MC
+alowst:	.word 0			; signal to allow incomming users
+outalc:	.word
+
+msgcnt:	.word 0,0,0,0,0,0,0,0,0,0,0
+
+clrend::
+
+lstmsg:	.word nopmsg		;last output buffer
+
+inplac:	.word 0
+
+
+lderrs:	.word .+4
+	.word 2*5.
+	.blkw 2*5.
+
+rserrs:	.word .+4
+	.word 2*5.
+	.blkw 5.
+
+outlst:	.word .+4
+	.word 2*5.
+	.blkw 5.
+
+prtarg: .word .+4		;log all args to print when printing is off.
+	.word 2*10.
+	.blkw 10.
+

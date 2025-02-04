@@ -1,0 +1,663 @@
+;;; -*-PALX-*-
+;;; This file contains all the stuff to do IO and the routines which print
+;;; out the various status displays.
+	.sbttl TTY IO Interrupt Handlers
+
+linint: push r0
+	push r1
+	clr r0
+	bisb @tyidat,r0		;get character
+	mov r0,r1		; make a copy to clear parity
+	bic #177600,r1		;flush the parity bit
+	cmp esccnt,#3		;do we have lots of escapes?
+	ble 5$
+	cmp r1,#33		;escape means halt
+	bne 6$
+	bpt
+7$:	clr esccnt
+	br 1$
+6$:	cmp r1,#'d		;"d" means toggle debug mode
+	bne 11$			;this is just garbage
+	mov #1,r1
+	xor r1,prtoff		;toggle debugging mode
+	br 7$
+
+11$:	cmp r1,#'m		;an "m" means toggle MC connection
+	bne 12$
+	mov #1,r1		;toggle the bit
+	xor r1,openmc
+	br 7$
+
+12$:	cmp r1,#'s		;an "s" means toggle server tn enable
+	bne 13$
+	mov #1,r1
+	xor r1,alowst
+	br 7$
+
+13$:	cmp r1,#'a		;an "a" means enter status mode
+	bne 3$
+	inc statmd
+	br 7$
+
+5$:	cmp r1,#33		;is it an escape
+	bne 3$			;no
+	inc esccnt
+	br 4$
+3$:	clr esccnt
+4$:	mov inplac,r1
+	kcall putc		;stuff the character into the input buffer
+1$:	pop r1,r0
+	rti
+
+quit:	bpt 			;can't return to RT-11 always
+
+linont:	push r0,r1		;On output interrupt send the next character
+	mov #tyobuf,r1
+	kcall getc
+	if cs,<bic #100,@tyoflg>	;turn off interrupts
+	else <movb r0,@tyodat>
+	pop r1,r0
+	rti
+	.sbttl Character Buffer Hacking Routines
+
+;	.block chb,cb		;define a character buffer
+dsect <
+cb.bgn:: .blkw 1		;This is a pointer to the start of the buffer
+cb.end:: .blkw 1		;This points to the end
+cb.get:: .blkw 1		;this is the ptr in the buffer to the next
+				;char to read out.
+cb.put:: .blkw 1		;This is the ptr of where to put the next
+				;char inserted into the buffer.
+cb.npt:: .blkw 1		;The become put after the next insertion
+	>,chb.ln
+
+;;; This takes a character buffer ptr in r1 and returns the next character
+;;; out of that buffer in r0.  The carry bit is set if no characters are
+;;; available and r0 should not be used.
+
+getc:	push r2
+	mov cb.get(r1),r2
+	cmp r2,cb.put(r1)
+	if eq,<
+	  mov #-1,r0		;no characters in buffer.
+	  sec
+	  pop r2
+	  rts pc
+	  >
+	movb (r2)+,r0		;get the character
+	cmp r2,cb.end(r1)	;do we have to wrap?
+	if his,<
+	  mov cb.bgn(r1),r2	;reset to beginning of buffer
+	  >
+	mov r2,cb.get(r1)
+	clc
+	pop r2
+	rts pc
+
+;;; This is the complementary function to the getc function above.  It
+;;; takes a character in r0 and a buffer pointer in r1 and puts the character
+;;; into the buffer.  If the buffer is full the carry bit is set upon return.
+;;; Neither r0 nor r1 is bashed by the call.
+
+putc:	push r2
+	mov cb.npt(r1),r2
+	cmp cb.get(r1),r2
+	if eq,<
+	  sec			;we lose, the buffer is full
+	  pop r2
+	  rts pc
+	  >
+	movb r0,@cb.put(r1)	;stuff the character in
+	mov r2,cb.put(r1)	;fill in new put ptr
+	inc r2
+	cmp r2,cb.end(r1)
+	if his,<
+	  mov cb.bgn(r1),r2
+	  >
+	mov r2,cb.npt(r1)
+	bis #100,@tyoflg	;Make sure the character gets sent
+	clc
+	pop r2
+	rts pc
+
+;;; This is a regular subroutine which takes a buffer ptr and return the
+;;; number of characters in it.
+
+numc:	proc 1,1,<r0,r1>
+	mov arg1(fp),r1
+	mov cb.put(r1),r0
+	sub cb.get(r1),r0
+	if lt,<			;have to hack wrapping
+	  add cb.end(r1),r0	;just add in buffer size if neg.
+	  sub cb.bgn(r1),r0
+	  >
+	mov r0,out1(fp)
+	return
+	.sbttl Output Routines
+
+;;; printa (addr-of-asciz-string)
+;;; printa takes a string and queues it for output, ignoring the print off
+;;; flag.  This is mopstly useful for serious error messages, NOT
+;;; debugging information.
+printa:	proc 1,0,<r0,r1,r2>
+	br print1
+
+;;; print (addr-of-asciz-string)
+;;; print takes a string and queues it for output.
+print:	proc 1,0,<r0,r1,r2>
+
+	tst prtoff		;don't do any printing
+	bne print3		;Just log arg and return
+print1:				; entry point for PRINTA
+5$:	tst prtlok		;first make sure print isn't already in use
+	beq 4$			;OK
+	cocall
+	br 5$			;wait for them to finish
+4$:	inc prtlok		;lock it.
+
+	mov arg1(fp),r2		;get string ptr in r2
+	mov #tyobuf,r1
+loop	< movb (r2)+,r0
+	  exitl eq
+  loop	  < kcall putc
+	    exitl cc		;if this won send the next character
+	    cocall
+	    rptl
+	    >
+	  rptl
+	  >
+	dec prtlok		;free to enter print!
+print2:	return			;called with one arg
+print3:	call atring,<#prtarg,arg1(fp)>
+	br print2
+
+;;; ttysnd (addr-of-string, length-of-string)
+;;; ttysnd takes a string and queues it for output to the terminal
+;;; even when debugging output is off.
+ttysnd:	proc 2,0,<r0,r1,r2,r3>
+
+5$:	tst prtlok		;first make sure print isn't already in use
+	beq 4$			;OK
+	cocall
+	br 5$			;wait for them to finish
+4$:	inc prtlok		;lock it.
+
+	mov arg1(fp),r2		;get string ptr
+	mov arg2(fp),r3		;get the length
+	mov #tyobuf,r1
+
+loop	< movb (r2)+,r0
+  loop	  < kcall putc
+	    exitl cc
+	    cocall
+	    rptl
+	    >
+	  sorl r3
+	  >
+	dec prtlok		;no
+	return
+
+outc:	push r0
+	mov r1,r0
+	kcall @stputc
+	pop r0
+	kretrn
+
+fdpaus:	kretrn			; this has something to do with ^S/^Q flow control
+
+arpioa==1
+
+.insrt ioa
+	.sbttl Status Task
+defvar	<
+stputc:	.word 0
+stgetc:	.word 0
+>
+
+;;; This is the entry point that is called from rug to make the status
+;;; routines available after the program has stopped.  It will save all the
+;;; registers but you must remember the PC by hand.
+
+ststop:	mfps -(sp)		;save the old sp
+	spl 7
+	push r0,r1,r2,r3,r4,r5	;first save all the registers
+	push prtlok		;make sure output is never locked
+	clr prtlok
+	push stgetc,stputc
+	mov #ssputc,stputc
+	mov #ssgetc,stgetc
+	call dostat
+	pop stputc,stgetc
+	pop prtlok
+	pop r5,r4,r3,r2,r1,r0
+	mtps (sp)+
+	bpt
+	br ststop
+
+;;; This is where the normal task whihc handlers status commands starts.
+
+ststsk:
+
+stwait:
+loop	< tst statmd		;should we enter status mode?
+	  exitl ne
+	  cocall
+	  rptl
+	  >
+
+	mov #stsbuf,r0		;initialize our input buffer
+	mov cb.bgn(r0),cb.get(r0)
+	mov cb.bgn(r0),cb.put(r0)
+	mov cb.bgn(r0),cb.npt(r0)
+	inc cb.npt(r0)
+	push inplac
+	mov r0,inplac		;make it the default input buffer
+	mov #srputc,stputc
+	mov #srgetc,stgetc
+	call dostat
+	pop inplac
+	clr statmd
+	br stwait
+
+dostat:	ioa ^"
+Status Display Mode.
+"
+stcmdl:	kcall @stgetc		;get a command character
+	bic #177600,r0		; clear parity
+	cmpb r0,#'d
+	if eq,<jmp sttdbg>
+	cmpb r0,#'t
+	if eq,<jmp sttask>
+.if ne asmncp
+	cmpb r0,#'s
+	if eq,<jmp stskts>
+.endc
+	cmpb r0,#'h
+	if eq,<jmp sthost>
+	cmpb r0,#'a
+	if eq,<jmp starea>
+	cmpb r0,#'u
+	if eq,<jmp stuptm>
+	cmpb r0,#'c
+	beq stchst		; chaos status
+.if df ethcnt
+	cmpb r0,#'e		; ethernet command?
+	if eq,<
+	  kcall @stputc
+	  kcall @stgetc		; read another character
+	  bic #177600,r0
+	  kcall @stputc		; echo
+	  push #stcmdl		; return to STCMDL
+	  mov #ethd1,r1		; ETHXXX routines take ethernet data pointer
+				; in R1
+	  cmpb r0,#'i
+	  if eq,<jcall ethin0>
+	  cmpb r0,#'r
+	  if eq,<jcall ethrsr>
+	  cmpb r0,#'s
+	  if eq,<jcall ethsts>
+	  pop *			; throw away return address
+	  >
+.endc
+	cmpb r0,#'X-100		; ^X?
+	if eq,<
+	  ioa ^"^^X"
+	  kcall @stgetc		; read another character
+	  bic #177600,r0
+	  cmpb r0,#'q
+	  beq stquit
+	  cmpb r0,#33
+	  beq stbpt
+.if ne asmncp
+	  cmpb r0,#'c
+	  if eq,<jmp stcafa>
+.endc
+	  cmpb r0,#'x
+	  if eq,<jmp stexit>
+	  >
+;;; No Such Command.  Try: a,d,h,s,t,u,$,q,c,x
+	ioa ^"
+a	print the status of all areas in the machine
+d	toggle debug printout flag (like $$$$d).
+h	Print the status of all hosts the have been talked to recently
+s	print status of all active sockets
+t	print info about TCBs
+u	print uptime info as well as total packet counts
+c	print Chaos NCP statistics
+ei	initialize ethernet interface
+er	re-setup ethernet receive
+es	print ethernet statistics
+^^X$	(alt mode) exit to rug temporarily
+^^Xq	quit
+^^Xc	toggle caface enable
+^^Xx	shutdown gateway
+"
+	jbr stcmdl
+
+;;; Here are the commands that you can call from status mode.  R0 contains
+;;; the character just typed, in case you care.  No other registers have any
+;;; special meaning.
+
+stquit:	ioa ^"
+Leaving status mode ($$$$a to reenter).
+"
+	kretrn
+
+stbpt:	spl 7
+	bpt
+	spl 0
+	jbr stcmdl
+
+stchst:	kcall chprst		; call the Chaos statistics command
+	jbr stcmdl
+
+sttdbg:	mov #1,r0
+	xor r0,prtoff
+	if eq,<
+	  ioa ^"Debug on.
+">
+	else <
+	  ioa ^"Debug off.
+">
+	jbr stcmdl
+
+sttask:	ioa ^"
+List of TCBs. CURTSK is ^o
+TCB    R0     R1     R2     R3     R4     R5     SP     PC     Area   FrstQM
+",<curtsk>
+	mov tcbtbl,r0
+loop	< ioa ^"^o ^o ^o ^o ^o ^o ^o ^o ^o ^o ^o
+",<r0,tb.sr0(r0),tb.sr1(r0),tb.sr2(r0),tb.sr3(r0),tb.sr4(r0),tb.sr5(r0),tb.ssp(r0),tb.spc(r0),tb.are(r0),tb.fqm(r0)>
+	  mov tb.nxt(r0),r0
+	  cmp r0,tcbtbl
+	  rptl ne
+	  >
+	jbr stcmdl
+
+.if ne asmncp
+stskts:	ioa ^"
+Active Sockets.
+SKTPTR HOST   LocSkt ForeignSkt   BytSiz Link   Owner  Status RFNMst NQued
+       MsgAlc BitsAlc      Area
+"
+	mov #sktble,r0
+loop	< cmpb sk.sts(r0),#s.free
+	  if ne,<		;only print out for non-free sockets
+	    mov sk.hst(r0),r3	;get the host number
+	    if ne,<
+	      movb he.hst(r3),r4
+	      ash #6,r4
+	      add he.imp(r3),r4
+	      bit #177700,he.imp(r3)
+	      if ne,<bis #100000,r4>	;Hi bit on indicates extended host
+	      >
+	    else <clr r4>	;no host for this guy
+	    movb sk.siz(r0),r1	;so we can win with bytes
+	    movb sk.lnk(r0),r2
+	    movb sk.sts(r0),r3
+	    movb sk.nst(r0),r5
+	    ioa ^"^o ^o ^o ^o^o ^o ^o ^o ^o ^o ^o
+       ^o ^o^o ^o
+",<r0,r4,sk.mys(r0),sk.ysh(r0),sk.ysl(r0),r1,r2,sk.own(r0),r3,r5,sk.nqm(r0),sk.nms(r0),sk.bsh(r0),sk.bsl(r0),sk.are(r0)>
+	    >
+	  add #skt.ln,r0
+	  cmp r0,#sktend
+	  rptl lo
+	  >
+	jbr stcmdl
+.endc	; ne asmncp
+
+sthost:	ioa ^"
+Recent ARPANET hosts
+HTE    HOST   #Conns NQued  Status RFNMst
+"
+	mov #hstble,r0
+loop	< tst he.imp(r0)
+	  if ne,<
+	    movb he.hst(r0),r1
+	    ash #6,r1
+	    add he.imp(r0),r1
+	    movb he.sts(r0),r2
+	    movb he.nst(r0),r3
+	    movb he.cnt(r0),r4
+	    ioa ^"^o ^o ^o ^o ^o ^o
+",<r0,r1,r4,he.nqm(r0),r2,r3>
+	    >
+	  add #hte.ln,r0
+	  cmp r0,#hstend
+	  rptl lo
+	  >
+	jbr stcmdl
+
+starea:	ioa ^"
+Areas
+Name    Map    Used   NUsed  Free   NFree  NAlloc NFrees NAFail
+"
+
+	ioa ^"ChsHeap "
+	mov #pkarea,r1
+	jsr pc,stpare		;print the area
+
+	ioa ^"BigHeap "
+	mov #bgarea,r1
+	jsr pc,stpare
+
+.if ne asmncp
+	ioa ^"OUTArea "
+	call mapare,outare,r1
+	jsr pc,stpare
+
+	ioa ^"NCPArea "
+	call mapare,ncpare,r1
+	jsr pc,stpare
+
+	mov #sktble,r0
+loop	< cmpb #s.free,sk.sts(r0)
+	  if ne,<
+	    bit #1,sk.mys(r0)
+	    if eq,<		;If its a active receive socket...
+	      ioa ^"S^o ",<sk.mys(r0)>
+	      call mapare,<sk.are(r0)>,r1
+	      jsr pc,stpare
+	      >
+	    >
+	  add #skt.ln,r0
+	  cmp r0,#sktend
+	  rptl lo
+	  >
+.endc
+	jbr stcmdl
+
+stpare:	push r0
+	mov fsata(r1),r3
+	sub fsft(r1),r3
+
+	mov fsac(r1),r4
+	sub fsfc(r1),r4
+
+	mov fssize(r1),r0
+	sub r3,r0
+
+.if eq asmmap
+	mov r1,r2		;get NM page number
+	cmp r2,#nmbot
+	if his,<
+	  ash #-12.,r2
+	  bic #177760,r2
+	  movb nm.map-<<nmbot_-12.>&17>(r2),r2
+	  bic #177400,r2
+	  >
+.iff
+	mov r1,r2
+	ash #-13.+1,r2
+	bic #177761,r2
+	mov kipar(r2),r2
+.endc	; asmmap
+	ioa ^"^o ^o ^o ^o ^o ^o ^o ^o
+",<r2,r3,r4,r0,fsflen(r1),fsac(r1),fsfc(r1),fsafc(r1)>
+	pop r0
+	rts pc
+
+stuptm:
+.if ne asmncp
+	tst fskcnt
+	if ne,<
+	  ioa ^"
+FNDSKT BUG! ^d TIMES.",<fskcnt>
+	  >
+.endc
+	mov clock+0,r3
+	mov clock+2,r2
+	add #60.*60./2,r3	; round to nearest minute
+	adc r2
+	ashc #-4,r2		; discard some low order bits
+	div #60./4*60./4*60.,r2	; now we have hours in r2
+	push r2			; save hours
+	clr r2
+	div #60.*60./16.,r2	; get minutes => r2
+	pop r3			; get hours back
+
+	ioa% <r3,r2,rf0rcv,rf0snt,rf0cnt>
+	 .litrl ^\
+	  .ascii "
+ARPA "
+	  .decim %arpavn
+.if ne asmncp
+	  .ascii ", NCP "
+	  .decim %ncpvn
+.endc
+	  .ascii ", IMP "
+	  .decim %impvn
+	  .ascii " on "
+	  .decim %month
+	  .ascii "/"
+	  .decim %day
+	  .ascii "/"
+	  .decim %year
+	  .asciz ".  Uptime is ^d:^d
+Control msgs: ^d received, ^d sent, ^d RFNMs lost.
+"\
+	mov rf1rcv,r3
+	mov rf1rcv+2,r2
+	div #1000.,r2		; r2 = thousands, r3 = ones
+	ioa ^"Data msgs: ^d,^d received, ",<r2,r3>
+	mov rf1snt,r3
+	mov rf1snt+2,r2
+	div #1000.,r2
+	ioa ^"^d,^d sent, ^d RFNMs lost.
+",<r2,r3,rf1cnt>
+.if ne asmmap			; can't afford the string space unless its /23
+	ioa ^"Unreciprocated closes: ^d, RTS or STRs not responded to: ^d, RST timeouts: ^d.
+Spurious RFNMs: ^d, Messages received without allocation: ^d.
+Garbage packets: ^d, Ignored h-h commands: ^d, Spurious RRPs: ^d.
+",<ctocnt,otocnt,rtocnt,sprfnm,noaloc,ncpgar,nignor,spurrp>
+.endc
+	jbr stcmdl
+
+
+.if ne asmncp
+stcafa:	com alowca
+	if ne,<
+	  ioa ^"CAFACE on.
+"
+	  >
+	else <
+	  ioa ^"CAFACE off.
+"
+	  >
+	jbr stcmdl
+.endc
+
+
+stexit:
+.if ne asmncp
+	clr alowca		; disable CAFACE
+	kcall ncpfin		; close all sockets
+.endc
+	push #60.		; SLEEP arg: 60ths
+	kcall sleep		; wait 1 second to help things finish up
+; RESET instruction does everything IMPFIN would do just now.
+;	kcall impfin		; finish up IMP module
+	reset
+	spl 7
+	bpt
+	jmp start
+
+
+srgetc:	push r1
+	mov #stsbuf,r1
+loop	< kcall getc
+	  exitl cc
+	  cocall
+	  rptl
+	  >
+	pop r1
+	kretrn
+
+srputc:	push r1
+	mov #tyobuf,r1
+loop	< kcall putc
+	  exitl cc
+	  cocall
+	  rptl
+	  >
+	pop r1
+	kretrn
+
+ssgetc:	bit #200,@tyiflg
+	beq ssgetc
+	movb @tyidat,r0
+	kretrn
+
+ssputc:	bit #200,@tyoflg
+	beq ssputc
+	movb r0,@tyodat
+	kretrn
+
+defvar	<
+esccnt:	.word 0
+prtlok: .word 0
+prtoff: .word 0
+statmd:	.word 0
+>
+
+
+tyoflg:	.word 177564
+tyodat:	.word 177566
+tyiflg:	.word 177560
+tyidat:	.word 177562
+
+
+tyibsz==20.
+tyobsz==50.
+
+defvar	   <
+tyibuf:	1$
+	2$
+	1$
+	1$
+	1$+1
+1$:	.blkb tyibsz
+2$:
+
+tyobuf:	1$
+	2$
+	1$
+	1$
+	1$+1
+1$:	.blkb tyobsz
+2$:
+
+stsbuf:	1$
+	2$
+	1$
+	1$
+	1$+1
+1$:	.blkb 10.
+2$:
+
+prtarg: .word .+4		;log all args to print when printing is off.
+	.word 2*10.
+	.blkw 10.
+
+>				; end of defvar

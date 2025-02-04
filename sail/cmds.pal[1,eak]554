@@ -1,0 +1,2917 @@
+;;; -*-PALX-*-
+.sbttl  User Objects
+
+;;; User object protocol. This protocol is called with R3 pointing to object!
+dsect <
+udescr:: .blkw 1	; return description of object; port # & string
+uopenp:: .blkw 1	; return port number we're linked to * 2 or asciz
+			; pointer
+uunam::	 .blkw 1	; return user name
+uidle::	 .blkw 1	; return idle time
+usrdie:: .blkw 1	; kill this user
+	 >,lusrob
+
+
+;;; NSWIT command processor and commands.
+.if ne nkbd
+.sbttl	Command Processor
+
+;;; "Port" Object
+dsect <
+	 .blkb ltdobj		; task destination object
+kusrob:: .blkb lusrobj		; user object
+echoso:: .blkw 1		; source object for echoing
+echod::	 .blkw 1		; destination object for echoing
+kport::	 .blkw 1		; our port number
+kdstn::	 .blkw 1		; destination port number * 2 or asciz pointer
+				; of description
+kdst::	 .blkw 1		; open destination object
+ksrc::	 .blkw 1		; open source object
+koldd::	 .blkw 1		; open source object's old destination
+coobj::	 .blkb ldptcl		; destination object that forwards to our
+				; echo destination
+costop:: .blkw 1		; connection output stopped
+luser==6
+kuser::	 .blkb luser+1		; user name
+lscrtch==20.
+scrtch:: .blkb lscrtch		; scratch area
+	 .even
+	>,ltport
+
+;;; Port with command processor
+dsect <
+	 .blkb ltport		; port object
+.if ne asmled
+edmap6:: .blkw 1		; map for page 6
+edbadr:: .blkw 1		; ptr to line editor data base
+.endc
+cmdchr:: .blkb 2		; character used to return to command
+				; processor from connection
+echof::	 .blkb 1		; 0 for remote echo, non0 for local echo.
+.lif ne asmxon
+xonflg:: .blkb 1		; 0 for off, 377 for on
+.lif ne asmled
+linedf:: .blkb 1		; 0 for no line editor, non0 for line editor
+.lif ne  chaos
+tnnegm:: .blkb 1		; telnet negotiation monitoring
+	 .even
+	 ;; variables for keyboard reader
+hpos::	 .blkw 1		; horizontal position
+imask::	 .blkw 1		; input character mask
+bufp::	 .blkw 1		; pointer to BUF field of this structure
+inpp::	 .blkw 1		; pointer to next position for input
+getp::	 .blkw 1		; pointer to next character to parse
+ibcpc::	 .blkw 1		; PC of last INIBC call
+ibcsp::	 .blkw 1		; SP of last INIBC call
+prompt:: .blkw 1		; prompt string of last INIBC call
+newic::	 .blkb 1		; new input character not yet accepted or
+				; rejected, or -1 if none
+lbuf==79.
+buf::	 .blkb lbuf		; buffer for command storage
+	 .blkb 1		; safety, can always go 1 beyond
+	 .even
+	 >,lkobj
+
+lkstack==30.*2			; size of keyboard task
+
+.sbttl	- Echo subroutines
+
+;;; Output character and track horizontal position.
+
+echoc1:	cmp r1,#40		; control character?
+	if his,<		; no
+	  inc hpos(r0)		; increment horizontal position
+	  br echoc
+	  >
+	;; control character
+	cmp r1,#15		; CR?
+	if eq,<			; yes,
+	  clr hpos(r0)		; clear horizontal position
+	  br echoc
+	  >
+	cmp r1,#10		; BS?
+	if eq,<			; yes,
+	  dec hpos(r0)		; decrement hoirz position
+	  >
+	;; fall through to ECHOC
+
+;;; Output character in R1 to echo destination.
+
+echoc:	push r0			; save register
+	mov echod(r0),r0	; get destination for echo
+	pcall @sendw(r0)		; echo the character
+	pop r0			; restore register
+	preturn
+
+
+;;; Output string to echo destination.  R2/ asciz string.
+
+echos:	push r1			; save registers
+loop <	  movb (r2)+,r1		; R1: character or ASCIZ string
+	  exitl eq		; null terminates
+	  pcall echoc1		; send it
+	  rptl
+	  >
+	pop r1			; restore registers
+	preturn
+
+
+;;; Output constant string to echo destination.  Called by JSR R5,ECHOS
+;;; followed by relative pointer to ASCIZ string.
+
+echosc:	push r2			; save register
+	mov (r5)+,r2		; pick up pointer after call
+	pcall echos		; send it
+	pop r2			; restore register
+	rts r5
+
+;;; Macro for using ECHOS.
+
+.macro	print string
+	jsr r5,echosc
+	 .string ^string
+.endm
+
+.macro	printcr string
+	jsr r5,echosc
+	 .string ^string
+
+.endm
+
+
+;;; Echo a bell.
+
+feep:	mov #7,r1		; ECHOC arg: character
+	br echoc		; ring bell
+
+
+;;; Echo a CR LF.
+
+crlf:	print ^"
+"
+	preturn
+
+
+;;; Type out an unsigned decimal number.  R2/ number.  Clobbers R1.
+
+echoud:	push r3			; save register
+	mov r2,r3		; number in least significant register of pair
+	clr r2			; clear most significant register
+	div #10.,r2		; divide
+	if ne,<			; nonzero quotient
+	  pcall echoud		; type it
+	  >
+	mov r3,r1		; set up ECHOC1 arg
+	add #'0,r1		; ...
+	pop r3			; restore register
+	br echoc1		; type remainder as ascii digit
+
+
+;;; Type out an unsigned octal number.  R2/ number.  Clobbers R1.
+
+echouo:	push r3			; save register
+	mov r2,r3		; number in least significant register of pair
+	clr r2			; clear most significant register
+	div #10,r2		; divide
+	if ne,<			; nonzero quotient
+	  pcall echouo		; type it
+	  >
+	mov r3,r1		; set up ECHOC1 arg
+	add #'0,r1		; ...
+	pop r3			; restore register
+	br echoc1		; type remainder as ascii digit
+
+
+;;; Output spaces to column.
+
+tabto:	push r1
+loop <	  mov #40,r1
+	  pcall echoc1
+	  cmp hpos(r0),r2
+	  rptl lo
+	  >
+	pop r1
+	preturn
+
+
+;;; Force output to echo destination.
+
+eforc:	push r0			; save register
+	mov echod(r0),r0	; get destination for echo
+	pcall @force(r0)	; force output
+	pop r0			; restore register
+	preturn
+
+
+outc==echoc1		; for ioa to use to output characters
+
+.insrt ioa
+
+.sbttl	- Command parsing
+
+
+;;; Read next character directly from terminal.
+
+getc:	cmp qfp(r0),qrp(r0)	; input available?
+	if eq,<			; no, we're going to go blocked
+	  pcall eforc		; so force output before blocking
+	  >
+	pcall tdremw		; get input from buffer
+	bic imask(r0),r1	; clear parity if necessary
+	preturn
+
+
+;;; Initialize for reading new command.  R2/ prompt string.
+
+inibc:	mov r2,prompt(r0)	; save prompt string
+	pcall echos		; prompt
+	movb #-1,newic(r0)	; no character waiting for prcoessing
+	mov r0,bufp(r0)		; create pointer to buffer
+	add #buf,bufp(r0)	; in BUFP
+	mov bufp(r0),inpp(r0)	; make that the input pointer
+	mov bufp(r0),getp(r0)	; and next character to get
+	mov (sp)+,ibcpc(r0)	; return to point of this call on rubout
+	mov sp,ibcsp(r0)	; with stack unwound too
+	jmp @ibcpc(r0)		; return there now too
+
+
+;;; Retype current command.
+
+replay:	mov prompt(r0),r2	; ECHOS arg: asciz prompt string
+	pcall echos		; reprompt
+	mov bufp(r0),r2		; R2: buffer pointer
+loop <	  cmp r2,inpp(r0)	; reached end?
+	  exitl eq		; yes, done
+	  movb (r2)+,r1		; ECHOC1 arg: character
+	  pcall echoc1		; type out character from command line
+	  rptl
+	  >
+	preturn
+
+
+;;; Reject last character with feep.
+
+rejbcf:	pcall feep
+
+;;; Reject last character read.
+
+rejbc:	movb #-1,newic(r0)	; forget about that last character
+	preturn			; (it's a bug if there's nothing in NEWIC
+				; now -- maybe should check?)
+
+;;; Accept last character read.
+
+accbc:	cmp getp(r0),inpp(r0)	; reparsing?
+	bne skpbc		; yes, just advance pointer
+	movb newic(r0),r1	; get character GETBC last returned
+	movb #-1,newic(r0)	; don't return it again!
+	;; fall thrrough to INSBC.
+
+;;; Insert a character into command line after last accepted character.
+;;; R1/ character.  Won't be called during reparse.
+
+insbc:	mov inpp(r0),-(sp)	; calculate how many characters are
+	sub bufp(r0),(sp)	; already in buffer
+	cmp (sp)+,#lbuf		; if number there equal to buffer size
+	bhis rejbcf		; then feep at loser because this won't fit
+	movb r1,@inpp(r0)	; store character in command line
+	inc inpp(r0)		; advance input pointer
+	pcall echoc1		; echo the character
+	;; fall through to SKPBC to keep GETP=INPP.
+skpbc:	inc getp(r0)		; advance reparse pointer (we don't want to
+	preturn			; read this character again)
+
+
+;;; Get next character for processing (either on reparse or new).
+
+getbc:	cmp getp(r0),inpp(r0)	; character in buffer to be read?
+	if ne,<			; yes
+	  movb @getp(r0),r1	; return it
+	  preturn
+	  >
+	;; no input to be reparsed.  check for input awaiting approval.
+	movb newic(r0),r1	; get character waiting for approval if any
+	if pl,<			; got such a character
+	  preturn		; return it
+	  >
+	;; nothing pending, read input from terminal.
+getbc1:	pcall getc		; get next character from source
+	bic #177600,r1		; always clear parity for commands
+	cmpb r1,cmdchr(r0)	; KLUDGE!  check for command character
+	if eq,<
+	  cmp inpp(r0),bufp(r0)	; and if first character typed
+	  beq 1$		; return it
+	  >
+	cmp r1,#40		; control character?
+	blo cntrl
+	cmp r1,#177		; rubout or meta?
+	beq rubout
+	bhi meta
+
+	;; normal character
+1$:	movb r1,newic(r0)	; store it in the 1-character buffer
+	br getbc		; now return it or a previously parsed
+				; character
+
+rubout:	;; rubout
+	cmp inpp(r0),bufp(r0)	; any characters in buffer?
+	beq getbc1		; no, ignore rubout
+	dec inpp(r0)		; remove from buffer
+	movb @inpp(r0),r1	; RUBC arg: character to rubout
+	pcall rubc		; erase character from screen
+	;; fall through to repars
+
+	;; force reparse of input
+repars:	mov bufp(r0),getp(r0)	; reread characters from beginning
+	mov ibcsp(r0),sp	; and process characters from beginning
+	push ibcpc(r0)		; by unwinding stack, and setting our return
+				; address to after INIBC call
+	br getbc1		; go process more input
+
+cntrl:	;; control character
+	asl r1			; *2 for word index
+	jmp @ctld(r1)		; dispatch on control character
+
+meta:	;; meta character
+	br ctlerr		; none implemented yet
+
+rubc:	print ^" "		; BS SP BS
+	preturn
+
+;;; Quote a character.
+quote:	pcall getc		; read the character
+	movb r1,newic(r0)	; make it the input character
+	br getbc		; return some input
+
+;;; Control character to be returned.
+ctli:	asr r1			; get back character typed
+	movb r1,newic(r0)	; store it in the 1-character buffer
+	br getbc		; now return it or a previously parsed
+				; character
+
+;;; Kill whole line.
+kill:	cmp inpp(r0),bufp(r0)
+	beq repars
+	dec inpp(r0)
+	movb @inpp(r0),r1
+	pcall rubc
+	br kill
+
+;;; Retype current line.
+redisp:	;; kludge
+	cmp inpp(r0),bufp(r0)	; as 1st character?
+	if eq,<			; yes
+	  mov #36,r1		; ECHOC arg: byte
+          pcall echoc		; kludge! clear grinell screen
+	  movb #15,newic(r0)	; kludge! make CR the input character
+	  br getbc		; return it
+	  >
+	pcall crlf
+	pcall replay
+	br getbc1
+
+;;; Error.
+ctlerr:	pcall feep		; ring bell
+	br getbc1
+
+;;; Control character dispatch table.
+ctld:	ctlerr			; ^@ NUL
+	ctlerr			; ^A
+	ctlerr			; ^B
+	ctli			; ^C
+	ctlerr			; ^D
+	ctlerr			; ^E
+	ctlerr			; ^F
+	ctlerr			; ^G BEL
+	ctlerr			; ^H BS
+	ctlerr			; ^I TAB
+	ctlerr			; ^J LF
+	ctlerr			; ^K
+	redisp			; ^L FF
+	ctli			; ^M CR
+	ctlerr			; ^N
+	ctlerr			; ^O
+	ctlerr			; ^P
+	quote			; ^Q
+	ctlerr			; ^R
+	ctlerr			; ^S
+	ctlerr			; ^T
+	kill			; ^U
+	ctlerr			; ^V
+	ctlerr			; ^W
+	ctlerr			; ^X
+	ctlerr			; ^Y
+	ctlerr			; ^Z
+	ctlerr			; ^[
+	ctlerr			; ^\
+	ctlerr			; ^]
+	kill			; ^^
+	ctlerr			; ^_
+
+;;; Convert upper-case letters to lower case to canonicalize.
+
+lcase:	bic #200,r1		; mask off parity
+	cmpb r1,#'A
+	if his,<
+	  cmpb r1,#'Z
+	  if los,<
+	    add #'a-'A,r1
+	    >
+	  >
+	preturn
+
+
+;;; Get next non-space.  Returns the non-space in R1.
+
+nonsp1:	pcall accbc		; accept the space
+nonsp:	pcall getbc		; get next character
+	cmpb r1,#40		; space?
+	beq nonsp1		; yes, try again
+	preturn
+
+
+;;; Get next character, ignoring space and handling question mark.  Call
+;;; is followed by pointer to ASCIZ string to type in response to "?" and
+;;; the address of a keyword list to type.
+
+qmark:	push r2			; save register
+loop <	  pcall nonsp		; get next character, ignoring spaces
+	  cmpb r1,#'?		; want help?
+	  exitl ne		; no, we're done
+	  pcall echoc1		; echo the "?"
+	  pcall rejbc		; but don't buffer it
+	  mov @2(sp),r2		; ECHOS arg: pointer to ASCIZ string
+	  pcall echos		; print string after call
+	  pcall crlf		; newline
+	  mov 2(sp),r2
+	  mov 2(r2),r2
+	  if ne,<
+	    push r2
+	    pcall keylst
+	    >
+	  pcall replay		; retype command line
+	  rptl			; try again
+	  >
+	pop r2			; restore register
+	add #4,(sp)		; skip ASCIZ and keyword list pointers
+	preturn
+
+
+;;; CR expected next.  Insure that we get one and echo it.
+
+crchk:	push r1			; save register
+loop <	  pcall qmark		; allow trailing spaces and give help
+	    .string ^"Confirm command with RETURN key"
+	    .word 0
+	  cmpb r1,#15		; CR?
+	  exitl eq		; yes, we're happy
+	  pcall rejbcf		; reject the character and feep
+	  rptl			; try again
+	  >
+	pop r1			; restore register
+	jcall crlf		; echo as CR LF and return
+
+
+;;; Gets an answer to a yes or no question.  Returns Equal if Yes
+
+gans:	pcall getc		; get response
+	pcall echoc		; echo it
+	pcall crlf		; newline
+	pcall lcase		; lower case
+	cmpb r1,#'?
+	if eq,<
+	  print ^"
+Y or N? "
+	  br gans
+	  >
+	cmpb r1,#'y		; confirmed?
+	preturn
+
+
+;;; Skips if R1 contains a digit.
+
+digitp:	pcall getbc		; get next character
+	cmp r1,#'0		; 0-9?
+	if his,<
+	  cmp r1,#'9
+	  if los,<
+	    sez			; yes, return EQ
+	    >
+	  >
+	preturn
+
+
+;;; Get an octal number.
+
+getoct:	pcall qmark
+	  .string ^"Octal number"
+	  .word 0
+getoc1:	pcall digitp
+	bne geterr
+getoc2:	push r2,r3
+	pcall getnum		; returns char that ended number in R1
+	cmpb r1,#40		; make sure its a space or return
+	if ne,<
+	  cmpb r1,#15
+	  bne geterr
+	  >
+	mov r2,r1
+	pop r3,r2
+	preturn
+
+
+;;; Get a decimal number.
+
+getdec:	pcall qmark
+	  .string ^"Decimal number"
+	  .word 0
+getde1:	pcall digitp
+	bne geterr
+getde2:	push r2,r3
+	pcall getnum
+	cmpb r1,#40
+	if ne,<
+	  cmpb r1,#15
+	  bne geterr
+	  >
+	mov r3,r1
+	pop r3,r2
+	preturn
+
+
+;;; Get number in octal and decimal.  Results: R2/ octal, R3/ decimal.
+;;; R1/ character that ended number.
+
+getnum:	pcall nonsp
+	clr r2
+	clr r3
+loop <	  pcall getbc
+	  pcall digitp
+	  exitl ne
+	  sub #'0,r1
+	  ash #3,r2
+	  add r1,r2
+	  mul #10.,r3
+	  add r1,r3
+	  pcall accbc
+	  rptl
+	  >
+	preturn
+
+
+;;; Come here when bad input typed in a command.
+
+geterr:	mov #1,r2		; R2: not yet feeped
+1$:	pcall getbc		; get offending character
+	cmp r1,#'?		; Space, CR, or "?"?
+	beq 3$
+	cmp r1,#40
+	beq 3$
+	cmp r1,#15
+	beq 3$
+	pcall accbc		; not one ofthe above, accept it
+	sob r2,1$		; if already feeped, that's it
+	pcall feep		; feep at loser
+	br 1$
+3$:	pcall feep
+	printcr ^"
+?Eh"
+	jmp cmdabo	
+;	pcall rejbcf		; reject it with feep
+;	jmp repars		; give user a chance to win with new typein
+
+
+;;; Read a string argument.  Returns R2/ pointer, R3/ length.
+
+getarg:	pcall qmark		; handle "?"
+	  .string ^"string argument"
+	  .word 0
+getar1:	mov getp(r0),r2		; R2: pointer to current point in command
+				; line
+	clr r3			; R3: length
+loop <	  pcall getbc		; get character
+	  cmp r1,#15		; CR?
+	  exitl eq		; yes, exit
+	  cmp r1,#40		; Space?
+	  exitl eq		; yes, also exit
+	  pcall accbc		; accept random character
+	  inc r3		; increment length
+	  rptl
+	  >
+	preturn
+
+;;; Read a keyword from a given table.  Table must be sorted.  Stack argument
+;;; is pointer to table of names.  Result is pointer into table of entry that
+;;; matched, or 0 if a null keyword (i.e. just CR) was typed.  Clobbers all
+;;; the registers.
+
+getkwd:	;; overall idea is to read characters and compare against the first
+	;; keyword in the list until a mismatch is found, at which point the
+	;; next keyword is tried, until no keywords match or the user types a
+	;; keyword terminator.
+	mov @2(sp),r4		; R4: current keyword in list being matched
+loop <	  pcall getbc		; get next character typed
+	  cmp r1,#'?		; question mark?
+	  if eq,<		; yes, list choices at this point
+	    pcall echoc1		; first echo the question mark
+	    pcall crlf		; and a CRLF
+	    pcall rejbc		; but don't leave it in the command line
+	    mov 2(sp),r1	; R1: current position in keyword list
+    loop <    print ^"  "	; indent name a little for randomness
+	      mov (r1),r2	; ECHOS arg: asciz string
+	      pcall echos	; type current keyword
+	      pcall crlf	; and CRLF
+	      pcall keytst	; next keyword match?
+	      rptl eq		; matches, go type it
+	      >
+	    pcall replay	; retype line for user to continue typing
+	    rptl		; go back for more input
+	    >
+	  cmp r1,#15		; if CR or space, then go test for uniqueness
+	  beq 1$
+	  cmp r1,#40
+	  beq 1$
+	  ;; Character typed is not Space, CR, or "?".
+	  pcall lcase		; convert upper case to lower case
+	  cmpb r1,(r4)		; compare character typed with next character
+				; of current keyword
+	  if eq,<		; equal, they still match
+	    pcall accbc		; accept the character
+	    inc r4		; increment matched pointer
+	    rptl		; and keep going
+	    >
+	  ;; character typed didn't match current keyword.
+	  blo geterr		; keywords are sorted, so if typein is less
+				; current keyword, it doesn't match anything
+	  mov 2(sp),r1		; R1: pointer to current entry in keyword list
+	  pcall keytst		; match next keyword against current one
+	  bne geterr		; no match, we lose
+	  ;; next keyword matches initial portion of previous, so try input
+	  ;; character on it.
+	  mov r1,2(sp)		; we're using next keyword now
+	  mov r3,r4		; ...
+	  rptl			; go try input again
+
+1$:	  ;; Space or CR, do completion.
+
+	  ;; Find next keyword that doesn't match this one.
+	  mov 2(sp),r1
+  loop <    pcall keytst
+	    rptl eq		; next doesn't match, so it's unique
+	    >
+	  cmp -(r1),-(r1)	; back up to last keyword that matched
+	  mov (r1),r3		; R3: pointer to untested character in last
+	  add r4,r3		; matching keyword
+	  sub @2(sp),r3		; ...
+	  pcall getbc		; R2: Space or CR
+	  mov r1,r2		; ...
+	  ;; Now complete as much as possible.
+2$:	    movb (r4)+,r1	; R1: next character of current keyword
+	    exitl eq		; if end of current keyword, accept it
+	    cmp r1,r2		; if this is a space and character typed was
+	    if eq,<		; a space
+	      pcall accbc	; accept the space
+	      rptl		; stop completing and go for more input
+	      >
+	    cmpb r1,(r3)+	; still match next keyword?
+	    if ne,<		; no
+	      dec r4		; undo advance
+	      pcall rejbcf	; reject the space or CR
+	      rptl		; stop completing and go for more input
+	      >
+	    pcall insbc		; complete the character in both keywords
+	    br 2$
+	  >
+	preturn
+
+;;; GETKWD internal subroutine.  Test next keyword against matched portion of
+;;; current one.  Z bit set if they match.
+keytst:	cmp (r1)+,(r1)+		; advance to next keyword
+	mov (r1),r3		; R3: pointer to next keyword text
+	if eq,<			; end of keyword list
+	  clz			; so no match
+	  preturn
+	  >
+	mov @4(sp),r5		; R5: pointer to text of current keyword
+	mov r4,r2		; convert pointer into current keyword
+	sub r5,r2		; to count
+	if ne,<			; if nothing typed so far then match
+				; everything (return with Z bit set), else
+				; compare next keyword with current one
+	  ;; compare initial portion of next keyword with matched portion
+	  ;; of current keyword.
+  loop <    cmpb (r3)+,(r5)+	; characters equal?
+	    exitl ne		; no, exit with Z bit clear
+	    sorl r2
+	    ;; exit loop  with Z bit set if match
+	    >
+	  >
+	preturn
+
+;;; List names in a keyword table.  Stack argument is keyword table.
+
+keylst:	push r2			; save register
+	br 1$			; start in middle of loop
+loop <	  cmp hpos(r0),#30.
+	  if hi,<
+	    pcall crlf
+1$:	    print ^"  "		; indent name a little for randomness
+	    >
+	  else <
+	    mov #30.,r2
+	    pcall tabto
+	    >
+	  mov @4(sp),r2		; ECHOS arg: asciz string
+	  pcall echos		; type current keyword
+	  add #4,4(sp)		; next table entry
+	  tst @4(sp)
+	  rptl ne
+	  >
+	pop r2,(sp)		; restore register, remove argument
+	jcall crlf
+
+
+;;; Return keyword with specified value.  Stack arguments are keyword table
+;;; and value.  Result is pointer to ASCIZ keyword name, or 0 if value not in
+;;; table.
+
+valkey:	push r2			; save register
+	mov 4(sp),r2		; R2: keyword table
+loop <	  tst (r2)+		; skip keyword name pointer and test for end
+	  exitl eq		; exit if end
+	  cmp (r2)+,6(sp)	; does value match our argument?
+	  rptl ne		; no, keep going
+	  tst -(r2)		; yes, undo autoincrement
+	  >
+	mov -(r2),6(sp)		; get keyword name pointer or the 0 that ends
+				; table
+	pop r2,(sp)		; restore register, remove extra argument slot
+	preturn
+
+.sbttl	- Command processor
+
+;;; Create a task destination for a source conncted to a keyboard.  Stack
+;;; argument is port number.
+
+kinit:	push r0			; save register
+	push #lkobj,#cp,#lkstack,#24.	; TDINIT args: object size, initial
+					; PC, stack size, queue size
+	pcall tdinit		; create task destination object
+	mov #"CP,name(r0)	; we're a CP task, not just a TD
+	mov 4(sp),r1		; R1: port number
+	mov r1,kport(r0)	; remember it
+	asl r1			; *2 for word operations
+	mov sport(r1),echoso(r0); get source object for suicide
+	mov dport(r1),echod(r0)	; get destination for echo
+	mov #177400,imask(r0)	; accept parity
+	mov #cosend,coobj+send(r0)
+	mov #cosndw,coobj+sendw(r0)
+	mov #cosnds,coobj+sends(r0)
+	mov #cobrk,coobj+break(r0)
+	mov #coforc,coobj+force(r0)
+	mov #coclos,coobj+close(r0)
+	mov #cpdesc,kusrob+udescr(r0)
+	mov #cpopnp,kusrob+uopenp(r0)
+	mov #cpunam,kusrob+uunam(r0)
+	mov #cpidle,kusrob+uidle(r0)
+	mov #cpkill,kusrob+usrdie(r0)
+	mov r0,r1		; LINK arg: R1 = destination object (us)
+	mov echoso(r0),r0	; R0: source object
+	pcall @link(r0)		; link source to this task
+	pop r0,(sp)		; restore register, remove our argument
+	preturn
+
+.sbttl  --- User Routines for CP
+
+;;; CPDESC - called with R3 pointing to user object, returns asciz string
+;;; describing location, port # on stack in that order.
+cpdesc:	push (sp),(sp),r0	; space for return values & a scratch reg
+	mov kport-kusrob(r3),r0	; R0: port number
+	mov r0,4+2(sp)		; port # return argument
+	asl r0			; make port 3 into index
+	mov desctb(r0),2+2(sp)	; get description of this port
+	pop r0			; restore regs
+	preturn
+
+;;; CPOPNP - return # of port we have open.
+cpopnp:	push (sp)		; get space for return arg
+	mov kdstn-kusrob(r3),2(sp)	; get port # of destination
+	tst kdst-kusrob(r3)	; is there a port open?
+	if eq,<
+	  sec
+	  >
+	preturn
+
+;;; CPUNAM - return Uname of user, if any
+cpunam:	push (sp)		; get space for return arg
+	mov #kuser-kusrob,2(sp)	; return pointer to user name
+	add r3,2(sp)		; ...
+	preturn
+
+;;; CPIDLE - return idle time.
+cpidle:	push (sp),(sp)		; make room for return value
+	call uptime		; get system up time in doubleword 60ths
+	sub tdinpt+0-kusrobj(r3),(sp)
+	mov (sp)+,2+2(sp)
+	sbc (sp)
+	sub tdinpt+2-kusrobj(r3),(sp)
+	mov (sp)+,4(sp)
+	preturn
+
+;;; CPKILL - kill a user object.  The permanent ones don't really go away
+;;; of course, they just go to listening for command char state.
+cpkill:	push r1			; need a reg
+	mov tdtcb+tsp-kusrob(r3),r1	; R1: stack pointer
+	mov #logo1,spc(r1)	; set it to execute at LOGO1 on next wakeup
+	wake.l r3,tdtcb-kusrob	; wake the guy so he'll remember to die
+	pop r1			; restore reg
+	preturn
+
+.sbttl	--- Output subroutines
+
+sendc:	push r0			; save register
+	mov kdst(r0),r0		; R0: destination object
+	if ne,<			; if there is one
+	  pcall @sendw(r0)	; call destination at SENDW entrypoint to
+	  >			;  output character in R1
+	pop r0			; restore register
+	preturn
+
+
+sforc:	push r0			; save register
+	mov kdst(r0),r0		; R0: destination object
+	if ne,<			; if there is one
+	  pcall @force(r0)	; call destination at FORCE entrypoint
+	  >
+	pop r0			; restore register
+	preturn
+
+.sbttl	--- Command dispatching
+
+
+passwd:	.ascii "spolf"<15>
+	.even
+
+;;; Keyboard input handler.
+
+cprein:	mov ctask,r0		; get pointer to ourself
+	sub #tdtcb,r0		; ...
+.iif ne asmmap,	mov #p6dmap,@#kipar6	; reset map to default
+	preturn
+
+cp:	pcall cprein		; get pointer to ourself
+	mov #cpclos,close(r0)
+	cmp kport(r0),fnetp	; telnet server?
+	if his,<		; yes
+.string ^"Login: ",%%login
+	  mov #%%login,r2	; INIBC arg: R2/ prompt string
+	  pcall inibc		; init reader
+  loop <    pcall getbc		; get character
+	    cmp r1,#15		; CR?
+	    exitl eq		; no, keep going
+	    pcall accbc
+	    rptl
+	    >
+	  pcall crlf		; echo CR
+	  clrb @getp(r0)	; terminate with NUL in line buffer
+	  ;; copy to user name
+	  mov r0,r1		; R1: incrementing pointer
+	  mov #luser+1,r2	; R2: count
+  loop <    movb buf(r1),kuser(r1)
+	    inc r1
+	    sorl r2
+	    >
+	  mov #5.,r3		; R3: password fail count
+  loop <    print ^"Password: "	; prompt
+	    mov #passwd,r2	; R2: pointer to password string
+	    clr r4		; R4: nonzero if password match
+    loop <    pcall getc	; get character
+	      bic #177600,r1	; clear parity
+	      cmpb r1,(r2)+	; compare against password
+	      if ne,<		; mismatch
+		inc r4		; remember it
+	        >
+	      cmpb r1,#15	; CR?
+	      rptl ne
+	      >
+	    tst r4		; did he win?
+	    beq cp2		; yes
+	    sorl r3		; no
+	    >
+	  jmp logo1		; password hacker, close the connection
+	  >
+.if ne asmled
+	pcall edinit		; initialize the line editor
+.endc
+	print ^"
+Switch in operation"
+	tst timsts		; time set?
+	if ne,<			; yes
+	  pcall time		; get it in binary
+	  pcall cvbtd		; convert to long form
+	  pcall prtim1		; print it
+	  add #16,sp		; remove it from stack
+	  >
+	printcr ^"."
+
+;;; Come here to reinitialize the command processor.
+cp1:	pcall cprein		; get pointer to ourself
+	mov tdtcb+tstack(r0),r1	; reset stack pointer to top of stack
+	add #lkstack+lskovr,r1	; (calculate in R1 to avoid
+	mov r1,sp		; interrupt lossage)
+
+	;; reinitailze queue pointers
+	mov qep(r0),r1
+	sub qsize(r0),r1
+	mov r1,qfp(r0)
+	mov r1,qrp(r0)
+
+	clrb kuser(r0)		; no user name yet
+
+	jsr r5,echosc		; print the Type "\" for service string,
+	  .litrl %greet		; for whatever value of "\"
+	;; wait for a "\" to be typed.
+	mov #177400,imask(r0)	; set mask to not clear parity
+loop <	  pcall getc		; read character from terminal
+	  cmp r1,#icmdchr	; "\"?
+	  exitl eq		; yes
+	  cmp r1,#icmdchr+200	; "\" with odd parity?
+	  rptl ne		; no, keep waiting
+	  mov #177600,imask(r0)	; odd parity, set mask to clear it
+	  >
+
+cp2:	mov kport(r0),r2	; get our port #
+	asl r2			; make into index
+	add #kusrob,r0		; make into ptr to our user object
+	mov r0,wtab(r2)		; mark us as in use
+	mov r0,btab(r2)
+	sub #kusrob,r0		; restore r0
+	clr kdst(r0)		; no connection
+	clr ksrc(r0)		; ...
+	movb #icmdchr,cmdchr(r0)	; "\" is initial connection escape
+	movb #icmdchr,cmdchr+1(r0)	; ...
+	pcall vercm1		; give greeting
+
+.litrl ^|
+	%sname
+	.asciz "> "		; ^] for DM and WAITS braindamage
+|,%prmstr
+loop <	  mov #%prmstr,r2	; INIBC arg: prompt string
+	  pcall inibc		; start reading/parsing a new command
+	  ;; check for command character as first character typed.
+	  pcall getbc		; a kludge in GETBC makes this win
+				; without quoting
+	  cmpb r1,cmdchr(r0)	; got command character then?
+	  if eq,<		; yes
+	    pcall conchk	; insure open connection
+	    clr costop(r0)	; restore output
+	    movb cmdchr(r0),r1	; restore command character
+	    br cmdsnd
+	    >
+	  pcall qmark		; handle "?"
+	    .string ^"Command name.  One of"
+	    .word cmdlst
+	  cmp r1,#15		; CR?
+	  if eq,<		; yes, null command line
+	    pcall crlf		; echo to CR as CR LF
+	    >
+	  else <
+	    push #cmdlst	; GETKWD arg: pointer to keyword list
+	    pcall getkwd	; read a command name
+	    pop r2		; GETKWD result: pointer into keyword list of
+				; match
+	    pcall @2(r2)	; call command
+	    >			; 
+cmdend:	  ;; command executed.  either resume connection or execute another
+	  ;; command.
+	  tst kdst(r0)		; connection open?
+	  rptl eq		; no, get another command
+	  ;; connection established.  copy input to destination with command
+	  ;; character check.
+	  clr costop(r0)	; restore output
+  loop <    pcall getc		; read keyboard input
+				; GETC result: R1/ character
+	    cmpb r1,cmdchr(r0)	; command character?
+	    if eq,<		; yes
+	      cmpb cmdchr+1(r0),cmdchr(r0)	; two character sequence?
+	      exitl eq		; no, go to command processor
+	      pcall getc	; yes, get second character
+	      cmpb r1,cmdchr+1(r0)	; second command character?
+	      exitl eq		; yes, go to command processor
+	      >
+cmdsnd:	    ;; send the character.
+
+.if ne asmled
+	    cmp kport(r0),fnetp	; telnet server?
+	    if lo,<		; no, we don't allow line editor for telser
+	      tstb linedf(r0)	; are we using the line editor?
+	      if ne,<
+	        pcall edgetl	; returns when command character typed
+		rptl
+		>
+	      >
+.endc
+	    push r1		; save character across sendc
+	    pcall sendc		; output character to destination
+	    pop r1		; restore character
+	    tstb echof(r0)	; local echo?
+	    if ne,<		; yes
+	      push r1		; save character
+	      pcall echoc	; yes, echo character as well
+	      cmp (sp)+,#15	; CR?
+	      if eq,<		; yes
+		mov #12,r1
+		pcall echoc	; echo LF too
+		>
+	      >
+	    pcall numq		; get number of characters in input buffer
+	    rptl ne		; if there are some, don't send packet
+	    pcall sforc		; if nothing else, force output
+	    rptl
+	    >
+	  inc costop(r0)	; hold/discard output from connection
+	  rptl			; back to command processing
+	  >
+
+
+cmdabo: pcall cprein		; set R0 and default map
+	mov tdtcb+tstack(r0),r1	; reset stack pointer to top of stack
+	add #lkstack+lskovr,r1	; (calculate in R1 to avoid
+	mov r1,sp		; interrupt lossage)
+	br cmdend
+
+
+cmdlst:	key ^"add",addcmd
+	key ^"bpt",bptcmd
+	key ^"break",brkcmd
+	key ^"broadcast",brdcmd
+;	key ^"connect",conn
+	key ^"close",disc
+	key ^"deposit",dpscmd
+.iif df vadicd,	key ^"dial",dial
+;	key ^"disconnect",disc
+	key ^"echo",echcmd
+.iif df ethcnt,	key ^"ether",ethcmd
+	key ^"examine",excmd
+.iif ne chaos, .iif ne asmarp, key ^"finger",finger
+.iif eq coast-west,	key ^"gdp boot",sboot
+	key ^"help",help
+	key ^"image echo",imgech
+	key ^"image send",imgsnd
+	key ^"kill",logoc
+.iif ne chaos,	key ^"list chaos",lstcon
+	key ^"list ports",lstpor
+	key ^"login",login
+;	key ^"logout",logoc
+.if ne  chaos
+	key ^"network connect",netcon
+	key ^"network open",netocm
+	key ^"network print",netpri
+.endc
+	key ^"open",conn
+.iif ne chaos,	key ^"password",pascmd
+	key ^"quit",logoc
+	key ^"send",sndcmd
+	key ^"set",setcmd
+	key ^"shutdown",shutd
+	key ^"statistics",stats
+	key ^"storage-map",fsmdmp
+.iif ne chaos, .iif ne asmarp, 	key ^"telnet",telnet
+	key ^"time",timcmd
+	key ^"uptime",upcmd
+	key ^"version",vercmd
+	key ^"who",whocmd
+	.word 0
+
+.sbttl	--- Connection output
+
+
+cosend:	tst costop-coobj(r0)
+	if eq,<
+	  mov echod-coobj(r0),r0
+	  jcall @send(r0)
+	  >
+	preturn
+
+cosndw:	tst costop-coobj(r0)
+	if eq,<
+	  mov echod-coobj(r0),r0
+	  jcall @sendw(r0)
+	  >
+	cocall
+	br cosndw
+
+cosnds:	tst costop-coobj(r0)
+	if eq,<
+	  mov echod-coobj(r0),r0
+	  jcall @sends(r0)
+	  >
+	cocall
+	br cosnds
+
+coclos:	wake.l r0,tdtcb-coobj	; make sure it runs to kill it
+	mov tdtcb+tsp-coobj(r0),r1	; R1: stack pointer
+	mov #coclo1,spc(r1)	; set it to execute at COCLO1 on next wakeup
+	preturn
+
+coclo1:	pcall cprein		; recompute R0 since COCLOS got us here
+				; by a gross goto
+	;; don't try to call source to link to nulldo, since it has
+	;; killed itself already (it called our CLOSE entrypoint).
+	pcall crlf
+	pcall disc2
+	jmp cmdabo
+
+cobrk:	tst costop-coobj(r0)
+	if eq,<
+	  mov echod-coobj(r0),r0
+	  jcall @break(r0)
+	  >
+	preturn
+
+coforc:	tst costop-coobj(r0)
+	if eq,<
+	  mov echod-coobj(r0),r0
+	  jcall @force(r0)
+	  >
+	preturn
+
+.sbttl	--- Commands
+
+
+;;; Subroutine to insure a connection exists.  If not, the subroutine
+;;; throws back to command dispatching loop.
+
+conchk:	tst kdst(r0)
+	if eq,<
+	  printcr ^"No connection open."
+	  jmp cmdabo
+	  >
+	preturn
+
+
+nocchk:	tst kdst(r0)
+	if ne,<
+ 	  printcr ^"You must close your existing connection."
+	  jmp cmdabo
+	  >
+	preturn
+
+
+bptchk:	cmp echod(r0),dport+0	; on console (echoing going to port 0)?
+	if ne,<			; no
+	  printcr ^"Restricted to console terminal."
+	  jmp cmdabo
+	  >
+	preturn
+
+;;; HELP command.  Print canned message.
+
+help:	pcall crchk		; wait for confirmation
+	printcr ^|This is the LLL O-group terminal switch.  Only enough of a
+command name to uniquely identify it need be typed; the rest of
+the command name will be completed automatically.  Type the RETURN
+key at the end of all commands.  Control-U deletes a command line.
+
+Two important commands are named "open" and "close".  open <name>
+will open a connection to the computer designated by <name>.  To
+close a connection, first return to the switch command processor
+by typing "\" and then give the close command.
+
+Typing "?" at any point while typing a command will explain what
+is expected next.  Thus a "?" as the first thing typed will list
+all the command names, and "open ?" will list the names of
+destinations (the list ports command will give a slightly different
+sort of list).|
+	preturn
+
+
+;;; BPT command.  Execute a BPT to get to RUG.
+
+bptcmd:	pcall crchk		; wait for confirmation
+	pcall bptchk		; check for console terminal
+	spl 7
+	bpt			; get to RUG
+	spl 0
+	jcall crlf		; print CRLF and then return
+
+
+;;; BREAK command.  Send a break on the connection.
+
+brkcmd:	pcall crchk		; wait for confirmation
+	pcall conchk		; insure connection open
+	push r0			; save ourself
+	mov kdst(r0),r0		; call our destination at its break entrypoint
+	pcall @break(r0)	; ...
+	pop r0			; restore ourself
+	preturn
+
+
+;;; SET command.
+
+setcmd:	call nonsp		; skip spaces
+	push #setkwd		; GETKWD arg: keyword table
+	pcall getkwd		; find out what to set
+	pop r2			; GETKWD result: entry in keyword table matched
+	jcall @2(r2)		; goto routine
+
+setkwd:	key  ^"command-character",setchr
+.lif ne asmxon
+	key ^"flow-control",xoncmd
+.lif ne asmled
+	key ^"line-editor",setlnd
+.lif ne  chaos
+	key ^"monitor-negotiation",moncmd
+	key ^"parity",parity
+	key ^"system-message",setmsg
+	key ^"time",settim
+	key ^"zone",setzon
+	.word 0
+
+;;; SET COMMAND CHARACTER command.  May need to used Control-Q to get
+;;; character past line editor...
+
+setc1:	pcall rejbcf		; feep at CR
+setchr:	pcall imgchp		; handle "?"
+	cmp r1,#15		; CR (no argument at all)?
+	beq setc1		; yes, feep
+	pcall imgchr
+	push r1
+	pcall imgchp
+	cmp r1,#15
+	if ne,<
+	  pcall imgchr
+	  >
+	pcall crchk		; wait for confirmation
+	pop r2
+	movb r2,cmdchr(r0)	; set command character
+	cmp r1,#15
+	if eq,<
+	  movb r2,cmdchr+1(r0)
+	  >
+	else <
+	  movb r1,cmdchr+1(r0)
+	  >
+	preturn
+
+.if ne asmled
+;;; SET LINE EDITOR comand.  Force the line editor on or off
+setlnd:	movb linedf(r0),-(sp)
+	pcall onoff		; get an on or an off
+	pcall crchk		; wait for confirmation
+	movb (sp)+,linedf(r0)
+	preturn
+.endc
+
+;;; EXAMINE and DEPOSIT commands
+
+excmd:	pcall getoct		; get the address
+	pcall crchk
+	pcall nxmcat
+	  prnxm
+	bic #1,r1
+	mov (r1),r2
+	pcall nxmclr
+	pcall echouo		; print the number in octal
+	jcall crlf
+	
+prnxm:	printcr ^" --NXM"
+	preturn
+
+dpscmd:	pcall getoct		; get the address
+	mov r1,r3
+	pcall getoct		; get the value
+	pcall crchk
+	pcall nxmcat
+	  prnxm
+	bic #1,r3
+	mov r1,(r3)		; do the deposit
+	jcall nxmclr
+
+;;; ADD command.
+addcmd:	pcall nonsp
+	push #addlst
+	pcall getkwd
+	pop r1
+	jmp @2(r1)
+
+addlst:	key ^"command-processor",addcp
+	key ^"dl",adddl
+	.word 0
+
+.if ne ndl
+;;; ADD DL command.
+adddl:	pcall qmark
+	  .string ^"Port number"
+	  .word 0
+	pcall getde1
+	cmp r1,#nhport-1
+	if hi,<
+	  printcr ^"?Port number too large."
+1$:	  pcall rejbcf		; feep
+	  pcall replay		; retype command line
+	  jmp repars		; give user a chance to correct
+	  >
+	asl r1
+	tst sport(r1)
+	if ne,<
+	  printcr ^"Port already exists."
+	  br 1$
+	  >
+	add #sport,r1
+	mov r1,nexts
+	add #dport-sport,r1
+	mov r1,nextd
+	pcall qmark
+	  .string ^"CSR address"
+	  .word 0
+	pcall getoc1
+	bit #7,r1
+	bne 2$
+	cmp r1,#160000
+	if lo,<
+2$:	  printcr ^"Bad device address"
+	  br 1$
+	  >
+	push #0,r1
+	pcall qmark
+	  .string ^"Interrupt vector"
+	  .word 0
+	pcall getoc1
+	bit #7,r1
+	bne 3$
+	cmp r1,#1000
+	if his,<
+3$:	  printcr ^"Bad vector address"
+	  br 1$
+	  >
+	mov r1,2(sp)
+	pcall qmark
+	  .string ^"Queue size"
+	  .word 0
+	pcall getde1
+	push r1
+	pcall crchk
+	mov sp,r5		; DLINIT arg: R5 = pointer to vector,
+				; address, queue size
+	pcall dlinit
+	add #6,sp
+	preturn
+.endc	; ne ndl
+
+;;; ADD COMMAND-PROCESSOR command.
+addcp:	pcall getpor		; R1/ port number, R2/ port number * 2
+	pcall norot		; no rotaries!
+	pcall crchk		; wait for confirmation
+	tst btab(r2)
+	if ne,<
+	  printcr ^"Port in use."
+	  jmp cmdabo
+	  >
+	push r1			; KINIT arg: port number
+	pcall kinit		; create command processor on port
+	preturn
+
+
+;;; IMAGE ECHO and IMAGE SEND commands.
+
+imgech:	push echod(r0)		; IMGO arg: destination object to send to
+	br imgo
+
+imgsnd:	push kdst(r0)		; IMGO arg: destination object to send to
+
+imgo:	mov r0,r5
+	add #scrtch,r5
+	mov r5,r4
+	add #lscrtch,r4
+loop <	  pcall imgchp		; handle qmark
+	  cmp r1,#15		; CR?
+	  exitl eq		; yes, done
+	  cmp r1,#';		; hack to terminate an image send without
+	  beq 1$		; echoing a return
+	  cmp r4,r5		; see if there's more room in scratch 
+	  if los,<		; no!
+	    pcall feep		; inform user
+	    rptl		; but give him a chance to rubout
+	    >
+	  pcall imgchr
+	  movb r1,(r5)+
+	  rptl
+	  >
+	pcall crchk
+1$:	cmp (sp),kdst(r0)
+	if eq,<
+	  pcall conchk
+	  >
+	sub #lscrtch,r4		; pointer back to beginning of scratch
+	sub r4,r5		; compute # of chars in scratch
+	if ne,<			; if there were any,
+	  push r0		; send or echo them..
+	  mov 2(sp),r0
+  loop <    movb (r4)+,r1
+	    pcall @sendw(r0)
+	    sorl r5
+	    >
+	  pop r0
+	  >
+	pop *
+	preturn
+
+
+imgchp:	pcall qmark
+	  .string ^"Octal number or character"
+	  .word 0
+	preturn
+
+imgchr:	pcall digitp		; is it a digit?
+	if ne,<			; no
+	  cmpb r1,#''		; literal lead in?
+	  if eq,<		; yes
+	    pcall accbc		; accept the '
+	    pcall getbc		; read one more char
+	    >
+	  jcall accbc		; accept it
+	  >
+	pcall getnum		; octal number in R2, decimal in R3
+	cmpb r1,#'.		; did it end in "."
+	if eq,<			; yes,
+	  movb r3,r1		; make it decimal
+	  jcall accbc		; accept the "."
+	  >
+	movb r2,r1		; make it octal
+	preturn
+
+
+;;; Read a port name or number.  Returns R1/ number, R2/ number*2.
+
+getpor:	pcall qmark		; handle "?"
+	  .string ^"Port number or"
+	  .word pnames
+getpo1:	pcall digitp		; next character a digit?
+	if eq,<			; yes
+	  pcall getde2		; get a decimal port number
+	  cmp r1,#nhport-1
+	  if hi,<
+	    pcall rejbcf	; feep
+	    printcr ^"?Port number too large."
+	    pcall replay	; retype command line
+	    jmp repars		; give user a chance to correct
+	    >
+	  >
+	else <			; not a digit
+	  push #pnames		; GETKWD arg: keyword table
+	  pcall getkwd		; read a port name with completion
+	  pop r1		; GETKWD result: pointer into keyword table
+	  mov 2(r1),r1		; get port number stored after name
+	  cmp r1,#1000		; pointer into program?
+	  bhis 1$		; yes, a rotary definition; just return it
+	  >
+	mov r1,r2
+	asl r2
+	tst dport(r2)
+	if eq,<
+	  pcall rejbcf		; feep
+	  printcr ^"?Port not operative."
+	  pcall replay
+	  jmp repars
+	  >
+1$:	preturn
+
+
+;;; Decode a rotary specification.
+;;; Return port # in R1, and port # * 2 in R2.
+rotary:	push r3,r4		; save registers
+	cmp r1,#1000		; program address?
+	blo 2$			; no, it's a simple port number
+	cmp (r1)+,#"RO		; rotary?
+	bne 4$			; no, return with error
+	push r0			; save ourself
+	mov r1,r3		; R3: rotary definition block
+	mov (r3),r2		; R2: first port number tried
+loop <	  mov (r3),r4		; R4: port number to try
+	  inc (r3)		; move to next port number
+	  cmp (r3),4(r3)	; greater than highest port in rotary?
+	  if hi,<		; yes
+	    mov 2(r3),(r3)	; wrap to first port in rotary
+	    >
+	  mov r4,r0		; R0: source object for next port number to try
+	  asl r0		; ...
+	  mov sport(r0),r0	; ...
+	  beq 1$		; skip non-operative ports
+	  pcall @status(r0)	; see what it's linked to
+	  cmp r1,#nulldo	; null destination object?
+	  exitl eq		; yes, we've found one
+1$:	  cmp (r3),r2		; gone all the way around and back to where
+				; we started?
+	  rptl ne		; no, keep going
+	  pop r0		; yes, restore ourself
+4$:	  sec			; indicate error
+	  br 3$
+	  >
+	pop r0			; restore ourself
+	mov r4,r1		; return R1: port number
+	mov r1,r2		; return R2: port number * 2
+	asl r2			; ...
+2$:	clc			; indicate success
+3$:	pop r4,r3		; restore registers
+	preturn
+
+
+;;; Give error if rotary specified.
+
+norot:	cmp r1,#1000		; program address?
+	if his,<		; yes, it's a rotary specification
+	  printcr ^"Rotary not allowed."
+	  jmp cmdabo
+	  >
+	preturn
+
+;;; CONNECT command.
+
+conn:	pcall getpor		; get port number in R1
+	pcall crchk		; wait for confirmation
+	pcall nocchk		; insure no connection open
+.if ne chaos
+	cmp r1,#1000
+	if hi,<
+	  cmp (r1),#"CO
+	  if eq,<
+	    tst (r1)+
+	    push (r1)+,(r1)+	; NETOPN args: host number, contact string
+	    pcall netopn
+	    clr kdstn(r0)
+	    jmp netcom
+	    >
+	  cmp (r1),#"NO
+	  if eq,<
+	    tst (r1)+		; skip type
+	    push (r1)+		; NETOC1 arg: host number
+	    mov (r1)+,r5	; NETOC1 arg: port name
+	    jmp netoc1
+	    >
+	  cmp (r1),#"TL		; telnet type connect?
+	  if eq,<
+	     tst (r1)+
+	     push (r1)		; get host number
+	    jmp chtel		; chaos telnet
+	    >
+	  >
+.endc
+	pcall rotary		; decode rotary if that's what we've got
+				; returns selected port in R1, & R2=port*2
+	if cs,<			; it was a rotary, but a full one
+	  printcr ^"All lines in use"
+	  jmp cmdabo
+	  >
+	;; check out connect request
+	push r1			; port #
+	pcall portav		; see if the port he wants is available
+	if cs,<			; its not,
+	  tst (sp)+		; check error code
+	  if eq,<		; if zero, port in use return
+	    print ^"Port in use: "
+	    pcall whohed
+	    mov #13.,r2
+	    pcall tabto
+	    push r1		; do a who on owner of the line
+	    pcall whohas	; ...
+	    pcall crlf
+	    preturn
+	    >
+	  else <
+	    printcr ^"Port not operative"
+	    preturn
+	    >
+	  >
+	;; establish connection
+1$:	mov r0,btab(r2)		; fill in back pointer table
+	add #kusrob,btab(r2)	; make it pointer to user object
+	mov r0,r3		; save ourself
+	mov sport(r2),r0	; find out what the port we want to link
+	pcall @status(r0)	; to is sending to
+	mov r1,koldd(r3)	; save old link
+;;; Next two lines should be unnecessary, as we now do this in command loop.
+	mov r3,r1		; LINK arg: destination object
+	add #coobj,r1		; ...
+	pcall @link(r0)		; call specified port's source object to
+				; route data to our echo destination object
+	mov r3,r0		; restore ourself
+	mov r2,kdstn(r0)	; remember port number we're connected to * 2
+	mov sport(r2),ksrc(r0)	; remember source and destination objects
+	mov dport(r2),kdst(r0)	;  for port
+.if ne asmxon
+	tstb xonflg(r0)
+	if ne,<
+	  pcall xonon
+	  >
+.endc
+	clrb echof(r0)		; initially remote echo
+.if ne asmled
+	clrb linedf(r0)		; and no line editor
+.endc
+	;; inform user
+	print ^"Connection to "
+	mov desctb(r2),r2	; ECHOS arg: ASCIZ string pointer
+	pcall echos		; print port description
+	printcr ^" now open."
+	preturn
+
+constr:	.asciz "CONNECT"
+	.even
+
+;;; DISCONNECT command.
+
+disc:	pcall crchk		; wait for confirmation
+	pcall conchk		; insure connection open
+disc1:	;; disconnect
+.if ne asmxon
+	tstb xonflg(r0)
+	if ne,<
+	  pcall xonoff
+	  >
+.endc
+	push r0			; save register
+	mov koldd(r0),r1	; LINK arg: destination object
+	mov ksrc(r0),r0
+	pcall @link(r0)		; restore destination of linked port to what
+				; it used to be (either the null object or an
+				; idle task)
+	pop r0			; restore register
+disc2:	push r0			; save register
+	mov kdst(r0),r0
+	pcall @close(r0)
+	pop r0			; restore register
+	clr ksrc(r0)
+	clr kdst(r0)
+	mov kdstn(r0),r2	; R2: destination port * 2 or asciz pointer
+	;; inform user
+	cmp r2,#1000		; port number?
+	if lo,<			; yes
+	  clr btab(r2)		; clear back pointer
+	  mov desctb(r2),r2	; ECHOS arg: asciz pointer
+	  pcall echos		; type port location
+	  >
+	else <			; program address -- contact name from TELNET
+	  push #darea,r2	; FREE args: area, pointer
+	  pcall echos		; print string
+	  pcall free		; and then free
+	  >
+	printcr ^" closed"
+	preturn
+
+.if df vadicd
+
+dial:	call qmark		; handle "?"
+	  .string ^"Modem number"
+	  .word 0
+	call getde1		; get modem number
+	mov r1,r4		; R4: modem number
+	call qmark		; handle "?"
+	  .string ^"Phone number"
+	  .word 0
+1$:	call getar1		; R2: pointer, R3: length
+	tst r3			; must have some number
+	if eq,<			; no
+	  pcall rejbcf		; reject the CR
+	  br 1$			; and try again
+	  >
+	call crchk		; wait for confirmation
+	mov #1,r1		; ADSEND arg: character
+	pcall adsend		; send SOH (^A) to abort (i.e. reset)
+.if ne 0
+	pcall adwait		; wait for reply
+	cmpb r1,#'B		; B?
+	if ne,<			; no
+	  printcr ^"Unexpected reply to initialization"
+	  jmp cmdabo
+	  >
+.endc
+	push #30.		; need about .5 second after reset
+	call sleep		; ...
+	mov #2,r1		; ADSEND arg: character
+	call adsend		; send STX (^B) to start request
+	mov #'4,r1		; ADSEND arg: character
+	call adsend		; 103-type modem, chassis 0
+	mov r4,r1		; ADSEND arg: character
+	add #'0,r1		; ...
+	call adsend		; modem number in chassis
+	
+	;; send rest of command line to autodialer.  In the phone number, "="
+	;; waits for another dial tone, and ">" passes control to the modem
+	;; before the call completes.
+loop <	  movb (r2)+,r1		; R1: next character from command line
+	  exitl eq		; NUL terminates line
+	  call adsend		; output to autodialer
+	  sorl r3
+	  >
+	mov #17,r1		; SI (^O) completes phone number
+	call adsend		; ...
+	mov #3,r1		; ETX (^C) dials it
+	call adsend		; ...
+
+.if ne 0
+	call adwait		; then wait for something
+	call adrepl		; decode reply
+.endc
+
+	preturn
+
+adsend:	push r0
+	mov dport+<vadicd*2>,r0	; R0: dialer destination object
+	if eq,<
+	  printcr ^"Dialer not operative"
+	  jmp cmdabo
+	  >
+	call @sendw(r0)
+	pop r0
+	preturn
+
+.endc	; df vadicd
+
+togmsg:	.asciz "RETURN to toggle or one of"
+	.even
+
+;;; ECHO command.
+
+echcmd:	pcall qmark		; handle "?"
+	  .word togmsg
+	  .word echkwd
+	cmp r1,#15		; CR?
+	if eq,<			; yes, no argument
+	  pcall crlf		; echo CR as CR LF
+	  comb echof(r0)	; toggle echoing
+	  if eq,<		; now off
+	    printcr ^"Remote echo."
+	    >
+	  else <		; now on
+	    printcr ^"Local echo."
+	    >
+	  >
+	else <			; argument present
+	  push #echkwd		; GETKWD arg: keyword table
+	  pcall getkwd		; get name of an echo method
+	  pop r2		; GETKWD result: pointer to matched entry
+	  pcall crchk		; wait for confirmation
+	  movb 2(r2),echof(r0)	; set echo flag to value in matched entry
+	  >
+	preturn
+
+echkwd:	key ^"local",-1
+	key ^"remote",0
+	.word 0
+
+
+;;; PARITY command.
+
+parity:	pcall qmark		; handle "?"
+	  .word togmsg
+	  .word parkwd
+	cmp r1,#15		; argument typed?
+	if eq,<			; no
+	  pcall crlf		; echo CR as CR LF
+	  mov #200,r2		; toggle parity bit in input mask
+	  xor r2,imask(r0)	; ...
+	  tstb imask(r0)	; and see what it is now
+	  if pl,<
+	    printcr ^"Parity transmitted."
+	    >
+	  else <
+	    printcr ^"Parity cleared."
+	    >
+	  >
+	else <			; argument present
+	  push #parkwd		; GETKWD arg: keyword table
+	  pcall getkwd		; get parity keyword
+	  pop r2		; GETKWD result: pointer to matched entry
+	  pcall crchk		; wait for confirmation
+	  mov 2(r2),imask(r0)	; set mask
+	  >
+	preturn
+
+parkwd:	key ^"cleared",177600
+	key ^"transmitted",177400
+	.word 0
+
+
+;;; Subroutine to read ON/OFF.  Stack argument/result is on-off-ness.
+
+onoff:	pcall qmark		; handle "?"
+	  .word togmsg
+	  .word onokwd
+	cmp r1,#15		; argument typed?
+	if eq,<			; no
+	  pcall crlf		; echo CR as CR LF
+	  comb 2(sp)
+	  if eq,<
+	    print ^"off"
+	    >
+	  else <
+	    print ^"on"
+	    >
+	  >
+	else <			; argument present
+	  push #onokwd		; GETKWD arg: keyword table
+	  pcall getkwd		; get parity keyword
+	  pop r2		; GETKWD result: pointer to matched entry
+	  mov 2(r2),2(sp)
+	  >
+	preturn
+
+onokwd:	key ^"off",0
+	key ^"on",177777
+	.word 0
+
+
+.if ne  asmxon
+;;; XON-XOFF command.
+
+xoncmd:	movb xonflg(r0),-(sp)
+	pcall onoff
+	pcall crchk
+	cmpb (sp)+,xonflg(r0)
+	beq 1$			; unchanged, ignore command
+	comb xonflg(r0)
+	if eq,<			; on to off
+	  tst ksrc(r0)
+	  if ne,<
+	    pcall xonoff
+	    >
+	  >
+	else <			; off to on
+	  tst ksrc(r0)
+	  if ne,<
+	    pcall xonon
+	    >
+	  >
+1$:	preturn
+
+xonon:	push ksrc(r0),kdst(r0),#512.
+	pcall xoinit
+	pop ksrc(r0)
+	preturn
+
+xonoff:	mov ksrc(r0),r1
+	mov xoxmts-xosrc(r1),ksrc(r0)
+	push r0,r1		; save registers
+	mov r0,r1
+	add #coobj,r1
+	mov ksrc(r0),r0
+	pcall @link(r0)
+	pop r1,r0		; restore registers
+	add #tdtcb-xosrc,r1
+	mov tsp(r1),r2
+	mov #xokill,spc(r2)
+	wake.l r1
+	preturn
+.endc
+
+
+.if ne  chaos
+;;; MONITOR-NEGOTIATIONS command.
+
+moncmd:	movb tnnegm(r0),-(sp)
+	pcall onoff
+	pcall crchk		; wait for confirmation
+	movb (sp)+,tnnegm(r0)	; toggle negotiation printing
+	preturn
+
+
+;;; PASSWORD command.
+
+pascmd:	pcall conchk		; must be connection open to send to
+	pcall nonsp		; get first nonspace
+loop <	  push r1		; SENDC arg: char to be sent
+	  pcall sendc		; send each char out as typed
+	  cmpb (sp)+,#15	; done?
+	  exitl eq
+	  pcall getc
+	  rptl
+	  >
+	pcall crlf		; send and echo the CRLF
+	jcall sforc		; force all the characters out
+
+.endc
+
+;;; LIST PORTS command.
+
+lstpor:	pcall crchk		; wait for confirmation
+	print ^"No. Connect name  Location              No. Connect name  Location"
+	mov #desctb,r4
+	clr r5
+loop <	  cmp hpos(r0),#40.
+	  if hi,<
+	    pcall crlf
+	    >
+	  else <
+	    mov #40.,r2
+	    pcall tabto
+	    >
+	  mov #2,r1
+	  mov r5,r2
+	  pcall espdec
+	  push r5,#pnames
+	  pcall valkey
+	  pop r2
+	  if ne,<
+	    print ^"  "
+	    pcall echos
+	    >
+	  tst (r4)+
+	  if ne,<
+	    mov #16.,r2
+	    cmp hpos(r0),#40.
+	    if hi,<
+	      add #40.,r2
+	      >
+	    pcall tabto
+	    mov -2(r4),r2
+	    pcall echos
+	    >
+	  inc r5
+	  cmp r5,fnetp		; don't list beyond initial port #
+	  rptl lo
+	  >
+	jcall crlf
+
+;;; LOGIN command.
+
+login:	pcall qmark
+	  .string ^"user name"
+	  .word 0
+	mov getp(r0),r2
+	clr r3
+loop <	  pcall getbc
+	  cmp r1,#15
+	  exitl eq
+	  cmp r1,#40
+	  exitl eq
+	  pcall accbc
+	  inc r3
+	  rptl
+	  >
+	pcall crchk
+	cmp r3,#luser
+	if hi,<
+	  mov #luser,r3
+	  >
+	mov r0,r1
+	add #kuser,r1
+	tst r3
+	if ne,<
+loop <	  movb (r2)+,(r1)+
+	  sorl r3
+	  >
+	>
+	clrb (r1)
+	preturn
+
+
+;;; LOGOUT command.
+
+logoc:	pcall qmark		; handle "?"
+	  .string ^"RETURN or port number"
+	  .word 0
+	cmp r1,#15		; port number specified?
+	if ne,<			; yes
+	  pcall getpo1		; get it
+				; R1: port number, R2: port number * 2
+	  pcall norot		; rotaries not allowed
+	  pcall crchk		; wait for confirmation
+	  tst wtab(r2)		; is this really a user object?
+	  if eq,<		; yes,
+	    printcr ^"Not a user port, can't kill it"
+	    preturn
+	    >
+	  mov r1,r5		; keep port number from getting smashed
+	  pcall whohed		; print the who command header
+	  push r5		; WHO args: port number
+	  pcall who		; describe loser
+	  print ^" ?"		; turn who line into query
+	  pcall gans		; get a yes or no answer
+	  if eq,<		; yes
+	    push r5		; LOGO2 arg: port #
+	    pcall logo2		; murder him
+	    >
+	  preturn
+	  >
+	pcall crchk		; wait for confirmation
+
+logo1:	pcall cprein		; recompute R0 in case CPCLOS got us
+				; here by a gross goto
+	mov kport(r0),r2	; get our own port #
+	asl r2			; make into index
+	clr btab(r2)		; and clear our back ptr to ourself
+	clr wtab(r2)
+	pcall crlf		; fresh line
+	tst kdst(r0)		; do we have anything open?
+	if ne,<			; yes
+	  pcall disc1		; close it first
+	  >
+	print ^"Console free"
+	tst timsts		; time set?
+	if ne,<			; yes
+	  pcall time		; get it in binary
+	  pcall cvbtd		; convert to long form
+	  pcall prtim1		; print it
+	  add #16,sp		; remove it from stack
+	  >
+	pcall crlf		; finish off with newline
+.if ne  chaos
+	mov kport(r0),r1
+	cmp r1,fnetp		; hardwired port?
+	if his,<		; no, telser
+	  asl r1
+	  clr sport(r1)
+	  clr dport(r1)
+	  push r0		; save ourself
+	  mov echoso(r0),r0
+	  mov #nulldo,r1
+	  pcall @link(r0)	; don't send us input any more (we won't
+				; be here!)
+	  pop r0		; restore ourself
+	  pcall eforc		; force output
+	  push r0		; save ourself
+	  mov echod(r0),r0	; R0: telnet or chaos destination object
+	  pcall @close(r0)	; close connection
+	  pop r0		; restore ourself, TKILL: arg: pointer
+.if ne asmled
+	  pcall edfini		; free line editor storage
+.endc
+	  pcall freeq		; free our input queue
+	  jmp tkill		; kill ourself
+	  >
+.endc
+	jmp cp1			; reinit ourself
+
+;;; CLOSE entrypoint for command processor destination object.
+cpclos:	wake.l r0,tdtcb		; make sure it runs to kill it
+	mov tdtcb+tsp(r0),r1	; R1: stack pointer
+	mov #logo1,spc(r1)	; set it to execute at LOGO1 on next wakeup
+	preturn
+
+;;; Takes a port # on stack and kills user of that port
+logo2:	push r3			; need a reg
+	mov 2+2(sp),r3		; get port #
+	asl r3			; make into index
+	mov wtab(r3),r3		; get pointer to user object
+	sub #kusrob,r3		; temp make ptr to cp object
+	cmp r0,r3		; trying to suicide?
+	if ne,<			; no, whew, suicide is immoral
+	  add #kusrob,r3	; restore pointer to user object
+	  pcall @usrdie(r3)	; tell it to kill itself
+	  >
+1$:	pop r3,(sp)		; restore reg, remove argument
+	preturn
+
+
+;;; SHUTDOWN command.
+
+shutd:	pcall qmark		; handle "?" for decimal number
+	  .string ^"Seconds to shutdown"
+	  .word 0
+	pcall getde1		; read number of seconds
+	push r1			; save seconds until shutdown
+	pcall getmsg		; get reason for shutdown
+	pcall nocchk		; and no connection open
+	print ^"Are you sure?"
+	pcall gans
+	if ne,<
+	  pop *			; clean up saved r1
+	  preturn
+	  >
+	pop r1			; R1: seconds until shutdown
+	mul #60.,r1		; convert to 60ths
+	add clock+0,r1		; convert to absolute time
+	mov r1,down		; store
+
+	;; first warn everyone
+loop <	  clr r5		; initial keyboard index
+  loop <    pcall nextkb	; get successive destination ptrs in R1,
+				; smash r3
+	    exitl cs		; exit if last keyboard
+	    push echod(r0)	; save our echo destination
+	    mov r1,echod(r0)	; set it to keyboard's echo destination
+	    pcall sndhdr	; send header
+	    print ^"system going down in "
+	    mov down,r3		; R3: 60ths until shutdown
+	    sub clock+0,r3	; ...
+	    add #30.,r3		; R3: seconds until shutdown
+	    clr r2		; ...
+	    div #60.,r2		; ...
+	    pcall echoud	; put time in message
+	    print ^" seconds "	; ...
+	    pcall sndmsg		; send reason
+	    pop echod(r0)	; restore our echo destination
+	    rptl
+	    >
+	  mov down,r1		; R1: 60ths until showdown
+	  sub clock+0,r1	; ...
+	  cmp r1,#10.*60.	; less than 10 seconds?
+	  exitl le		; yes, no more warnings
+	  asr r1		; wait for half of remaining time
+	  push r1		; SLEEP arg: duration in 60ths
+	  pcall sleep		; doze off
+	  rptl			; go warn again
+	  >
+	push r1			; SLEEP arg: duration in 60ths
+	pcall sleep		; wait final 10 or less seconds
+
+	;; now kill everyone
+	clr r5
+loop <    pcall nextkb		; succesive destinations in R1, port in R3
+	  exitl cs		; exit if last keyboard
+	  push r3		; port #
+	  pcall logo2		; kill this guy
+	  rptl
+	  >
+
+	printcr ^"System down"
+	push #60.		; SLEEP arg: duration in 60ths
+	pcall sleep		; 1 second to get message out
+	halt
+	jmp nswit
+
+defvar <
+down:	.word 0			; low order word of time system to go down
+>
+
+getmsg:	pcall qmark		; handle "?"
+	  .string ^"Message"
+	  .word 0
+	mov getp(r0),r4		; R4: pointer to 1st character of message in
+				; buffer
+loop <	  pcall getbc		; read and accept characters up to and
+	  pcall accbc		; including CR
+	  cmp r1,#15		; ...
+	  rptl ne		; ...
+	  >
+	mov #12,r1		; INSBC arg: character
+	pcall insbc		; echo LF and put in buffer
+	clrb @inpp(r0)		; make sure line ends in null
+	preturn			; done
+
+;;; SEND command.
+
+sndcmd:	pcall qmark		; handle "?"
+	  .string ^"Port number"	; hack "*" someday
+	  .word 0
+	pcall getpo1		; get port number
+				; GETPOR result: R2/ port number * 2
+	pcall norot		; rotaries not allowed
+	mov dport(r2),r5	; R5: destination object
+	pcall getmsg		; get message argument
+	push echod(r0)		; hack: temporarily set our echo destination
+	mov r5,echod(r0)	; to message destination to take advantage of
+				; subroutines available for echo output
+	pcall sndhdr		; send header
+	pcall sndmsg		; send message
+	pop echod(r0)		; restore our rightful destination
+	preturn
+
+sndhdr:	print ^"Message from "
+sndid:	mov kport(r0),r2
+	pcall echoud		; send our port number
+	tstb kuser(r0)		; logged in?
+	if ne,<			; yes, send our user name
+	  print ^" ("
+	  mov r0,r2
+	  add #kuser,r2
+	  pcall echos
+	  mov #'),r1
+	  pcall echoc
+	  >
+	printcr ^":"
+	preturn
+
+sndmsg:	push r4			; save argument
+loop <	  movb (r4)+,r1		; ECHOC arg: character
+	  exitl eq		; end on null char
+	  pcall echoc		; send next character of text
+	  rptl
+	  >
+	pop r4			; restore argument
+	preturn
+
+
+;;; BROADCAST command
+
+brdcmd:	pcall getmsg		; get message to send
+brd1:	clr r5			; prepare to do all ports
+loop <    pcall nextkb		; dest in R1, port # in R3
+	  exitl cs		; exit if last keyboard
+	  push echod(r0)	; save our echo destination
+	  mov r1,echod(r0)	; set it to kbd's echo destination
+	  print ^"Broadcast from "
+	  pcall sndid		; send the "XX (user) .."
+	  pcall sndmsg		; send the message
+	  pop echod(r0)		; restore rightful destination
+	  rptl
+	  >
+	preturn
+
+;;; SET SYSTEM MESSAGE command.
+
+setmsg:	pcall crchk		; wait for confirmation
+	printcr ^"Type message followed by Control-C"
+	mov #sysmsg,r3		; R3: pointer into system message
+				; for backup
+loop <	  mov #nulmsg,r2	; INIBC arg: prompt string
+	  pcall inibc		; start "parsing"
+	  mov r3,r2		; R2: pointer to next buffer position
+	  clrb (r2)		; make message null to start with (in case
+				; user wants to make it null)
+  loop <    pcall getbc
+	    cmp r1,#3		; Control-C?
+	    beq 1$		; yes, finish off message
+	    cmp r1,#15		; CR?
+	    if eq,<		; yes
+	      cmp r2,#sysmsg+lsysmsg-2	; room in buffer?
+	      exitl lo			; yes, crlf
+	      pcall rejbc	; no room, feep
+	      rptl
+	      >
+	    ;; random character - put into message.
+	    cmp r2,#sysmsg+lsysmsg-1	; room in buffer?
+	    if his,<			; no
+	      pcall rejbc	; feep at user
+	      rptl		; and don't store
+	      >
+	    movb r1,(r2)+
+	    clrb (r2)		; keep it ASCIZ in case someone logs in while
+				; we're typing this(!)
+	    pcall accbc		; echo the random character
+	    rptl
+	    >
+	  ;; CR typed.
+	  pcall 3$
+	  rptl
+	  >
+1$:	;; Control-C typed.
+	cmpb -1(r2),#12		; make sure message ends in CR LF
+	if ne,<
+	  pcall 3$
+	  >
+	print ^"Broadcast message as well?"
+	pcall gans
+	if eq,<
+	  mov #sysmsg,r4
+	  pcall brd1
+	  >
+	preturn
+
+;;; quick subr to insert and echo a CRLF pulled out of line
+3$:	movb #15,(r2)+		; store CR
+	movb #12,(r2)+		; store LF
+	clrb (r2)		; keep ASCIZ
+	mov r2,r3		; only rubout to after LF
+	pcall crlf		; echo as CR LF
+	preturn
+
+defvar <
+lsysmsgs==300.
+sysmsg:	.byte 0
+	.blkb lsysmsg-2
+nulmsg:	.byte 0
+	.even
+>
+
+;;; TIME command.
+
+timcmd:
+.if eq chaos
+	pcall crchk		; wait for confirmation
+.iff
+	pcall gchstt		; get chaos host number or 0 if none
+	pcall crchk		; wait for confirmation
+	tst r1			; local time?
+	beq 1$			; yes
+	mov #timest,r4		; contact name
+	pcall nettim		; get time from host
+	bcc 2$
+	br 3$
+.endc
+1$:	tst timsts		; time set?
+	beq 3$			; no
+	pcall time		; get time
+2$:	pcall cvbtd		; break up into bite size pieces
+	pcall prtim		; print it
+	add #16,sp		; remove time from stack
+	jcall crlf
+3$:	printcr ^"Time not available."
+	preturn
+
+prtim:	mov 16(sp),r2
+	asl r2
+	mov daynam(r2),r2
+	pcall echos
+prtim1:	print ^", "
+	mov 12(sp),r2
+	pcall echoud
+	mov #'/,r1
+	pcall echoc
+	mov 10(sp),r2
+	pcall echoud
+	mov #'/,r1
+	pcall echoc
+	mov 14(sp),r2
+	sub #1900.,r2
+	pcall echoud
+	mov #40,r1
+	pcall echoc
+	mov 6(sp),r2
+	mov #2,r1
+	pcall e0dec
+	mov #':,r1
+	pcall echoc
+	mov 4(sp),r2
+	mov #2,r1
+	pcall e0dec
+	mov #':,r1
+	pcall echoc
+	mov 2(sp),r2
+	mov #2,r1
+	pcall e0dec
+	mov #40,r1
+	pcall echoc1
+	mov zone,r2
+	pcall echos
+	preturn
+
+daynam:	.string ^"Sunday"
+	.string ^"Monday"
+	.string ^"Tuesday"
+	.string ^"Wednesday"
+	.string ^"Thursday"
+	.string ^"Friday"
+	.string ^"Saturday"
+
+
+;;; SET ZONE command.
+setzon:	pcall qmark
+	  .string ^"Zone name.  One of"
+	  .word zones
+	push #zones
+	pcall getkwd
+	pop r1
+	pcall crchk
+	mov (r1)+,zone
+	mov (r1)+,tgmt+0
+	preturn
+
+zones:	key ^"edt",4*60.*60.
+	key ^"est",5*60.*60.
+	key ^"pdt",7*60.*60.
+	key ^"pst",8*60.*60.
+	.word 0
+
+
+;;; SET TIME command.
+
+settim:	push #0
+	pcall qmark
+	 .string ^"Year"
+	 .word 0
+	pcall getde1
+	cmp r1,#1900.
+	if lo,<
+	  add #1900.,r1
+	  >
+	push r1
+	pcall qmark
+	 .string ^"Month"
+	 .word 0
+	pcall getde1
+	push r1
+	pcall qmark
+	 .string ^"Day"
+	 .word 0
+	pcall getde1
+	push r1
+	pcall qmark
+	 .string ^"Hour"
+	 .word 0
+	pcall getde1
+	push r1
+	pcall qmark
+	 .string ^"Minute"
+	 .word 0
+	pcall getde1
+	push r1
+	push #0
+	pcall crchk		; wait for confirming return
+	pcall cvdtb
+	pop r5,r4
+	print ^"Set time to "
+	push r4,r5
+	pcall cvbtd
+	pcall prtim
+	add #16,sp
+	print ^"? "
+	pcall gans
+	bne 1$
+	push r4,r5
+	pcall timset
+.if df  clkadr
+	push r4,r5
+	pcall cvbtd
+	tst (sp)+		; throw away seconds
+	pop r4			; R4: hours,,minutes
+	swab (sp)		; ...
+	bis (sp)+,r4		; ...
+	pop r5			; R5: month,,day
+	swab (sp)		; ...
+	bis (sp)+,r5		; ...
+	cmp (sp)+,(sp)+		; throw away year and day of week
+	mov #10000.,r2		; max number of cycles we'll go
+	mov #clkadr,r3		; TCU addr
+	pcall nxmcat		; in case clock isn't on this machine
+	  1$
+	mov r5,(r3)		; set fast month/day count mode
+  loop <  cmp (r3),r5		; are we at the month/day we want?
+	  exitl eq
+	  sorl r2
+	  >
+	mov r5,4(r3)		; reset fast clcok
+	tst (r3)+
+	mov r4,(r3)		; set fast hour/minute count mode
+	mov #10000.,r2		; max number of cycles we'll go
+  loop <  cmp (r3),r4		; are we at the hour/minute we want?
+	  exitl eq
+	  sorl r2
+	  >
+	mov r4,2(r3)		; reset fast clock
+	pcall nxmclr
+.endc	; df clkadr
+1$:	preturn
+
+
+;;; VERSION command.
+
+vercmd:	pcall crchk
+vercm1:	jsr r5,echosc		; print greeting message
+	 .litrl ^|
+	 .ascii "
+NSWIT "
+	 .decim version
+	 .ascii ", "
+	 .decim %month
+	 .ascii "/"
+	 .decim %day
+	 .ascii "/"
+	 .decim %year
+	 .asciz '
+Type "help<cr>" for information on NSWIT.
+'
+|
+	mov #sysmsg,r2		; ECHOS arg: pointer to ASCIZ string
+	jcall echos		; type system message
+
+
+;;; UPTIME command.
+
+upcmd:
+.if eq chaos
+	pcall crchk		; wait for confirmation
+.iff
+	pcall gchstt		; get chaos host number, or 0 if none
+	pcall crchk		; wait for confirmation
+	tst r1			; local uptime?
+	beq 1$			; yes
+.string ^"UPTIME",%%temp
+	mov #%%temp,r4		; contact name
+	pcall nettim		; get time from host
+	bcc 2$
+	printcr ^"Uptime not available"
+	preturn
+.endc
+1$:	pcall uptime		; get uptime in 60ths
+2$:	pop r3,r2		; ...
+	ashc #-4,r2		; divide by 4 to get more range from DIV
+	div #60./4*60./4*60.,r2	; convert to hours
+	if ne,<
+	  pcall echoud		; type out hours
+	  print ^" hours "
+	  >
+	mov r3,r2		; get remainder in 16/60s units
+	clr r2			; convert to minutes
+	div #60./4*60./4,r2	; ...
+	pcall echoud		; type out minutes
+	printcr ^" minutes"
+	preturn
+
+
+;;; STATISTICS command.
+
+stats:	pcall crchk
+	mov qovfl,r2
+	pcall echoud
+	printcr ^" chars dropped"
+.if ne asmchp
+	print ^"Chaos area: "
+	mov #pkarea,r5
+	pcall stats1
+.endc
+	print ^"Default area: "
+	mov #darea,r5
+;	jcall stats1
+
+stats1:	mov fsata+0(r5),r2
+	sub fsft+0(r5),r2
+	pcall echoud
+	mov #'/,r1
+	pcall echoc1
+	mov fssize(r5),r2
+	pcall echoud
+	print ^" allocated in "
+	mov fsac(r5),r2
+	sub fsfc(r5),r2
+	pcall echoud
+	print ^" blocks, "
+	mov fsflen(r5),r2
+	pcall echoud
+	print ^" free blocks, "
+	mov fsafc(r5),r2
+	pcall echoud
+	printcr ^" failures"
+	preturn
+
+;;; WHO command.
+
+whocmd:	pcall crchk		; wait for confirmation
+	pcall whohed		; print the header line
+	clr r5			; count port # * 2
+loop <    pcall nextkb		; advance to next keyboard, leaving port #
+				; in R3 and smashing R1
+	  exitl cs		; exit if last keyboard
+	  push r3		; get port number
+	  pcall who
+	  pcall crlf
+	  rptl
+	  >
+	preturn
+
+
+;;; NEXTKB is called with the previous wtab index in R5.
+;;; Starting with the user indexed by  R5 it finds the next
+;;; index which has a logged in user and leaves the destination pointer
+;;; in R1.  Leave kbd port # in R3.  Return with carry set on last keyboard.
+nextkb:
+loop <	  cmp r5,#nhport*2	; done?
+	  if his,<
+	    sec			; yes, done last keyboard
+	    preturn
+	    >
+	  tst wtab(r5)		; is there a user here?
+	  exitl ne		; yes.
+	  tst (r5)+		; advance to next keyboard
+	  rptl
+	  >
+	mov dport(r5),r1	; get destination object for user
+	mov r5,r3		; make "keyboard" port #
+	asr r3
+	tst (r5)+		; next time start at next kbd
+	clc
+	preturn
+
+;;; macro used by who command to advance to column x
+.macro whocol x
+       jsr r5,wtabto
+        x
+.endm	
+
+;;; Subroutine to print the header.
+;;;		  0         1         2         3
+;;; column scale: 0123456789012345678901234567890123456789
+whohed:	printcr ^"User    Open              Idle  Port Location"
+	preturn
+
+;;; Who command.  Takes port number on stack and prints the who
+;;; information for the user whose port it is.  Prints nothing and
+;;; returns with carry set if there is no user on the line.
+;;; Bashes R2, R3.
+
+who:	mov 2(sp),r2		; get port #
+	asl r2			; make into index
+	mov wtab(r2),r3		; get pointer to object
+	if eq,<
+	  sec
+	  br 1$
+	  >
+	pcall @uunam(r3)	; get user name as asciz string, on stack
+	clr r2			; clear column
+	pcall whoprn		; print the user name
+	whocol 8.
+	pcall @uopenp(r3)	; get port linked to, on stack
+	if cc,<
+	  cmp (sp),#1000	; damn, forgot about kludges
+	  if los,<
+	    asr (sp)		; un *2 port number
+	    push #pnames
+	    pcall valkey	; find out if it has a name
+	    tst (sp)		; does it?
+	    if ne,<		; yes,
+	      pcall whoprn	; print out asciz string
+	      >
+	    else <		; no,
+	      pcall whodec	; just print out port #
+	      >
+	    >
+	  else <
+	    pcall whoprn
+	    >
+	  >
+	else <			; no port linked to
+	  pop *			; just pop off the zero
+	  >
+	whocol 25.		; get to column 26.
+	push r4,r5		; save R4, R5 for a while
+	pcall @uidle(r3)	; get idle time (double word on stack)
+	pop r5,r4		; get low word, high word
+	div #60.*60.,r4		; divide for minutes
+	if ne,<			; if a minute or more
+	  mov r4,r5		; copy number of minutes, truncate remainder
+	  clr r4		; setup for another divide
+	  div #60.,r4		; get hours in R4 and minutes in R5
+	  if ne,<		; there were hours
+	    push r4,#2		; print hours as 2 digits
+	    pcall wsdec
+	    push #':		; print :
+	    pcall whochr
+	    push r5,#2		; get minutes
+	    pcall w0dec		; print minutes with leading zeros
+	    >
+	  else <		; no hours
+	    push r5,#5		; print minutes in a 5 digit wide field
+	    pcall wsdec		; with leading spaces
+	    >
+	  >
+	whocol 32.
+	pcall @udescr(r3)	; get location string, port # on stack
+	pop r5			; get string description, port #
+	push #3 		; print as 3 digits
+	pcall wsdec		; with leading space
+	whocol 37.		; get to description column
+	push r5			; push port description
+	pcall whoprn		; and print to description
+	pop r5,r4		; restore regs
+	clc			; indicate success
+1$:	pop (sp)		; restore regs, remove argument
+	preturn
+
+whoprn:	push r4			; need regs
+	mov 2+2(sp),r4		; ptr to asciz string to print
+loop <	  movb (r4)+,-(sp)	; get char
+	  exitl eq		; 0 terminates string
+	  pcall whochr		; print char
+	  rptl
+	  >
+	tst (sp)+		; get rid of null
+	pop r4,(sp)		; restore reg, remove arg
+	preturn
+
+;;; print single character and count horizontal space taken
+whochr:	push r1			; save the reg
+	inc r2			; count a space
+	mov 2+2(sp),r1		; get the arg
+	pcall echoc1		; print a char
+	pop r1,(sp)		; restore reg, remove arg
+	preturn
+
+wtabto:	;; space out to given column relative to start of who line
+loop <	  push #40		; always put out at least 1 space
+	  pcall whochr		; ...
+	  cmp r2,(r5)		; are we at desired column yet?
+	  rptl lo		; yes, at it or beyond it
+	  >
+	tst (r5)+
+	rts r5
+
+
+;;; WSDEC - print out a decimal number right justified in a N digit
+;;; field.  Args are number, # of digits on stack.  WHODEC pads with
+;;; leading spaces
+wsdec:	push #40
+	br wdec1
+
+;;; just like WHODEC, but pads with leading 0s.
+w0dec:	push #'0
+
+;;; WDEC1 is essentially a WHODEC with a paramater for what to pad with.
+wdec1:	push r3,r4,r5		; save some regs
+	sub #8.,sp		; 7 digit number is the largest
+	mov sp,r3		; we will use stack as scratch area
+	mov 8.+6+4(sp),r5	; get # digits wide number is to be
+	cmp r5,#7.		; an error if gtr 7
+	if hi,<
+	  bpt
+	  >
+loop <	  movb 8.+6(sp),(r3)+	; fill the field will the pad char
+	  sorl r5
+	  >
+
+	clrb (r3)		; make sure last digit is null
+	mov 8.+6+6(sp),r5	; get number to be printed
+	;; now we go backwards extracting digits from the number
+loop <	  clr r4		; clear for unsigned divide
+	  div #10.,r4		; divide
+	  add #'0,r5		; make a digit from remainder
+	  movb r5,-(r3)		; store it into scratch
+	  mov r4,r5		; if any quotient left, setup divide again
+	  rptl ne		; ...
+	  >
+        mov sp,r3		; reset R3 to start of string
+	push r3			; and print it (note cannot just push sp)
+	pcall whoprn
+	add #8,sp		; restore stack
+	pop r5,r4,r3,*,(sp),(sp)	; restore regs, remove args
+	preturn
+
+;;; Print out unsigned decimal number, arg on stack
+whodec:	push r2,r3		; save regs
+	mov 2+4(sp),r2		; get arg
+	pcall whod1		; call whod1
+	pop r3,r2,(sp)		; restore regs, remove argument
+	preturn
+
+whod1:	mov r2,r3
+	clr r2			; clear most significant register
+	div #10.,r2		; divide
+	if ne,<			; nonzero quotient
+	  pcall whod1		; recurse
+	  >
+	add #'0,r3		; make into digit
+	push r3			; arg to whochr
+	pcall whochr		; tail recurse to print char
+	preturn
+
+;;; Port available takes a port # on the stack and returns with CC if port
+;;; is available to be grabbed.  CS return returns a value of -1 if the
+;;; port does not exist, and zero if it was busy
+portav:	push r0			; need a reg
+	mov 2+2(sp),r0		; get port #
+	asl r0			; make into index
+	clr 2+2(sp)		; default error code
+	tst btab(r0)		; is port available?
+	bne 1$			; no.
+	tst sport(r0)		; does port exist?
+	if eq,<			; no.
+	  com 2+2(sp)		; set -1 error code
+1$:	  sec			; set carry to indicate error return
+	  pop r0		; restore reg
+	  preturn		; and return with arg on stack
+	  >
+	pop r0,(sp)		; restore reg, remove argument
+	preturn
+
+;;; Who Has takes a port # on the stack and prints a who line for the user
+;;; who is using the line.
+whohas:	push r2,r3		; need regs
+	mov 2+4(sp),r2		; get port #
+	asl r2			; make into index
+	mov btab(r2),r3		; get back pointer
+	if eq,<
+	  print ^"Port is free"
+	  >
+	else <
+	  pcall @udescr(r3)	; ask object to describe itself
+	  pop *			; throw away string description, leave
+				; port # on top of stack for who arg
+	  pcall who		; type out who description of port
+	  >
+	pop r3,r2,(sp)		; restore regs, remove arg
+	preturn
+
+
+espdec:	push r5
+	mov r0,r5
+	add #scrtch,r5
+loop <	  movb #40,(r5)+
+	  sorl r1
+	  >
+	br edec
+
+e0dec:	push r5
+	mov r0,r5
+	add #scrtch,r5
+loop <	  movb #'0,(r5)+
+	  sorl r1
+	  >
+
+edec:	clrb (r5)
+	mov r2,r3
+loop <	  clr r2
+	  div #10.,r2
+	  add #'0,r3
+	  movb r3,-(r5)
+	  mov r2,r3
+	  rptl ne
+	  >
+	mov r0,r2
+	add #scrtch,r2
+	pop r5
+	jcall echos
+
+.if eq coast-west
+;;; GDP BOOT command.  Send bootstrap to currently open destination.
+
+sboot:	pcall crchk		; wait for confirmation
+	pcall conchk		; insure there's a connection open
+	mov #drvtab,r2		; R2: pointer to boot program
+	mov #drvend-drvtab,r3	; R3: length of boot program
+	pcall sboot1
+	mov #drvsab,r2		; R2: pointer to start address block
+	mov #drvsae-drvsab,r3	; R3: length of start address block
+;	jcall sboot1
+
+sboot1:	clr r4			; initailize checksum
+loop <	  movb (r2)+,r1		; SENDC arg: character
+	  sub r1,r4		; keep checksum
+	  pcall sendc		; send next byte of boot
+	  sorl r3
+	  >
+	mov r4,r1
+	jcall sendc
+
+;This is an absolute loader that loads a funny kind of BIN file.  Each
+;block in the BIN file must have an even number of bytes and the checksum
+;must be followed by a null byte so that the next block begins on a word
+;boundary
+
+drvcsr==177100
+drvtdb==drvcsr+2
+drvrdb==drvcsr+4
+
+drvpdl==100
+
+drvtab:	1,drvsiz,200		;header,size,starting load address
+drvgo:	mov #drvpdl,sp
+	mov #drvcsr,r0
+	clr (r0)		;clear csr
+	mov r0,r1
+	cmp (r1)+,(r1)+		;advance pointer to read buffer
+	tst (r1)		;reference read buffer to clear it out
+	mov #1000,r2
+	mov #<70000-400>,r3	;div by two done by hand to avoid minus lossage
+4$:	clr (r2)+
+	sob r3,4$
+5$:	jsr pc,drvrdw
+	cmp r2,#1
+	bne 5$
+	mov #1,r5		;checksum
+	jsr pc,drvrdw
+	mov r2,r3		;byte count
+	bit #1,r3
+	beq 1$
+	halt
+1$:	jsr pc,drvrdw
+	mov r2,r4		;address
+	bit #1,r4
+	beq 2$
+	halt
+2$:	sub #6,r3		;remaining byte count
+	beq drvstb		;branch if start block
+	clc
+	ror r3			;convert to word count
+3$:	tst (r0)
+	bpl 3$
+	mov (r1),r2		;get next word
+	mov r2,(r4)+		;store wherever
+	add r2,r5
+	swab r2
+	add r2,r5
+	sob r3,3$
+	jsr pc,drvrdw		;read checksum
+	tstb r5			;test checksum
+	beq 5$			;ok, get another block
+drverr:	halt
+
+drvstb:	jsr pc,drvrdw		;read checksum
+	tstb r5			;test checksum
+	bne drverr
+	jmp (r4)
+
+drvrdw:	tst (r0)		;wait for a word
+	bpl drvrdw
+	mov (r1),r2
+	add r2,r5
+	swab r2
+	add r2,r5
+	swab r2
+	rts pc
+drvend::
+drvsiz==.-drvtab
+
+drvsab:	1,6,200			;header,count,start address
+drvsae::
+.endc
+
+.sbttl Inserts
+
+.insrt fsmdmp
+
+.iif ne  asmled,	.insrt lined
+
+
+.endc	; ne nkbd
+
+.iif eq config-lswit,	.insrt linser

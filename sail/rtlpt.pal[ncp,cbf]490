@@ -1,0 +1,531 @@
+;;; -*-midas-*-
+	.title	Test of NCP etc
+	.sbttl	Options and Preliminaries
+
+;;; Test out the Chaos to Arpanet connection over the Chaos Net
+
+.=1300
+	.insrt dcls
+	.insrt defns
+	.insrt nncptc
+
+setf ^"What Machine is this assembly for? (7 = Dev-7, 6 = Dev-6) ",devnum
+.iif b devnum, devnum==7
+
+.if ne devnum-7
+.if ne devnum-6
+.error	Improper Device Number, Device No. 7 Assumed
+devnum==7
+.endc
+.endc
+
+	.insrt rt11mc
+
+.if eq devnum-7
+setf ^"Use Newman (0 or default) or TTY (1) transceiver on Device 7?",whxcvr
+setf ^"Is Device 7 running an SJ monitor?",asmsj
+
+.if eq whxcvr-1
+	.insrt dv7tdf
+.iff
+	.insrt dv7mdf
+.endc
+.endc
+
+.if eq devnum-6
+..v2..
+	.insrt dv6mdf
+ setf ^"What version of RT-11 is Dev 6 running these days?",rt11vn
+.iif b rt11vn, rt11vn===2	;this assembly is for RT-11 version 2
+setf ^"Is Device 6 running an SJ monitor?",asmsj
+.endc
+
+
+ 	.insrt cncp
+	.insrt allint
+	.insrt nutils
+
+
+clkvec:	.blkw 2
+clock:	0,0
+clkint:	adc clock
+	adc clock+2
+	mtps clkvec+2		;with RT'11s PS
+	jmp @clkvec		;go to the addr of the RT-11 clock interrupt
+
+start:
+	mov #1000,sp
+	.prtx #greet
+	mov sp,sptemp		;for completeness
+10$:	.csigen #devare,#dext,#0,#linbuf
+	clr fcmd		;initialize for no file commands
+	clr ucmd		;initialize for no user commands
+	mov #naropt,pcmdln	;default packaged command line
+	mov (sp)+,r3		;get count of number of flags
+	beq endswt		;no switches, just default
+1$:	clr r2			;clear value of flag
+	mov (sp)+,r0		;get first flag
+	bpl 2$			;no value associated with it
+	mov (sp)+,r1		;get the value
+2$:	bic #177600,r0		;just the 7 bit ascii
+	cmpb r0,#'?		;help the loser?
+	bne 3$
+	.prtx #hlpms		;print help
+	mov #pklist,r3		;get list of packages
+21$:	mov (r3)+,r2
+	beq 10$			;no more packages, read cmd again
+	.prtx r2		;print switch for package
+	mov (r3)+,r2
+	.prtx r2		;print contents of package
+	.prtx #CRLF		;those were asciz strings
+	br 21$
+3$:	cmpb r0,#'X		;user input will override packaged options
+	bne 31$
+	mov #cmdbuf,ucmd
+	br 8$			;go check other switches
+31$:	cmpb r0,#'Z		;take it from the file
+	bne 4$
+	inc fcmd		;say to use input from file
+	br 8$			;skip other switches
+4$:	mov #swttab,r5		;table of switch values
+	jsr pc,srchtb
+	bcc 5$
+	.prtx #badms
+	br 10$
+5$:	mov r4,pcmdln
+8$:	sob r3,1$		;deleted because of pointlessness
+
+endswt:	mov sptemp,sp		;ignore remaining switches
+	.wait #3		;any file entered?
+	bcc 1$
+	.exit
+1$:
+	tst ucmd		;any input to come from console?
+	beq 2$			;no, skip the input
+	.gtlin ucmd,#prompt
+2$:	.date
+	mov #today,r1
+	jsr pc,prsedt		;parse one word date in r0 into (r1)+ day,mon,year
+
+	mtps #340		;No interruptions now
+	mov #300,r0		;do not interfere with RT-11
+	mov @#100,clkvec
+	mov @#104,clkvec+2
+
+loop <	  mov r0,(r0)
+	  add #2,(r0)+
+	  mov #3,(r0)+		;BPT on spurious interrupt
+	  cmp r0,#500
+	  rptl lo
+	  >
+
+	mov #1200,r0		;Ignore spurious Newman interrupts
+loop <	  mov r0,(r0)
+	  add #2,(r0)+
+	  mov #2,(r0)+
+	  cmp r0,#1300
+	  rptl lo
+	  >
+
+; set up save list for rt-11
+
+	  save <60,70>,<177560,177562>,<177564,177566>,<100,104>
+
+	clr clock
+	clr clock+2
+
+	mov #clkint,@#100
+	mov #341,@#102
+.if eq devnum-7
+.if ne whxcvr-1
+	bis #1,@#nm.enb
+	call nmfrap
+.endc
+.endc
+	mov chheap,r1
+	mov #hpsize,r0
+	jsr pc,makear
+	jmp tcbend		; jmp over data area
+tcbspc:	.blkw 6.*tcb.ln
+tcbend:	
+	initcb tcbspc,tcbend
+	call chinit
+
+	  savlst		;issue RT-11 save
+
+	call crtask,<#0,#0,#0,#0,#0,#0,#outtsk>,r1
+	mtps #0
+
+	jmp manlop
+
+dext:	.word	0,0,0,0		;no default extensions
+
+srchtb:		;table searching subr
+1$:	mov	(r5)+,r4	;get next entry in table
+	beq	3$		;last entry in table passed
+	cmp	r0,r4		;is this the entry desired?
+	beq	2$		;found it, go return value
+	tst	(r5)+		;skip over value associated with entry
+	br	1$
+2$:	mov	(r5),r4		;get value from table
+	clc
+	rts	pc
+3$:	sec			;set failure flag
+	rts	pc
+;outtsk
+
+.if eq 1		; zero only when testing ARPA
+dsthst	=21_8+4		;ARPA machine
+testr:	.asciz	\ARPA 2/25 101 2\	;Chaos-ARPA interface to LLL-S1
+.iff
+dsthst	=21_8+0		;Printer machine
+testr:	.asciz	\PRINTER\		;Printer connect name
+.endc
+	.even
+
+outtsk:	proc 0,0
+
+	call chopen,<#dsthst,#1,#testr>,r4	;open connection
+	bcc 9$			;everything worked, go on
+	tst r4			;see if a packet was returned
+	beq 7$			;no reason given for failure
+	mov r4,r0		;put packet ptr in standard place
+	mov r0,r1
+	add #pkdat,r1
+	mov pklen(r0),r2	;length of data
+	mov #linbuf,r3		;place to put data
+	mov #linbfs-1,r4	;max allowable length
+	kcall movs		;move the string out
+	kcall frepck		;free the packet
+	clrb (r3)
+	.prtx #linbuf
+	br 8$
+7$:	.prtx #failms
+8$:	jmp die
+9$:
+
+snd:	push r4			;save channel ID temporarily
+	kcall alc128		;get a packet
+	movb #200,pkop(r0)	;set the packet opcode
+	mov r0,r4		;save packet addr because r0 get bashed
+	mov #prompt,r1		;command string header
+	mov r4,r3
+	add #pkdat,r3		;make ptr to beginning of data area
+	push r3			;save beginning point
+	movb #175,(r3)+		;put start cmd char
+
+2$:	mov pcmdln,r1		;packaged command to use?
+	beq 4$			;nope, must be using file or cmdlin
+	kcall movsz
+	mov #tline,r1		;title="
+	kcall movsz
+	mov #linbuf,r1		;user input line
+	kcall movsz
+	movb #40,-2(r3)		;back over CRLF
+	movb #40,-1(r3)		;bash
+	mov #today,r1		;today's date
+	kcall putdat
+	mov #pname,r1		;print some kind of silly name
+	kcall movsz
+4$:	mov ucmd,r1		;any user command string?
+	beq 5$			;no
+	tst pcmdln		;was a package used?
+	beq 41$			;no, just copy user command
+	sub #2,r3		;back up over the CRLF from packaged name
+41$:	kcall movsz
+5$:	tst fcmd		;will the file have information
+	beq 51$			;no, close it out and go on
+	sub #3,r3		;back up over the CRLF to allow file info
+51$:	inc r3
+52$:	mov r3,pklen(r4)
+	sub (sp)+,pklen(r4)	;length of data
+	mov r4,r0
+	pop r4			;channel ID
+	kcall outpak		;output the packet
+
+	clr rtblk
+sndlp:	
+	.readw	#area,#3,#rtbuf,#256.,rtblk
+	bcs 8$
+	.prtx #prompt			;print prompt char as blip
+
+	mov #<256.+pkdat>/2,r3		;enough for half an RT11 block
+	kcall alcsiz			;allocate it
+	mov #200,pkop(r0)		;set the data opcode
+	mov r0,r3			;make ptr to data area
+	add #pkdat,r3			; by adding in the offset
+	mov #rtbuf,r2			;set up for stuffing into packet
+	mov #128.,r1
+1$:	mov (r2)+,(r3)+			;move the stuff in
+	sob r1,1$
+	mov #256.,pklen(r0)		;set the length of the data
+	kcall outpak			;call local routine to send it out
+
+	mov #<256.+pkdat>/2,r3
+	kcall alcsiz
+	mov #200,pkop(r0)
+	mov r0,r3
+	add #pkdat,r3
+	mov #rtbuf+256.,r2		;second half of RT11 block
+	mov #128.,r1
+2$:	mov (r2)+,(r3)+
+	sob r1,2$
+	mov #256.,pklen(r0)
+	kcall outpak
+
+	inc rtblk			;update RT11 block to read
+	br sndlp
+
+8$:	call chfini,r4		; wait for everthing to be ack'd
+	call chcls,<r4,#0>	;close the connection
+
+die:	mov #1000,r1
+1$:	cocall			;wait so NCP gets the CLS out
+	sob r1,1$
+	reslst			;restore RT11 state
+	.exit
+
+;strings, tables etc.
+
+swttab:	.word	'W,widopt
+	.word	'w,widopt
+	.word	'S,stdopt
+	.word	'L,lstopt
+	.word	'F,jusopt
+	.word	'P,pmfopt
+	.word	0,0
+
+pklist:
+	.word	1$,naropt
+	.word	2$,widopt
+	.word	3$,stdopt
+	.word	4$,lstopt
+	.word	5$,jusopt
+	.word	6$,pmfopt
+	.word	0,0
+1$:	.ascii	'Default '
+	.byte	200
+2$:	.ascii	'/W      '
+	.byte	200
+3$:	.ascii	'/S      '
+	.byte	200
+4$:	.ascii	'/L      '
+	.byte	200
+5$:	.ascii	'/F      '
+	.byte	200
+6$:	.ascii	'/P      '
+	.byte	200
+
+greet:	.asciz	\S1 Network Printer v1.1, type "/?" for help.\
+hlpms:	.ascii	\Type filename with /X to specify options in next line,\
+	.byte	15,12
+	.asciz	\  or /Z to take options from the file, or use a package:\
+
+concls:	.asciz	/Connection closed/
+badms:	.asciz	/Bad switch/
+failms:	.asciz	/Failed/
+tline:	.ascii	/title="/
+	.byte	200
+
+pname:	.ascii	/";/
+.if eq devnum-7
+	.asciz	/name="Dev 7 RT11";/
+.iff
+ .if eq devnum-6
+	.asciz	/name="Dev 6 RT11";/
+ .iff
+	.byte	0
+ .endc
+.endc
+
+prompt:	.byte	175,200
+
+naropt:	.ascii /hpit=16;lmar=10;rmar=139;/
+	.byte	200
+widopt:	.ascii /hpit=10;lmar=6;rmar=84;head;/
+	.byte	200
+stdopt:	.ascii /hpit=10;lmar=6;rmar=84;/
+	.byte	200
+lstopt:	.ascii /hpit=16;lmar=10;rmar=139;/
+	.byte	200
+jusopt:	.ascii /hpit=10;lmar=1;rmar=84;tmar=3;bmar=66;/
+	.byte	200
+pmfopt:	.ascii /hpit=12;lmar=10;rmar=102;tmar=3;bmar=63;head;/
+	.byte	200
+cbfopt:	.ascii /hpit=16;lmar=8;rmar=140;tmar=3;bmar=66;/
+	.byte	200
+
+crlf:	.byte	15,12,200
+	.even
+outpak:
+loop  < call chdato,<r0,r4>
+	exitl cc
+	cmpb #%csopn,cnstat(r4)	;open?
+	if ne,<
+	  kcall frepck		;free the left over packet
+1$:	  call chdati,r4,r0	;try for reason for close
+	  bcs 2$		;should have it here
+	  kcall frepck		;still have left over data, chuck it
+	  cocall
+	  br 1$			;go back and try again
+2$:	  tst r0		;did we get a packet of some sort?
+	  beq 3$		;no, just print msg and quit
+	  mov r0,r1
+	  add #pkdat,r1		;point to data in packet
+	  mov pklen(r0),r2	;get the length
+	  beq 24$		;no reasonable msg
+	  push r4		;save connection temporarily
+	  mov #linbuf,r3
+	  mov #linbfs-1,r4
+	  kcall movs		;move the string
+	  .prtx #linbuf
+	  pop r4
+24$:	  kcall frepck
+3$:	  .prtx #concls
+	  call chcls,<r4,#0>
+	  jmp die		;punt out.  !non modularity!
+	  >
+	cocall			;wait
+
+	exitl eq
+	rptl
+	>
+	kretrn			;back to the user
+
+;string utils
+
+cmps:	mov	r2,-(sp)
+1$:	cmpb	(r1)+,(r3)+
+	beq	2$
+	mov	(sp)+,r2
+	rts	pc
+2$:	sob	r2,1$
+	mov	(sp)+,r2
+	sez
+	rts	pc
+
+		;move string from r1(ptr),r2(len) to r3(ptr),r4(len)
+		;  r1,r3 updated; padding and truncation is done
+movs:	mov	r0,-(sp)
+	mov	r2,r0
+	beq	11$
+	cmp	r4,r0
+	ble	3$
+1$:	movb	(r1)+,(r3)+
+	sob	r0,1$
+11$:	mov	r4,r0
+	sub	r2,r0
+	beq	21$
+2$:	movb	#40,(r3)+
+	sob	r0,2$
+21$:	mov	(sp)+,r0
+	rts	pc
+3$:	mov	r4,r0
+	beq	21$
+31$:	movb	(r1)+,(r3)+
+	sob	r0,31$
+	br	21$
+
+movsz:		;moves ascii string from (r1)+ to (r3)+
+		;  updates r1,r3 - The new string is also asciz but r3 is
+		;   decremented to allow for consecutive operations.
+		;  a zero byte calls for CRLF to be appended, 200 byte is moved
+	mov	r0,-(sp)
+1$:	movb	(r1)+,r0
+	beq	3$
+	cmpb	r0,#200
+	beq	2$
+	movb	r0,(r3)+
+	br	1$
+2$:	movb	r0,(r3)
+	br	4$
+3$:	movb	#15,(r3)+
+	movb	#12,(r3)+
+	movb	#200,(r3)
+4$:	mov	(sp)+,r0
+	rts	pc
+
+	;take one word date in r0 and make it (r1)+: day, month, year
+	; r0 bashed, r1 updated
+prsedt:	mov r2,-(sp)
+	mov r0,-(sp)		;save entire date
+	ash #-5,r0		;move day to low order
+	mov r0,r2
+	bic #177740,r2		;stash and mask
+	mov r2,(r1)+
+	ash #-5,r0		;mov month to low order
+	mov r0,r2		;stash and mask
+	bic #177740,r2
+	mov r2,(r1)+
+	mov (sp)+,r0		;restore original date to r0
+	bic #177740,r0		;mask to leave year
+	add #110,r0		;fix offset
+	mov r0,(r1)+
+	mov (sp)+,r2
+	rts pc
+
+	;convert 3 word (r1)+ of day,month,year to ascii string(9) in (r3)+
+	;   r0 bashed,  r1,r3 updated
+putdat:	mov	r2,-(sp)
+	mov	r1,r2
+	clr	r0
+	mov	(r2)+,r1
+	div	#10.,r0
+	tst	r0
+	bne	1$
+	movb	#40,r0
+	br	2$
+1$:	bis	#60,r0
+2$:	bis	#60,r1
+	movb	r0,(r3)+
+	movb	r1,(r3)+
+	movb	#'-,(r3)+
+	mov	(r2)+,r1
+	bic	#177760,r1	;paranoia
+	mul	#3,r1
+	add	#montab,r1
+	movb	(r1)+,(r3)+
+	movb	(r1)+,(r3)+
+	movb	(r1)+,(r3)+
+	movb	#'-,(r3)+
+	mov	(r2)+,r1
+	clr	r0
+	div	#10.,r0
+	bis	#60,r0
+	bis	#60,r1
+	movb	r0,(r3)+
+	movb	r1,(r3)+
+	mov	r2,r1
+	mov	(sp)+,r2
+	rts	pc
+montab:	.ascii	/$$$JanFebMarAprMayJunJulAugSepOctNovDec/
+	.even
+
+linbfs=90.
+linbuf:	.blkb	linbfs		;for regular CSIGEN command line
+	.byte	15,12
+lincnt:	.word
+linptr:	.word	linbuf
+
+fcmd:	.word	0		;flag saying to use file commands
+ucmd:	.word	0		;may have ptr to user command line
+pcmdln:	.word	naropt		;default option package
+
+sptemp:	.word			;temp to save SP in for CSIGEN
+today:	.blkw	3		;day-month-year
+rtblk:	.word	0		;blkno of rt11 file
+
+cmdbuf:			;Note these two areas are shared!!!
+rtbuf:	.blkw	256.		;RT11 block buffer and user cmd buffer
+
+area:	.blkw	10.		;for RT11 calling
+
+	putlst
+	constants
+hpsize==4096.
+chheap:	.word	.+2
+	.blkb	hpsize
+patch:	.blkw	32.
+devare:
+	.end start
+

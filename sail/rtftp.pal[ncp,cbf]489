@@ -1,0 +1,1940 @@
+;;; -*-midas-*-
+	.title FTP for RT-11
+	.sbttl Options and Preliminaries
+
+versio==%fnam2			;get version number and print it
+
+;;; Test out the Chaos to Arpanet connection over the Chaos Net
+
+.=1300
+	.insrt dcls
+	.insrt defns
+	.insrt ncptc
+
+md===22
+ setf ^"What Machine is this assembly for? (7 = Dev-7, 6 = Dev-6, or MD) ",devnum
+.iif b devnum, devnum==7
+
+.if ne devnum-md
+.if ne devnum-7
+.if ne devnum-6
+.error	Improper Device Number, Device No. 7 Assumed
+devnum==7
+.endc
+.endc
+.endc
+
+setf ^"Debugging Assembly? ",debug
+.iif b debug, debug==0
+
+setf ^"Debugging JBR Lossage? ",jbrlos
+.iif b jbrlos, jbrlos==0
+
+.if ne jbrlos
+  setf ^"With Disk IO timing? ",jbrdio
+  .iif b jbrdio, jbrdio==0
+.iff
+  jbrdio==0
+.endc
+
+.if eq devnum-7
+setf ^"Use Newman (0 or default) or TTY (1) transceiver on Device 7?",whxcvr
+setf ^"Is Device 7 running an SJ monitor?",asmsj
+.if eq whxcvr-1
+	.insrt dv7tdf
+.iff
+	.insrt dv7mdf
+.endc
+.endc
+
+.if eq devnum-6
+	.insrt dv6mdf
+ setf ^"What version of RT-11 is Dev 6 running these days?",rt11vn
+.endc
+
+.if eq devnum-md
+	.insrt mddef
+.endc
+
+.iif ndf asmsj,asmsj===1	;default to SJ monitor
+	.insrt rt11m
+
+	dsthst==21_8+4		;send to arpa-11
+
+ 	.insrt cncp
+	.insrt allint
+	.insrt nutils
+
+
+.macro	print string
+	jsr pc,types
+	.string ^~string~ 
+.endm
+
+;	.block buf,bf
+dsect <
+bf.sze:: .blkw 1
+bf.bgn:: .blkw 1
+bf.end:: .blkw 1
+bf.put:: .blkw 1
+bf.npt:: .blkw 1
+bf.get:: .blkw 1
+bf.rng:: .blkw 0
+	>,buf.ln
+
+	deftcb <ftppi,outtsk,intsk>	;,stptsk>
+
+clock:	0,0
+clkint:	adc clock
+	adc clock+2
+	mtps 106		;with RT'11s PS
+	jmp @104		;go to the addr of the RT-11 clock interrupt
+
+start:	mtps #340		;No interruptions now
+	mov #1000,sp
+	mov #300,r0		;do not interfere with RT-11
+loop <	  mov r0,(r0)
+	  add #2,(r0)+
+	  mov #3,(r0)+		;BPT on spurious interrupt
+	  cmp r0,#500
+	  rptl lo
+	  >
+
+	mov #1200,r0		;Ignore spurious Newman interrupts
+loop <	  mov r0,(r0)
+	  add #2,(r0)+
+	  mov #2,(r0)+
+	  cmp r0,#1300
+	  rptl lo
+	  >
+
+	initcb
+
+; set up save list for rt-11
+	tst havset
+	if eq,<			;if we haven't done this already
+	  save <60,70>,<177560,177562>,<177564,177566>,<100,104>
+	>
+
+	clr clock
+	clr clock+2
+	tst havset		;have we set up the hack for RT-11 yet?
+	if eq,<			;we haven't
+	  mov @#100,@#104
+	  mov @#102,@#106
+	  >
+	mov #clkint,@#100
+	mov #341,@#102
+.if eq devnum-7
+.if ne whxcvr-1
+	bis #1,@#nm.enb
+	call nmfrap
+.endc
+.endc
+	mov chheap,r1
+	mov #hpsize,r0
+	jsr pc,makear
+	clr conect
+	call chinit
+
+	tst havset		;have we setup yet
+	if eq,<
+	  savlst		;issue RT-11 save
+	  inc havset		;set it to one
+	  >
+	mov #inint,@#60
+	mov #340,@#62
+	mov #outint,@#64
+	mov #340,@#66
+	mov #100,@#177560
+	clr @#177564
+
+;;; setup the input and output ring buffer
+
+	clr indfil		;No indirect files are open
+	mov #inbuf+bf.rng,inbuf+bf.put
+	mov #inbuf+bf.rng+1,inbuf+bf.npt
+	mov #inbuf+bf.rng,inbuf+bf.get
+	mov #inbuf+bf.rng,inbuf+bf.bgn
+	mov #inbuf+bf.rng+pbufsz,inbuf+bf.end
+	mov #pbufsz,inbuf+bf.sze
+
+	mov #outbuf+bf.rng,outbuf+bf.put
+	mov #outbuf+bf.rng+1,outbuf+bf.npt
+	mov #outbuf+bf.rng,outbuf+bf.get
+	mov #outbuf+bf.rng,outbuf+bf.bgn
+	mov #outbuf+bf.rng+pbufsz,outbuf+bf.end
+	mov #pbufsz,outbuf+bf.sze
+
+	mov #rubbuf+bf.rng,rubbuf+bf.put
+	mov #rubbuf+bf.rng+1,rubbuf+bf.npt
+	mov #rubbuf+bf.rng,rubbuf+bf.get
+	mov #rubbuf+bf.rng,rubbuf+bf.bgn
+	mov #rubbuf+bf.rng+pbufsz,rubbuf+bf.end
+	mov #pbufsz,rubbuf+bf.sze
+
+	mov #ttyibf+bf.rng,ttyibf+bf.put
+	mov #ttyibf+bf.rng+1,ttyibf+bf.npt
+	mov #ttyibf+bf.rng,ttyibf+bf.get
+	mov #ttyibf+bf.rng,ttyibf+bf.bgn
+	mov #ttyibf+bf.rng+pbufsz,ttyibf+bf.end
+	mov #pbufsz,ttyibf+bf.sze
+
+	mov #ttyobf+bf.rng,ttyobf+bf.put
+	mov #ttyobf+bf.rng+1,ttyobf+bf.npt
+	mov #ttyobf+bf.rng,ttyobf+bf.get
+	mov #ttyobf+bf.rng,ttyobf+bf.bgn
+	mov #ttyobf+bf.rng+pbufsz,ttyobf+bf.end
+	mov #pbufsz,ttyobf+bf.sze
+	mov #-1,blpflg		;blip on initially
+	clr noprin		;turn on printing
+
+	mtps #0
+rtread:	bis #10100,@#44		;sets RT-11 special activation bit
+1$:	.ttinr
+	bcs 2$
+	cmp r0,#12		;FTP doesn't like linefeeds
+	 beq 1$
+	call putchr,<#ttyibf,r0>
+	br 1$
+2$:
+	jmp manlop
+
+
+outtsk:	proc 0,0,<>,<pakptr,datptr,datend,tnopt>
+decho==1
+dspurg==2
+wspurg==4
+
+tnbeg:
+loop  <	mov conect,r1
+	if ne,<
+	  cmpb cnstat(r1),#%csopn	;connection open?
+	  exitl eq		;exit loop if so.
+	  >
+	cocall			;reschedule
+	rptl
+	>
+
+	clr pakptr(fp)		;initialize
+
+	kcall alc16		;get a 16 word packet for initial IAC
+	mov #istrng,r3		;get pointer to initial IAC string
+	mov r0,r4		;point to data area
+	add #pkdat,r4
+	clr pklen(r0)		;clear out the length
+	movb #200,pkop(r0)	;set the packet opcode
+
+loop <	movb (r3)+,(r4)+	;move byte into packet
+	exitl eq		;if zero then exit
+	inc pklen(r0)		;bump up length
+	rptl
+	>
+	kcall outpak		;output the packet
+	clr tnopt(fp)		;clear out the initial options word
+;	bis #wspurg+decho+dspurg,tnopt(fp)	;set bits to indicate
+				;we have sent will spurga, do spurga
+				;and do echo
+
+loop <	kcall readch		;read a char from the net (char in R2)
+	cmpb r2,#iac		;is this an IAC?
+	if eq,<
+	  kcall readch		;is it will, won't or do, don't?
+	  mov r2,r3		;save the type
+	  cmp r3,#tnnop		;is it a nop?
+	  rptl eq		;punt this interation
+	  cmp r3,#iac		;is it an IAC?
+	  beq stfchr		;output IAC
+	  cmp r3,#will		;see if it is less
+	  rptl lt		;repeat the loop
+	  kcall readch		;get what option
+	  cmpb r2,#spurga	;is it a suppress go ahead command?
+	  if eq,<
+	    cmpb r3,#wont	;is it will or won't
+	    if le,<
+	      bit #dspurg,tnopt(fp)	;have we sent a do?
+	      beq senddo	;send a do
+	      bic #dspurg,tnopt(fp)	;okay, nego complete
+	      rptl
+	      >
+	    cmpb r3,#do		;is it a do or don't
+	    if his,<
+	      bit #wspurg,tnopt(fp)	;have we sent a will
+	      beq sendwi	;send a do
+	      bic #wspurg,tnopt(fp)	;okay nego complete
+	      rptl
+	      >
+	    >
+
+    	  cmpb r2,#echo		;is it an echo request?
+	  if eq,<
+	    cmpb r3,#wont	;is it a won't?
+	    if le,<		;if it is a will or won't
+	      bit #decho,tnopt(fp)	;have we sent a will?
+	      beq senddo		;send a do
+	      bic #decho,tnopt(fp)	;okay, nego complete
+	      rptl
+	      >
+	    beq sendwo		;send a won't
+	    >
+
+	  cmpb r3,#do		;if do?
+	  if eq,<
+sendwo:	    mov #wont,r3	;no we wont do this
+	    br sndiac
+	    >
+	  cmpb r3,#dont
+	  if eq,<
+sendwi:	    mov #will,r3
+	    br sndiac
+	    >
+	  cmpb r3,#will
+	  if eq,<
+senddn:	    mov #dont,r3
+	    br sndiac
+	    >
+	  cmpb r3,#wont
+	  if eq,<
+senddo:	    mov #do,r3
+	    >
+
+sndiac:	  kcall alc16		;get a packet
+	  movb #200,pkop(r0)	;set the packet opcode
+	  mov #3,pklen(r0)	;set the length of the packet
+	  movb #iac,pkdat(r0)	;set in IAC
+	  movb r3,pkdat+1(r0)	;set in will/wont do/dont
+	  movb r2,pkdat+2(r0)	;indicate what we are doing
+	  kcall outpak		;output the packet
+	  rptl
+	  >
+
+stfchr:
+  loop <  call putchr,<#outbuf,r2>	;output the char
+	  if cs,<
+	    cocall
+	    rptl
+	    >
+	  >
+	rptl
+	>
+
+intsk:	proc 0,0
+
+loop <	cocall			;reschedule
+	mov conect,r1		;do we have a connection open?
+	rptl eq
+	call chstat,r1		;see if we can send a packet yet?
+	if cc,<
+	  call numchr,#inbuf,r3	;any characters waiting?
+	  rptl eq
+	  mov r3,r4
+	  add #pkdat+1,r3
+	  asr r3
+	  kcall alcsiz
+	  rptl cs		;exit if carry bit set
+	  mov r4,pklen(r0)
+	  movb #200,pkop(r0)	;set the packet opcode to 200
+	  mov r0,r2
+	  add #pkdat,r2
+
+    loop  < call getchr,#inbuf,r3
+	    movb r3,(r2)+
+	    sorl r4
+	    >
+
+	  kcall outpak		;output a packet
+	  >
+	rptl
+	>
+outpak:
+loop  < call chdato,<r0,r1>
+	exitl cc
+	cmpb #%csopn,cnstat(r1)	;open?
+	if ne,<
+	  kcall frepck		;free the left over packet
+	  exitl
+	  >
+	cocall			;wait
+	mov conect,r1		;fetch connection
+	exitl eq
+	rptl
+	>
+	kretrn			;back to the users
+
+	.sbttl Utilities for Telnet
+
+readch:	tst pakptr(fp)		;do we have a packet yet?
+	if eq,<
+loop <	  cocall		;give the other guy a chance
+	  mov conect,r1		;is connection still there?
+	  if eq,<
+	    jmp exit
+	    >
+	  call chdati,r1,r0	;get a packet from the arpa net
+	  if cs,<		;carry clear if packet  present
+	    cmpb #%csopn,cnstat(r1)
+	    rptl eq		;connection open, no input data
+	    tst r0		;did we get an explanation back?
+	    if eq,<		;if no, try once again
+	      call chdati,r1,r0
+	      >
+	    tst r0		;any message yet?
+	    if ne,<
+	      mov r0,errpak	;save error packet for ftppi task
+	      >
+	    jmp exit		;leave program
+	    >
+	  cmpb pkop(r0),#220	;is this data for the FTP channel?
+	  if eq,<		;then output to file
+	    push r2,r3,r4
+	    mov r0,r3		;make pointer data area
+	    add #pkdat,r3
+	    mov pklen(r0),r2	;get char in r2
+	    bic #pkfcnt,r2
+	    if ne,<
+  loop	    < movb (r3)+,r4	;get byte in r4
+.if eq jbrlos
+	      kcall putfil	;put it into a file
+.iff
+.if ne jbrdio
+	      kcall putfil
+.iff
+	      inc counch
+	      bit #512.-1,counch
+	      if eq,<
+		call doblip
+		inc blkcnt
+		>
+.endc
+	      cmpb nextch,#175
+	      if eq,<
+		inc nextch
+		cmpb r4,#15
+		bne 1$
+		br 2$
+		>
+	      cmpb nextch,#176
+	      if eq,<
+		mov #40,nextch
+		cmpb r4,#12
+		bne 1$
+		br 2$
+		>
+	      cmpb r4,nextch
+	      if ne,<
+1$:		bpt
+		>
+	      inc nextch
+.endc
+2$:	      sorl r2		;loop
+	      >
+	      >
+	    kcall frepck	;flush out old packet
+	    pop r4,r3,r2	;restore regs
+	    rptl		;get another packet
+	    >
+
+	  cmpb pkop(r0),#204	;did the data connection close?
+	  if eq,<
+.if eq jbrlos
+	    kcall clsfil	;close the file
+.iff
+.if ne jbrdio
+	    kcall clsfil	;close the file
+.iff
+	    inc blkcnt
+	    inc filcls		;fake out the other tasks/levels etc.
+.endc
+.endc
+	    kcall frepck	;don't need the packet now.
+	    rptl
+	    >
+
+	  mov r0,pakptr(fp)	;save pointer to packet
+	  mov r0,datptr(fp)
+	  add #pkdat,datptr(fp)	;save pointer to data area
+	  mov pklen(r0),datend(fp)	;calc end of data
+	  bic #pkfcnt,datend(fp)	;clear out forwarding count
+	  add datptr(fp),datend(fp)
+	  >
+	>
+				
+	cmp datptr(fp),datend(fp)	;are we out of data
+	if eq,<
+	  mov pakptr(fp),r0	;free packet
+	  kcall frepck
+	  clr pakptr(fp),r0
+	  jmp readch		;start all over again
+	  >
+	movb @datptr(fp),r2	;return char in R2
+	bic #177400,r2		;clear high byte
+	inc datptr(fp)		;bump up the pointer
+	kretrn			;return
+
+exit:
+	jmp tnbeg		;start again
+
+typpak:	proc 0,0,<r2,r3,r4>
+	mov pklen(r0),r2	;get size of data area
+	bic #pkfcnt,r2		;clear out the forwarding count
+	if ne,<
+	  mov r0,r3
+	  add #pkdat,r3		;point to data in packet
+  loop <    movb (r3)+,r4	;extract char
+    loop <    call putchr,<#ttyobf,r4>	;print it
+	      if cs,<
+		cocall
+		rptl
+		>
+	      bis #100,@#177564
+	      >
+	    sorl r2
+	    >
+	  >
+	return			;all done
+
+	.sbttl FTP Protocol Interpreter Task
+ftppi:	proc 0,0
+	clr conect		;clear out conect
+	mov #1,eolflg		;set end of line flag initially
+
+vn2==versio/100.
+vn1==<versio-<100.*vn2>>/10.
+vn0==<versio-<100.*vn2>>-<10.*vn1>
+
+.litrl ^" .ascii /
+
+ARPANET RT-11 USER FTP./
+	.byte vn2+60,vn1+60,60+vn0
+	.asciz / TYPE ? FOR HELP.
+
+/",%.ptmp
+	kcall types
+	.word %.ptmp-.
+
+cmdlop:	call flshln		;flush the remaining contents of a line
+	mov conect,r1		;see if we have a connection open
+	if eq,<			;if zero then prompt with %%
+	  print ^"%%"		;print prompt
+	  >
+	else <
+	  cmpb cnstat(r1),#%csopn	;connection open?
+	  if ne,<
+	    mov errpak,r0	;is there any error packet wainting?
+	    if ne,<
+	      kcall typpak
+	      kcall frepck	;get rid of the packet
+	      print ^"
+"
+	      clr errpak	;no more use for the error packet
+	      >
+	    print ^"Connection Closed
+"
+	    clr conect		;no connection open now.
+	    br cmdlop
+	    >
+	  print ^"%"		;print connection open prompt
+	  >
+
+	call rdcmd,,r2		;read a command, type returned in r2
+	if cs,<			;if carry set then we have detected and error
+	  print ^"Unrecognized Command
+"
+	  br cmdlop
+	  >
+
+	tst r1			;see if connection is open
+	if eq,<
+	  bitb #1,cmdflg(r2)	;is this command alllowed with no connection
+	  if eq,<
+	    print ^"No Connection Open - Command Ignored
+"
+	    jmp cmdlop
+	    >
+	  >
+
+	asl r2			;multiply command index by 2
+	jmp @dispat(r2)		;dispatch to command
+
+dispat:	.word donul,docon,doqit,dousr,dopas,doacc,dotyp,doret,dosto,dolis,dobli
+	.word dosta,doblp,dodis,docwd,dolog,dohel,dohel,doind,doind
+
+donul:	br cmdlop		;null command
+
+docon:  tst conect
+	if ne,<
+	  print ^"Connection already open.  Command ignored.
+"
+	  br cmdlop
+	  >
+	kcall alc16		;get a packet for the open
+	mov r0,r3
+	call mvstrg,<#jcls1,r3>,r3	;start building JCL for the open
+	call rdstmv,r3,r3	;read a string from the cmd and move to packet
+	call mvstrg,<#jcls2,r3>,r3	;finish building jcl
+	clrb (r3)		;terminate the JCL string
+
+ftpwns===3			; default FTP window size to 3
+.if eq devnum-7
+	ftpwns===1		; FTP window size: presume for Newman
+	.iif eq whxcvr-1, ftpwns===3	; but dev-7 might be TTY transceiver
+.endc
+
+	call chopen,<#dsthst,#ftpwns,r0>,r1	; open connection
+	if cs,<
+	  kcall frepck		;free the JCL string
+	  mov r1,r0		;put packet into r0
+	  call typpak		;type contents of packet
+	  kcall frepck		;get rid of the packet
+	  print ^"
+
+"
+	  jmp cmdlop		;get another command
+	  >
+	kcall frepck		;no need for data area any more
+
+	mov r1,conect		;save ptr to the connection
+	print ^"Connection Open
+
+"
+loop  <	call rdprtr,,r3		;read and print the reply code
+	exitl cs		;error if carry set
+	cmp r3,#100.		;is it les than 100 decimal?
+	rptl lt			;then loop
+	>
+	jmp cmdlop		;loop
+
+doqit:
+	kcall clscon
+loop	< cocall
+	  call numchr,#ttyobf,r0	;how many chars left in output buffer
+	  tst r0
+	  rptl ne		;loop until buffer is emptry
+	  >
+	mov clock,r0		;wait a little while before exiting to let
+	add #3,r0		;inprogress tty io finish.
+1$:	cmp r0,clock
+	bne 1$
+
+	clr havset		;so we issue the .device if we are re-entered
+	reslst			;restore saved values
+	mov #1,r0		;program is restartable
+	.exit			;return to RT-11 KMON
+	jmp cmdlop
+
+dousr:	call putstr,#user	;output the command name
+	call rdsttt		;read a string from console and send to server
+	call putstr,#eolstr	;output CR/LF
+	call rdprtr,,r3		;read and pring reply code
+	jmp cmdlop
+
+dopas:	call putstr,#pass	;output the command name
+	call rdsttt		;read a string from console and send to server
+	if cs,<			;if there was no argument
+	  kcall flshln		;flush out CR at the end of the last line
+	  print ^"Input Password: "
+	  mov #1,noprin	;don't echo the password
+	  call rdsttt		;read string and send to tn
+	  clr noprin		;turn echo back on.
+	  print ^"
+"				;go to new line.
+	  >
+	call putstr,#eolstr	;output CR/LF
+	call rdprtr,,r3		;read and pring reply code
+	jmp cmdlop
+
+doacc:	call putstr,#acct	;output the command name
+	call rdsttt		;read a string from console and send to server
+	call putstr,#eolstr	;output CR/LF
+	call rdprtr,,r3		;read and pring reply code
+	jmp cmdlop
+
+dotyp:
+loop  <	kcall readfc		;get type
+	cmpb r0,#40		;is it a space
+	rptl eq
+	>
+
+	cmpb r0,#100		;if char in R0 is gt than "@"
+	if gt,<
+	  cmpb r0,#133		;and if less than "[" (upperacse alphabetic)
+	  if lt,<
+	    bisb #40,r0		;make it lower case
+	    >
+	  >
+
+	cmpb r0,#141		;is it an a?
+	if ne,<
+	  cmpb r0,#151		;is it an i?
+	  if ne,<		;if not, then illegal or unsupported type
+	    print ^"Illegal or Unsupported TYPE
+"
+	    jmp cmdlop
+	    >
+	  >
+	call putstr,#type
+	call putctn,r0		;put char out
+	call putstr,#eolstr
+	call rdprtr,,r3
+	jmp cmdlop
+
+doret:				;retrieve a file from foreign host
+	kcall alc16		;get a temporary
+	mov r0,r3		;copy pointer to r3
+	call rdstmv,r3,r3	;get arg from console, put into temporary
+	if cs,<
+1$:	  print ^"Wrong Number of Arguments - Command Aborted
+"
+	  kcall frepck
+	  jmp cmdlop
+	  >
+	clrb (r3)		;make asciz string
+	push r0
+	kcall alc16		;get another area of storage
+	mov r0,r3		;save pointer in r3
+	call rdstmv,r3,r3	;get file name from user
+	if cs,<
+	  kcall frepck		;get rid of the packet
+	  pop r0
+	  br 1$
+	  >
+	movb #75,(r3)+		;This is an output file! Move in an "=".
+	clrb (r3)		;make an ASCIZ string
+	mov sp,r2		;save sp
+.if eq <jbrlos*<1-jbrdio>>
+	.csige #iobuf,#filtyp,r0	;open output file
+	mov r2,sp		;flush any option info which we might have
+	if cs,<			;see if we had an error
+	  print ^"Error opening file - Command Aborted
+"
+	  kcall frepck		;free the storage
+	  pop r0
+	  kcall frepck		;add the rest of it.
+	  jmp cmdlop
+	  >
+.endc
+.if ne jbrlos
+	mov #40,nextch		;initialize colating sequence variable
+	clr counch		;no chars sent so far.
+.endc
+	kcall frepck		;free the storage
+	pop r0
+	call putstr,#retr
+	call putstr,r0		;put string into buffer
+	clr usetty		;put data into file, not on tty
+	clr filcls		;clear the flag which indicates file closed
+	clr blkcnt		;clear the block count
+	mov #iobuf,iopntr	;init the buffer pointer
+	clr pklen(r0)		;clear the packet length
+	movb #204,pkop(r0)	;listen on socket U+4 for FTP data
+	mov conect,r1		;output this packet to CAFACE
+
+loop <    call chdato,<r0,r1>
+	  exitl cc
+	  cmpb #%csopn,cnstat(r1)	;connection open?
+	  if ne,<
+	    jmp cmdlop		;connection closed, oops.
+	    >
+	  cocall
+	  rptl
+	  >
+	call putstr,#eolstr	;put out the end of line string
+	call rdprtr,,r3		;get first reply code
+	cmp r3,#255.		;should be 255 decimal SOCK XXX
+	if eq,<			;if equal then wait for 250 code
+	  call rdprtr,,r3
+	  cmp r3,#250.		;now we have started transfer
+	  if eq,<		;just wait for end
+	    mov clock,stime	;get starting time for the transfer
+	    mov clock+2,stime+2	;save high word of time
+	    call rdprtr,,r3	;get reply code
+	    cmp r3,#252.	;done?
+	    if eq,<
+loop	      < tst filcls	;see if the file has been closed yet
+		exitl ne	;if the file has closed then exit
+		cocall
+		mov conect,r1	;see if we still have a connection
+		if eq,<
+comlos:		  print "Transfer Aborted"
+.iif eq <jbrlos*<1-jbrdio>>,	  .close #0	;close the file
+		  jmp cmdlop
+		  >
+		cmpb #%csopn,cnstat(r1)	;see if conn still opne
+		bne comlos
+		rptl		;loop
+	        >
+	      kcall prstat	;print statistics for this transfer
+	      jmp cmdlop	;data transfer side will close file.
+	      >
+	    >
+	  >
+.iif eq <jbrlos*<1-jbrdio>>,	.close #0		;error close file
+	jmp cmdlop		;next
+
+dosto:
+	kcall alc16		;get a packet
+	mov r0,r3		;save pointer in r3
+	call rdstmv,r3,r3	;get file name to store
+	bcs 1$
+	clrb (r3)		;make into ASCIZ string
+	mov sp,r2		;save the tsack pointer
+	.csige #iobuf,#filtyp,r0	;open the input file
+	mov r2,sp		;restore the stack pointer
+	if cs,<
+	  print ^"Error opening file - Command Aborted
+"
+	  jmp cmdlop		;get a new command
+	  >
+	mov r0,r3		;time to use the packet again
+	call rdstmv,r3,r3	;to get the file to transfer to
+	if cs,<
+1$:	  print ^"Wrong Number of Arguments - Command Aborted
+"
+	  kcall frepck		;free the storgae we got
+	  .close #3		;close the file
+	  jmp cmdlop		;get a new command
+	  >
+	clrb (r3)		;make into ASCIZ string
+	call putstr,#stor	;output the store command
+	call putstr,r0		;put out the file name
+	movb #210,pkop(r0)	;set packet opcode for the listen
+	clr pklen(r0)
+	mov conect,r1		;get the connection
+
+loop  <	  call chdato,<r0,r1>
+	  exitl cc
+	  cmpb #%csopn,cnstat(r1)	;connection open
+	  if ne,<
+comab:	    print ^"Transfer Aborted
+"
+	    .close #3		;close file to clean up
+	    jmp cmdlop		;connection has closed. punt
+	    >
+	  cocall
+	  rptl
+	  >
+	call putstr,#eolstr	;put out the end of line string
+	clr blkcnt
+	call rdprtr,,r3		;get the reply code
+	cmp r3,#255.		;should be 255 decimal SOCK XXX
+	if eq,<
+	  call rdprtr,,r3	;get next reply code
+	  cmp r3,#250.		;see if we are still winning.
+	  if eq,<		;if so, then start transfer of file
+	    mov clock,stime	;save the low word of the current time
+	    mov clock+2,stime+2	;save the high word of the time
+  loop	  < .readw #ioarea,#3,#iobuf,#256.,blkcnt	;get data
+	    if cs,<		;was there an error?
+	      tstb @#52		;were we at the end of the file?
+	      if ne,<
+		print ^"I/O Error
+"
+		>
+
+	      .close #3
+
+	      kcall lblip	;last blip
+	      kcall alc16	;get a small packet
+	      clr pklen(r0)	;zero length packet
+	      movb #240,pkop(r0)	;set the packet opcode
+	      kcall outpak	;output the packet
+	      mov conect,r1	;do we still have a connection?
+	      beq comab		;abort this command
+	      cmpb #%csopn,cnstat(r1)	;see if still open
+	      bne comab		;if not then abort
+	      call rdprtr,,r3	;get the final reply code
+	      kcall prstat
+	      jmp cmdlop	;get the next commanad
+	      >
+	    mov #iobuf,r4	;point to strat of I/O buffer
+	    kcall sndfil	;output the block (1st half)
+	    kcall sndfil	;output the block (2nd half)
+	    inc blkcnt		;point to next block
+	    kcall doblip		;do the blip code
+	    rptl
+	    >
+	    >
+	  >
+	.close #3		;close the file
+	jmp cmdlop
+
+dolis:				;directory listing
+	mov #list,r0		;use the list commnad
+
+comlis:				;this ocde is common to list and blist
+	call putstr,r0
+	kcall alc16		;get a temporary
+	mov r0,r3		;copy pointer to r3
+	call rdstmv,r3,r3	;get arg from console, put into temporary
+	clrb (r3)		;make asciz string
+	call putstr,r0		;put string into buffer
+
+	mov #1,usetty		;put data into file, not on tty
+	clr filcls		;clear the flag which indicates file closed
+
+	clr pklen(r0)		;clear the packet length
+	movb #204,pkop(r0)	;listen on socket U+4 for FTP data
+	mov conect,r1		;output this packet to CAFACE
+
+	kcall outpak
+	cmpb #%csopn,cnstat(r1)	;connection open?
+	if ne,<
+	  jmp cmdlop		;connection closed, oops.
+	  >
+
+	call putstr,#eolstr	;put out the end of line string
+	call rdprtr,,r3		;get first reply code
+	cmp r3,#255.		;should be 255 decimal SOCK XXX
+	if eq,<			;if equal then wait for 250 code
+	  call rdprtr,,r3
+	  cmp r3,#250.		;now we have started transfer
+	  if eq,<		;just wait for end
+	    if eq,<
+loop	      < tst filcls	;see if the file has been closed yet
+		exitl ne	;if the file has closed then exit
+		cocall		;loop
+		mov conect,r1	;see if we still have a connection
+		if eq,<
+comnls:		  print ^"Listing Aborted
+"
+		  jmp cmdlop
+		  >
+		cmpb #%csopn,cnstat(r1)
+		bne comnls	;connection has closed
+		rptl
+	        >
+	      call rdprtr,,r3	;get reply code
+	      cmp r3,#252.	;done?
+	      print ^"Listing Complete
+"
+	      jmp cmdlop	;data transfer side will close file.
+	      >
+	    >
+	  >
+
+	jmp cmdlop		;next
+
+dobli:				;short directory listing command
+	mov #nlst,r0		;name of FTP command
+	jmp comlis		;goto common code
+
+
+dosta:
+	call putstr,#stat	;output the status command
+	kcall alc16		;get some space
+	mov r0,r3		;get a copy in r3
+	call rdstmv,r3,r3	;read arg string from console
+	call putstr,#eolstr	;output end of line sequence
+	call rdprtr,,r3		;get a reply code
+	kcall frepck		;free the packet
+	jmp cmdlop		;get another command
+
+dodis:				;disconnect from host
+	kcall clscon		;close the connection
+	jmp cmdlop
+
+clscon:
+	tst conect		;do we have an open connection?
+	if ne,<
+	  call putstr,#bye	;send asciz string to server
+	  call rdprtr,,r3	;read and print reply
+	  call chcls,<r1,#0>	;close chaos connection
+	  print ^"Connection Closed
+"
+	  clr conect
+	  >
+	kretrn
+
+doind:	tst indfil
+	 if ne,<
+	print ^"Only one level of indirection allowed
+"
+	clr indfil
+	.close #4
+	jmp cmdlop
+>
+	kcall alc16		;get some storage
+	mov r0,r3
+	movb #',,(r3)+		;Fool RT-11 file scanner
+	call rdstmv,r3,r3	;Get the file name
+	clrb (r3)		;Make asciz
+	mov sp,r2
+	.csige #iobuf,#cmdtyp,r0	;Let RT-11 read the file name
+	mov r2,sp
+	if cs,<
+	print ^"Indirect file not found
+"
+	kcall frepck
+	jmp cmdlop
+>
+	kcall frepck
+	mov #1,indfil
+	clr indcnt
+	kcall indget		;Read in the first command buffer
+	jmp cmdlop
+
+indget:	push r0
+	.readw #ioarea,#4,#indbuf,#256.,indcnt
+	if cs,<
+	.close #4
+	clr indfil
+>
+	mov #indbuf,indptr
+	inc indcnt
+	pop r0
+	kretrn
+
+indchr:	movb @indptr,r0		;Get a character from the buffer
+	inc indptr
+	cmp indptr,#indend	;End of the buffer?
+	if his,<
+	kcall indget
+>
+	tst r0
+	kretrn
+
+indfil:	.word 0
+indbuf:	.blkw 256.
+indend:
+indptr:	.word 0
+indcnt:	.word 0
+
+doblp:				;local blip command
+	com blpflg		;change state
+	if eq,<
+	  print ^"Blip Off
+"
+	  >
+	else <
+	  print ^"Blip On
+"
+	  >
+	jmp cmdlop
+
+docwd:				;handle the FTP XCWD command
+	call putstr,#xcwd
+	call rdsttt		;read a string and send it out to the server
+	call putstr,#eolstr
+	call rdprtr,,r3		;get the reply code
+	jmp cmdlop		;next command
+
+dolog:				;login is a combination of user nad pass cmds.
+	call putstr,#user	;send a user command
+	call rdsttt		;send user name to system
+	call putstr,#eolstr	;end of line seq.
+	call rdprtr,,r3		;get a reply code.
+	cmp r3,#330.		;did we get request for password?
+	if eq,<
+	  jmp dopas		;handle the password command
+	  >
+	jmp cmdlop		;next command
+
+dohel:				;help command, print useful info.
+	print ^~Available Commands Are:
+
+help                    - Print this message
+connect {host/imp}      - Open connection to a host
+quit                    - Quit and return to RT-11
+disconnect              - Disconnect from host
+user {uname}            - Send user name
+password {password}     - Send password to host
+login {uname} {pass}    - Combination of  user and password commands
+account {account}       - Send account to host
+cwd {dir name}          - Change working directory at host
+type {ascii | image}    - Set type of data transfer
+retrieve {from} {to}    - Retrieve a file from the host
+store {from} {to}       - Store file on host
+list {dir}              - Get directory listing from host
+blist {dir}             - Get a brief directory listing from the host
+status {host dependent} - Get status information from a host 
+blip                    - Toggle state of blip mode
+
+All commands can be abbreviated to the first four characters.  The
+"password" command will prompt for its argument without echo if it
+is omitted from the command line.
+~
+	jmp cmdlop
+
+prstat:	print ^"Transfer Complete - "
+	mov blkcnt,r0
+	kcall prnum
+	print ^" blocks in "
+	mov clock,r1
+	mov clock+2,r0		;get the current time
+	sub stime,r1		;get elapsed time
+	sbc r0			;subtract off the carry
+	sub stime+2,r0		;subtract high word of time
+	add #30.,r1		;round to nearest second
+	adc r1			;add in the carry bit
+	div #60.,r0		;divide by 60.
+	mov r0,r3		;save value in r3
+	kcall prnum		;print the number
+	print ^" seconds ("
+	mov blkcnt,r0		;get number of chars in file
+	mul #512.,r0		;512 chars in a bloc, get char
+				;count as a double word
+	div r3,r0		;get result in r0
+	kcall prnum		;print the number
+	print ^" chars/sec)
+"
+	kretrn			;return to the caller
+sndfil:
+loop    < kcall alc256		;get a large packet
+	  exitl cc		;exit if carry clear
+	  cocall
+	  rptl
+	  >
+	mov r0,r3		;make ptr to data area
+	add #pkdat,r3
+	mov #256.,pklen(r0)	;set the packet length
+	movb #220,pkop(r0)	;set the packet opcode
+	mov #128.,r2
+  loop  < mov (r4)+,(r3)+	;move data into the packet
+	  sorl r2		;loop
+	  >
+	 kcall outpak		;output the packet
+	 kretrn			;return to main level
+
+
+
+;;; Read chars from the tty until a blank or CR is found.  The first
+;;; four chars are a command name whicha re looked up in the command
+;;; table.  The error return is taken if the command is not in the 
+;;; command list and the input is scanned until a CR.
+
+rdcmd:	proc 0,1,<r0,r1,r2>
+	clr out1(fp)		;initialize the return value
+	mov #cmdnam,r1		;make pointer to command name
+
+loop  <	kcall readfc		;scan for first non blank.
+	cmpb r0,#40		;is it a space?
+	rptl eq
+	cmpb r0,#15		;is it a CR
+	if eq,<
+	  clr out1(fp)		;null command
+	  return 
+	  >
+	>
+
+	cmpb r0,#100		;if char in R0 is gt than "@"
+	if eq,<			;Treat @ as command
+	movb r0,(r1)+
+	movb #40,(r1)+
+	movb #40,(r1)+
+	movb #40,(r1)+
+	jmp fndcmd
+>
+	if gt,<
+	  cmpb r0,#133		;and if less than "[" (upperacse alphabetic)
+	  if lt,<
+	    bisb #40,r0		;make it lower case
+	    >
+	  >
+	movb r0,(r1)+		;move in first char
+	mov #3,r2		;There are three more chars in name
+loop <	kcall pkchfc		;read a char from the console tty
+	cmpb r0,#15		;did we hit the end of the line?
+	if eq,<
+spocrl:
+  loop	  < movb #40,(r1)+	;move in a space into the command name
+	    sorl r2>
+	  exitl
+	  >
+	cmpb #40,r0		;is it a space?
+	beq spocrl		;space or cr loop
+	kcall readfc		;now actually remove the char from the buffer
+	cmpb r0,#100		;if char in R0 is gt than "@"
+	if gt,<
+	  cmpb r0,#133		;and if less than "[" (upperacse alphabetic)
+	  if lt,<
+	    bisb #40,r0		;make it lower case
+	    >
+	  >
+	movb r0,(r1)+		;move in byte of command
+	sorl r2>		;continue
+
+loop  <	kcall pkchfc		;peak at the next char in the buffer
+	cmpb r0,#40		;if it is a space then exit.
+	exitl eq
+	cmpb r0,#15		;is it a CR
+	exitl eq		;if so, then exit
+	kcall readfc		;now read out the char and through it away.
+	rptl			;we search for the first blank.
+	>
+
+fndcmd:	mov #cmdsze,r2		;move size of command table to r2
+	mov #cmdtbl,r1		;point to command table in r1
+
+loop  <	cmp cmdnam,(r1)+	;is first half of the name equal
+	if ne,<
+	  add #2,r1		;bump the pointer
+	  >
+	else <
+	  cmp cmdnam+2,(r1)+	;compare second half
+	  if eq,<
+	    sub #cmdsze+1,r2	; -(R2 - cmdsze + 1) is the index of the cmd
+	    neg r2		;in zero origin indexing, with 0 as null cmd
+	    mov r2,out1(fp)	;return arg.
+	    return		;we are done, return
+	    >
+	  >
+	sorl r2
+	>
+
+	rtnerr			;return an error
+
+; flush the line from the console until a CR is read
+
+flshln:
+loop <	tst eolflg		;end of line flag set
+	exitl ne
+	kcall readfc		;read a char
+	rptl
+	>
+	clr eolflg		;obviously we are no longer at end of a line
+	kretrn			;flush if error
+
+readfc:
+	push r3
+	call numchr,#rubbuf,r3	;see if there are any chars in the rubout buf
+	tst r3			;are there zero?
+	if eq,<			;if zero then read a line
+	  kcall rdline		;read line from the terminal
+	  >
+	call getchr,#rubbuf,r0	;must be char here since we made sure above.
+	cmpb r0,#15		;is it a CR
+	if eq,<
+	  mov #1,eolflg		;set the eol flag
+	  >
+	else <
+	  clr eolflg		;clear the end of line flag
+	  >
+	pop r3
+	kretrn
+
+rdline:				;read a line from the console
+loop  <
+  loop  <
+	    tst indfil
+	    if ne,<
+		kcall indchr
+		exitl
+>
+	   call getchr,#ttyibf,r0	;read char of cmd
+	    exitl cc
+	    cocall
+	    rptl
+	    >
+	  tstb r0
+	  rptl eq		;Ignore nulls
+	  cmpb r0,#12		;and line feeds
+	  rptl eq
+	  cmpb r0,#177		;rubout?
+	  if eq,<
+	    call remchr,#rubbuf,r3	;remove char at end of buffer
+	    rptl cs		;no char to rubout
+	    kcall erasch	;erase this char
+	    rptl		;get another char
+	    >
+	  cmpb r0,#25		;^U?
+	  if eq,<
+  loop	    < call remchr,#rubbuf,r3
+	      exitl cs		;if no more chars then we are done
+	      kcall erasch	;wipe out the char
+	      rptl
+	      >
+	    rptl		;back to main loop
+	    >
+	  kcall prtch
+	  call putchr,<#rubbuf,r0>	;put char into rubout buffer.
+	  cmpb r0,#15		;is it a CR?
+	  rptl ne
+	  >
+	kretrn			;return we are done
+
+erasch:				;erase a char from the screen, char is in r3
+	mov #10,r0		;output a BS
+	kcall prtchr
+	mov #40,r0		;output a space
+	kcall prtchr
+	mov #10,r0		;BS again
+	kcall prtchr
+	cmpb r3,#40		;is the char a cntl char?
+	if lt,<			;read another char if not
+	  mov #10,r0		;output a BS
+	  kcall prtchr
+	  mov #40,r0		;output a space
+	  kcall prtchr
+	  mov #10,r0		;BS again
+	  kcall prtchr
+	  >
+	kretrn
+
+pkchfc:	push r3
+	call numchr,#rubbuf,r3	;see if there are any chars in the rubout buf
+	tst r3			;are there zero?
+	if eq,<			;if zero then read a line
+	  kcall rdline		;read line from the terminal
+	  >
+	call pkbuf,#rubbuf,r0	;peek into buffer to get char
+	pop r3			;end of line
+	kretrn
+
+mvstrg:	proc 2,1,<r0,r1>	;move an asciz string
+	mov arg1(fp),r0		;get source of string
+	mov arg2(fp),r1		;get destination of string
+
+loop  <	tstb (r0)		;is this a zero byte?
+	exitl eq		;then exit loop
+	movb (r0)+,(r1)+	;move a byte
+	rptl
+	>
+	mov r1,out1(fp)		;output the updated pointer
+	return
+
+rdstmv:	proc 1,1,<r0,r1>	;read string from tty until a blank or other
+				;delimeter and insert
+				;into the string pointed to by arg1. The blamk
+				;is not included.
+
+
+	mov arg1(fp),r1		;get arg into r1
+loop  <	kcall pkchfc		;search for first non-blank.
+	cmpb r0,#40		;is it a blank?
+	if eq,<
+	  kcall readfc		;read out char from buffer to flush it
+	  rptl
+	  >
+	cmpb r0,#15		;is it a CR
+	if eq,<
+	  mov r1,out1(fp)	;return the input argument
+	  rtnerr		;no argument found
+	  >
+	kcall readfc		;fetch the char out of the buffer
+	cmpb r0,#42		;is it a double quote?
+	if eq,<			;then read a quoted string
+  loop    < kcall pkchfc	;read a char
+	    cmpb r0,#42		;double quote yet?
+	    if eq,<
+	      kcall readfc	;flush out the char
+	      exitl
+	      >
+	    cmpb r0,#15		;is it a CR
+	    if eq,<
+	      mov r1,out1(fp)
+	      rtnerr		;bad syntax
+	      >
+	    kcall readfc	;flush char from buffer
+	    movb r0,(r1)+	;keep going
+	    rptl
+	    >
+	  mov r1,out1(fp)	;return pointer
+	  return
+	  >
+
+	movb r0,(r1)+		;move into string
+	>
+
+loop  <	kcall pkchfc		;Bad command, loop until CR
+	cmpb r0,#40		;is it a blank?
+	exitl eq
+	cmpb r0,#15		;is it a CR
+	exitl eq		;if so we are done
+	kcall readfc		;flush out the char
+	movb r0,(r1)+		;mov into string
+	rptl
+	>
+
+	mov r1,out1(fp)		;return the pointer
+	return
+
+rdsttt:	proc 0,0,<r0,r1>	;read string from tty until a blank and output
+				;to the server FTP
+
+loop  <	kcall pkchfc		;search for first non-blank.
+	cmpb r0,#40		;is it a blank?
+	if eq,<
+	  kcall readfc		;read out and flush the space
+	  rptl			;continue with the loop
+	  >
+	cmpb r0,#15		;is it a CR
+	if eq,<
+	  rtnerr		;no argument found
+	  >
+	kcall readfc		;read out the char.
+	cmpb r0,#42		;is it a double quote?
+	if eq,<			;then read a quoted string
+  loop    < kcall pkchfc	;read a char
+	    cmpb r0,#42		;double quote yet?
+	    if eq,<
+	      kcall readfc	;flush out the char
+	      exitl
+	      >
+	    cmpb r0,#15		;is it a CR
+	    if eq,<
+	      mov r1,out1(fp)
+	      rtnerr		;bad syntax
+	      >
+	    kcall readfc	;flush char from buffer
+	    call putctn,r0	;write out a char
+	    rptl
+	    >
+	  mov r1,out1(fp)	;return pointer
+	  return
+	  >
+	call putctn,r0		;put char into telnet connection
+	>
+
+loop  <	kcall pkchfc		;Bad command, loop until CR
+	cmpb r0,#40		;is it a blank?
+	exitl eq
+	cmpb r0,#15		;is it a CR
+	exitl eq		;if so we are done
+	kcall readfc		;actually read out the char
+	call putctn,r0		;put char into telnet connection
+	rptl
+	>
+
+	return
+
+;read a reply code and print it.
+
+rdprtr:	proc 0,1,<r0,r1>
+
+loop  <
+  loop  < kcall readft
+	  if cs,<
+	    clr out1(fp)	;no reply code
+	    rtnerr		;retrun error
+	    >
+	  kcall prtch
+	  cmpb r0,#60		;see if this is a number
+	  exitl lt		;if less then exit.  Not line we want.
+	  cmpb r0,#71
+	  exitl gt		;exit if greater  than 9
+	  sub #60,r0		;convert to integer
+	  mov r0,r3		;accumulate reply code
+
+	  kcall readft
+	  kcall prtch
+	  cmpb r0,#60		;see if this is a number
+	  exitl lt		;if less then exit.  Not line we want.
+	  cmpb r0,#71
+	  exitl gt		;exit if greater than 9
+	  mul #10.,r3		;multiply by 10
+	  sub #60,r0
+	  add r0,r3		;add to sum
+
+	  kcall readft
+	  kcall prtch
+	  cmpb r0,#60		;see if this is a number
+	  exitl lt		;if less then exit.  Not line we want.
+	  cmpb r0,#71
+	  exitl gt		;exit if greater than 9
+	  mul #10.,r3
+	  sub #60,r0		;turn into a number
+	  add r0,r3		;accumulate sum
+	  mov r3,out1(fp)		;return to user
+
+	  kcall readft
+	  kcall prtch
+	  cmpb r0,#40		;is this a space
+	  if eq,<
+    loop  <   kcall readft
+	      kcall prtch
+	      cmpb r0,#15		;is it a CR
+	      if eq,<
+	        kcall readft	;skip over LF
+	        exitl
+	        >
+	      rptl
+	      >
+	    return		;we are done
+	    >
+	  >
+
+  loop  < kcall readft
+	  kcall prtch
+	  cmpb r0,#15		;is it a CR
+	  if eq,<
+	    kcall readft
+	    exitl
+	    >
+	  rptl
+	  >
+	rptl
+	>
+
+putfil:
+	push r0			;save r0
+	tst usetty		;should we put data in file or out on tty
+	if ne,<			;if usetty ne 0 then
+	  mov r4,r0		;put char in r0
+	  kcall prtchr		;print it on terminal
+	  > 
+	else <
+	  movb r4,@iopntr		;put byte into buffer
+	  inc iopntr		;inc the pointer
+	  cmp iopntr,#iobufe	;at the end of the buffer yet?
+	  if ge,<			;if we are then
+	    .writw #ioarea,#0,#iobuf,#256.,blkcnt	;output data
+	    if cs,<
+	      print ^"I/O Error
+"
+	      >
+	    else <
+	      kcall doblip
+	      >
+	    inc blkcnt
+	    mov #iobuf,iopntr
+	    >
+	  >
+	pop r0
+	kretrn
+
+clsfil:
+	tst usetty		;if usetty eq 0
+	if eq,<			;then close the file
+	  push r0,r1		;save r0 from RT-11
+	  mov #iobufe,r1
+	  sub iopntr,r1		; number of chars not yet written in buffer
+	  cmp r1,#512.		; nothing to do if we have an empty buffer
+	  if ne,<		;if not zero then zero rest of buffer, output
+loop	    < clrb @iopntr	;zero the byte
+	      inc iopntr	;bump pointer
+	      sorl r1
+	      >
+	    .writw #ioarea,#0,#iobuf,#256.,blkcnt	;output last block
+	    if cs,<
+	      print ^"I/O Error
+"
+	      >
+	    else <
+	      kcall doblip
+	      kcall lblip
+	      >
+	    >
+	  .close #0		;close out the file
+	  pop r1,r0		;restore regs
+	  >
+	inc blkcnt
+	inc filcls		;indicate that the file has been closed
+	kretrn			;return
+
+doblip:
+	tst blpflg
+	if ne,<
+	  print ^"!"		;if in blip mode output an !
+	  >
+	kretrn
+
+lblip:
+	tst blpflg
+	if ne,<
+	  print ^"
+"				;if in blip mode, goto a new line
+	  >
+	kretrn
+
+
+
+readft:
+loop  < call getchr,#outbuf,r0	;read a char from the telnet connection
+	if cs,<
+	  cocall
+	  push r1
+	  mov conect,r1		;see if we still have an open connection
+	  if eq,<
+ftlos:	    pop r1		;pop the stack
+	    clr r0		;return a zero char
+	    sec
+	    kretrn		;return to caller
+	    >
+	  cmpb #%csopn,cnstat(r1)	;are we still open?
+	  bne ftlos		;connection has closed punt.
+	  pop r1
+	  rptl
+	  >
+	>
+	kretrn			;return to caller
+
+prnum:	tst r0			;is it zero?
+	if eq,<
+	  mov #60,r0		;ascii zero
+	  kcall prtch		;print the char
+	  kretrn		;done
+	  >
+	push r1
+	mov r0,r1		;need to be low half of a double word
+	clr r0			;clear out high end of double word
+	div #10.,r0		;divide by 10.
+	tst r0			;done yet?
+	if ne,<
+	  kcall prnum		;handle next digit
+	  >
+	mov r1,r0		;convert to ascii and print
+	add #60,r0
+	pop r1
+	jcall prtch		;recurse back up
+
+prtchr:				;print a raw char, no conversion on tty
+	tst noprin
+	if eq,<			;if printing is turned on
+loop <    call putchr,<#ttyobf,r0>	;print a char on console tty
+	  exitl cc
+	  cocall
+	  rptl
+	  >
+	  bis #100,@#177564
+	  >
+	rts pc
+
+prtch:
+	tst noprin
+	if eq,<
+	  push r0,r1
+	  mov r0,r1		;save r0 in r1
+	  cmpb r0,#40
+	  if   lt,<
+	    cmpb r0,#15
+	    if ne,<
+	      mov #136,r0	;output an uparrow
+	      >
+	    >
+
+loop <    call putchr,<#ttyobf,r0>	;print a char on console tty
+	  exitl cc
+	  cocall
+	  rptl
+	  >
+	  cmpb r1,#40		;is it a a ctrl char?
+	  if lt,<
+	    cmpb r1,#15
+	    if ne,<		;if it isn't a CR
+	      add #100,r1		;turn in alphabetic
+	      >
+	    else <
+	      mov #12,r1		;output an LF
+	      >
+  loop    <   call putchr,<#ttyobf,r1>	;put out an LF
+	      exitl cc
+	      cocall
+	      rptl
+	      >
+	    >
+	  pop r1,r0
+	  bis #100,@#177564
+	  >
+	kretrn
+
+; output an ASCIZ string to the telnet connection.
+
+putstr:	proc 1,0,<r0,r1,r2>
+
+	mov arg1(fp),r0		;get ptr to string
+loop  < movb (r0)+,r1		;pick up a char
+	exitl eq		;if zero then we are done
+
+  loop  < call putchr,<#inbuf,r1>	;output the char to Telnet input buffer
+	  exitl cc		;leave if carry clear
+	  cocall
+	  mov conect,r2		;see if the connection is still open
+	  if eq,<
+strlos:	    rtnerr		;retrun error
+	    >
+	  cmpb #%csopn,cnstat(r2)
+	  bne strlos
+	  rptl
+	  >
+	rptl
+	>
+	return
+
+putctn:	proc 1,0,<r0,r1>
+
+	mov arg1(fp),r0
+loop  <	call putchr,<#inbuf,r0>
+	exitl cc
+	cocall
+	mov conect,r1		;see if the connection is still open
+	if eq,<
+ctnlos:	  rtnerr		;retrun error
+	  >
+	cmpb #%csopn,cnstat(r1)
+	bne strlos
+	rptl
+	>
+	return
+
+	.sbttl TTY interrupt handling
+
+inint:	push r0
+	movb @#177562,r0
+	bic #177600,r0
+	cmpb r0,#3		;ctrl-c?
+	if eq,<
+	  clr havset		;we have to reissue the .device if we restart
+	  reslst		;restore saved values
+	  mov #1,r0		;we are restartable
+	  .exit			;exit without any cleanup
+	  >
+	cmpb r0,#23		;ctrl-s?
+	if eq,<			;then stop typing
+	  mov #1,ttystp		;stop output
+	  bic #100,@#177564	;turn off interrupts from the xmtr
+	  pop r0
+	  rti
+	  >
+	cmpb r0,#21		;ctrl-Q?
+	if eq,<
+	  bis #100,@#177564	;give interupt if ready
+	  clr ttystp
+	  pop r0
+	  rti
+	  >
+.if ne debug
+	cmpb r0,#"'`		;if backquote the bpt
+	if eq,<
+	  bpt
+	  pop r0
+	  rti
+	  >
+.endc
+	call putchr,<#ttyibf,r0>
+	pop r0
+	rti
+
+outint:	push r0
+	tst ttystp		;is output blocked
+	bne 1$
+	call getchr,#ttyobf,r0
+	bcs 1$
+	movb r0,@#177566
+2$:	pop r0
+	rti
+1$:	bic #100,@#177564
+	br 2$
+
+getchr:	proc 1,1,<r0,r1>
+        mov arg1(fp),r1
+        cmp bf.get(r1),bf.put(r1)
+        beq 1$
+        movb @bf.get(r1),r0	;get the character
+	bic #177400,r0
+	inc bf.get(r1)		;bump the pointer
+        mov r0,out1(fp)
+	cmp bf.get(r1),bf.end(r1)	;do we have to wrap?
+        blo 2$
+        mov bf.bgn(r1),bf.get(r1)
+2$:	return
+1$:     mov #-1,out1(fp)	;no characters in buffer.
+	rtnerr
+pkbuf:	proc 1,1,<r0,r1>
+        mov arg1(fp),r1
+        cmp bf.get(r1),bf.put(r1)
+        beq 1$
+        movb @bf.get(r1),r0	;get the character
+	bic #177400,r0
+        mov r0,out1(fp)
+	return
+1$:     mov #-1,out1(fp)	;no characters in buffer.
+	rtnerr
+
+putchr:	proc 2,0,<r1,r2>
+	mov arg1(fp),r1
+	mov bf.npt(r1),r2
+	cmp bf.get(r1),r2
+	beq 2$
+	 movb arg2(fp),@bf.put(r1)
+	 mov r2,bf.put(r1)
+	 inc r2
+	 cmp r2,bf.end(r1)
+	 blo 1$
+	  mov bf.bgn(r1),r2
+1$:	 mov r2,bf.npt(r1)
+	 return
+2$:	rtnerr
+
+remchr:	proc 1,1,<r0,r1>
+	mov arg1(fp),r1		;get pointer to buffer
+	cmp bf.get(r1),bf.put(r1)	;any chars in buffer?
+	if ne,<			;if there are then do
+	  mov bf.put(r1),bf.npt(r1)	;back up nput
+	  dec bf.put(r1)	;decrement put
+	  cmp bf.put(r1),bf.bgn(r1)	;are we before the beginning?
+	  if lo,<
+	    mov bf.end(r1),bf.put(r1)	;point to end of the buffer
+	    dec bf.put(r1)
+	    >
+	  movb @bf.put(r1),r0	;get char to retunr to luser
+	  bic #177400,r0	;turn off high bits
+	  mov r0,out1(fp)	;return value
+	  return
+	  >
+	clr out1(fp)
+	rtnerr
+
+numchr:	proc 1,1,<r0,r1>
+        mov arg1(fp),r1
+	mov bf.put(r1),r0
+        sub bf.get(r1),r0
+        bge 1$			;have to hack wrapping
+        add bf.sze(r1),r0	;just add in buffer size if neg.
+1$:     mov r0,out1(fp)
+        return
+
+types:	push r0,r1		;save r0
+	mov @4(sp),r0		;get pointer to string
+	add 4(sp),r0		;convert from relative
+	add #2,4(sp)		;bump return pointer
+loop <	movb (r0)+,r1		;get char
+	exitl eq
+  loop <  call putchr,<#ttyobf,r1>
+	  if cs,<
+	    cocall
+	    rptl
+	    >
+	  bis #100,@#177564
+	  >
+	rptl
+	>
+	pop r1,r0
+	rts pc
+
+havset:	0
+conect:	0
+eolflg:	0
+
+;;; now allocate the TCB stuff
+
+	alctcb
+
+hpsize==15000
+chheap:	1$
+tcheap==chheap
+1$:	.blkb hpsize
+
+pbufsz === 50.
+inbuf:	.blkb buf.ln
+	.blkb pbufsz
+	.even
+
+outbuf:	.blkb buf.ln
+	.blkb pbufsz
+	.even
+
+ttyibf:	.blkb buf.ln
+	.blkb pbufsz
+	.even
+
+ttyobf:	.blkb buf.ln
+	.blkb pbufsz
+	.even
+
+rubbuf:	.blkb buf.ln
+	.blkb pbufsz
+	.even
+
+iac==377
+will==373
+wont==374
+do==375
+dont==376
+tnnop==361
+echo==1
+spurga==3
+cmdtbl:	.ascii /conn/		;connect to host
+	.ascii /quit/		;close connection and exit program
+	.ascii /user/		;send user name
+	.ascii /pass/		;send password
+	.ascii /acct/		;send account information
+	.ascii /type/		;send type of connection
+	.ascii /retr/		;retrieve file
+	.ascii /stor/		;store a file
+	.ascii /list/		;list files
+	.ascii /blis/		;brief directory list
+	.ascii /stat/		;file status command
+	.ascii /blip/		;the blip command
+	.ascii /disc/		;the disconnect command
+	.ascii /cwd /		;the cwd command
+	.ascii /logi/		;login command
+	.ascii /help/		;type out help message to user
+	.ascii /?   /		;type out help message to user
+	.ascii /indi/		;read input from command file
+	.ascii /@   /		; ditto (shorter form)
+cmdsze==<.-cmdtbl>/4		;number of entries in the table
+
+cmdflg:				;command flags, low bit means cmd allowed 
+				;before the connection has been opened.
+	.byte 1,1,1,0,0,0,0,0,0,0,0,0,1,0,0,0,1,1,1,1
+	.even
+
+nulcmd==0
+concmd==1
+qitcmd==2
+usrcmd==3
+pascmd==4
+acccmd==5
+typcmd==6
+retcmd==7
+stocmd==10
+liscmd==11
+blicmd==12
+stacmd==13
+blpcmd==14
+discmd==15
+cwdcmd==16
+logcmd==17
+helcmd==20
+quecmd==21			;cmd 21, the "?" command is the same as "help"
+indcmd==22
+atscmd==23			;same as indcmd
+
+cmdnam:	.word 0,0		;reserve 2 words for the command name
+
+filtyp:	.word 0,0,0,0,0		;no file name defaults
+cmdtyp:	.rad50 /CMD/
+	.word 0,0,0,0
+iobuf:	.blkw 256.		;256 word IO buffer
+iobufe::
+iopntr:	iobuf			;I/O buffer pointer
+blkcnt:	0			;block counter
+ioarea:	.blkw 5			;RT-11 work area
+filcls:	0			;flag to indicate the RT-11 file has been clsd
+usetty: 0			;output to tty not file
+noprin:	0			;stop printing flag
+blpflg:	0			;blip flag
+stime:	.word 0,0		;time an I/O transfer began
+errpak:	0			;error packet from the Chaos net
+ttystp:	0			;flag to indicate output blocked
+
+.if ne jbrlos
+nextch:	.word			;variable containing state of colating sequence
+counch:	.word			;a count of characters transmitted
+.endc
+
+bye:	.asciz /bye
+/				;FTP LOGOUT command string
+user:	.asciz /user /		;FTP USER command string
+pass:	.asciz /pass /		;FTP PASS command string
+acct:	.asciz /acct /		;FTP ACCT command string
+type:	.asciz /type /		;FTP TYPE command string
+retr:	.asciz /retr /		;FTP RETR command string
+stor:	.asciz /stor /		;FTP STOR command string
+list:	.asciz /list /		;FTP LIST command string
+nlst:	.asciz /nlst /		;FTP NLST command string
+stat:	.asciz /stat /		;FTP STAT command string
+xcwd:	.asciz /xcwd /		;FTP XCWD command string
+eolstr:	.asciz /
+/				;CR/LF
+jcls1:	.asciz /ARPA /
+jcls2:	.asciz / 3 4/		;ICP to socket 3, reserve 3 sockets
+;istrng:	.byte iac,do,spurga,iac,will,spurga,iac,do,echo,0
+istrng:	.byte 0
+	.even
+
+	putlst
+	constants
+patch:
+	.end start
+

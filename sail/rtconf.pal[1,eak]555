@@ -1,0 +1,48 @@
+;;; -*-PALX-*-
+
+.insrt hostab
+
+rt11===rswit
+
+setf ^"Machine (rt11, mark1, oswit, iop)? ",config,rt11
+
+.iif eq config-rt11,	.insrt rtdef
+.iif eq config-oswit,	.insrt oswdef
+
+.if eq config-mark1
+
+.insrt	chmacs
+
+pdp11===03
+mxcilv==7			;maximum interrupt level of all the interfaces
+
+rt11vn===4
+asmsj===1
+
+.if ne 0
+inhst==2			;the host number of this machine
+innet==m1net			;the host net number
+makcif m1net,2,tty,176510,310
+.iff
+inhst==15
+innet==ethnet
+makcif innet,inhst,eth,171000,270
+.endc
+
+.endc	; config-mark1
+
+.if eq config-iop
+
+pdp11===34			; PDP11-34
+
+.insrt chmacs
+
+inhst==11			;the host number of this machine
+innet==ethnet			;the host net number
+mxcilv==7			;maximum interrupt level of all the interfaces
+
+makcif ethnet,11,eth,164000,270	;Test subnet for getting to Arpa-11
+
+.endc	; config-iop
+
+.iif ndf asmsj, asmsj===1

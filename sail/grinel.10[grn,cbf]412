@@ -1,0 +1,549 @@
+	.sbttl	Grinnel Support
+
+; Grinell Instruction Set
+gi.wid==  000000	; Write image data (12 bits of data)
+gi.lsm==  010000	; Load subchannel mask (12 bits of mask)
+gi.wgd==  020000	; Write graphic data (8 bits of data)
+gi.wac==  022000	; Write alphanumeric character (8 bit of character)
+gi.lwm==  024000	; Load write mode. 8 bits of mode
+  %wminv==200		;   inverse video
+  %wmor== 100		;   inclusive or mode
+  %wmsub==040		;   zeros unselected subchannel within a channel
+  %wmvec==020		;   vector graphic modes (not rectilinear)
+  %wm2hi==010		;   double height mode
+  %wm2wi==004		;   double width mode
+  %wmscs==002		;   cursor=La+Lb and Ea+Eb rather than La and Ea
+  %wmcso==001		;   cursor on
+gi.lum==  026000	; Load update mode.  6 bits of mode.
+			;		0    1      2     3
+			; Update Ea    Ea   Ec	Ea+Eb Ea+Ec  high order 2 bits
+			; Update La    La   Lc  La+Lb La+Lc  middle 2 bits
+			; Scroll Reg   Sr Home  down1  up 1  low order 2 bits
+gi.ers==  030000	; Erase screen
+gi.erl==  032000	; Erase line
+gi.slu==  034000	; Special location update.  7 bits of mode
+			;   low 6 bits defined as for gi.lum
+  %smfsc==100		;   "fast scroll" mode
+gi.egw==  036000	; Execute graphic write
+
+  %lrfgw==2000		; Load Register Force Graphic Write bit
+gi.ler==  040000	; Load Ea relative
+gi.lea==  044000	; Load Ea
+gi.leb==  050000	; Load Eb
+gi.lec==  054000	; Load Ec
+gi.llr==  060000	; Load La relative
+gi.lla==  064000	; Load La
+gi.llb==  070000	; Load Lb
+gi.llc==  074000	; Load Lc
+
+gi.ldc==  100000	; Load Display Channels (12 bits of channel mask)
+gi.np1==  110000	; No-op 1
+
+gi.spd==  120000	; Select Peripheral Device  12 bits of selection
+  %spmrd== 400		;   memory read back
+  %spbyt==1000		;   byte unpack
+  %spint==2000		;   interrupt enable
+  %sptst==4000		;   internal diagnostic test
+
+gi.lpa==  130000	; Load Peripheral Address (12 bits device dependant)
+gi.lpr==  140000	; Load Peripheral Register (12 bits device dependant)
+  %lpbyt==6000		;   packed byte mode
+  %lpgra==4000		;   graphic data
+  %lpima==0000		;   image data
+  %lpbys==1000		;   bytes swap mode
+  %lpode== 400		;   odd byte at end flag
+
+
+gi.lpd==  150000	; Load Peripheral Data (12 bits device dependant)
+gi.rpd==  160000	; Read Back Peripheral Data (12 bits device dependant)
+
+gi.nop==  170000	; another No-Op
+
+.sbttl	Grinnel Data Definitions
+
+linspc==12.		; 12. vertical scan lines per line
+linscr==512./linspc	; 42. lines on the screen
+chrlin==85.		; 85. characters per line
+
+; Define a Grinnell line
+dsect <
+gl.ldc:: .word 0	; select channel instruction
+gl.lsm:: .word 0	; select subchannel
+gl.lla:: .word 0	; lla positions vertically on screen (top=1000)
+gl.lea:: .word 0	; lea positions horizontally on screen (left edge=0)
+gl.spd:: .word 0	; select periph dev, byte unpack. Don't really need
+			;  to do this every time, but..
+gl.lpr:: .word 0	; load perhiph dev instr to start byte upack sequence
+gl.chr:: .blkb chrlin	; chrlin characters in a line
+	.even
+	>,lgrnl		; lgrnl= length of a grinnel line in bytes
+
+; Define all the storage needed to run 1 Grinnell screen
+dsect <
+gs.lin:: .blkw linscr	; pointers to first char in each line, index by line
+;gs.xps:: .word 0	; horizontal position (not sure if I'll use this yet)
+;gs.yps:: .word 0	; vertical position (not sure about this either)
+gs.idl:: .word 0	; insert delete mode
+gs.rol:: .word 0	; roll mode
+gs.bln:: .word 0	; blink mode
+			; this is the first word of this screens output buff:
+gs.ldc:: .word 0	; precomputed channel select
+gs.lsm:: .word 0	; precoputed  subchannel select
+gs.buf:: .blkw 100	; 100 words for outputting randomly
+gs.lns:: .blkb lgrnl*linscr ; memory for linscr lines
+	>,lgrns		; lgrns= length of a grinnel screen
+
+.macro grnput addr,count
+	push r5
+	mov t.lps+ldvadr(r0),r5
+1$:	tstb 4(r5)
+	bpl 1$
+	mov addr,2(r5)
+	mov count,(r5)
+	mov #1,4(r5)
+	pop r5
+.endm
+
+gllas:	.rept linscr
+	  .word gi.lla+764-<linspc*.rpcnt>
+	.endr
+glles:	.rept chrlin
+	  .word gi.lea+<6*.rpcnt>
+	.endr
+
+.sbttl DRV11-B Initialization
+
+; GRNINI - initialize DRV11-B
+;  r1 -> Initial Line Parameter Structure
+;  r2 -> Input TCB
+;  r3 -> Output TCB
+
+drvini:	return			; no init needed until we start using ints
+
+;	push r4,r0		; save some regs
+;	mov idvadr(r1),r4	; device register address
+;	mov pc,-(sp)		; set interrupt vector
+;	add #drvint-.,(sp)
+;	mov (sp)+,-2(r3)	; set for output TCB only
+				; there may not be an input TCB
+;	tst iunit(r1)		; is this the first unit (unit 0)?
+
+
+.sbttl Grinnel Execution
+
+grnin:	jsr pc,sleep		; better never wake up again, there is no
+				; grinnel input
+	bpt
+	br grnin
+
+
+grnout:	push #lgrns/2,#0	; ALLOC args: N_words, process id (not used)
+	call alloc		; allocate grinnel screen storage and stuff
+	pop r2,*		; get ptr to our storage, error code
+	if ne,< crash >		; no more storage, tell someone
+
+	; compute up a load channel and load subchannel
+	mov t.lps+ldvpar(r0),r5	; device parameter word is connector number
+	sub #10.,r5		; connector numbering starts at 10.
+	div #4,r4		; 4 subchannels per channel, div yields
+				; channel in r4, subchannel in r5
+	mov #1,r1		; make into mask
+	ash r4,r1
+	add #gi.ldc,r1		; load channel instruction
+	mov r1,gs.ldc(r2)	; save it
+	mov #1,r1		; make into mask
+	ash r5,r1
+	add #gi.lsm,r1		; load subchannel instruction
+	mov r1,gs.lsm(r2)	; save it
+	mov r2,r1
+	add #gs.buf,r1
+	mov #gi.spd+%spbyt,(r1)+ ; Set peripheral device for byte unpacking
+	mov #gi.lwm,(r1)+	; Load Write Modes to turn everything off
+	mov #gi.lum+40,(r1)+	; Load update mode, Ea <- Ea + Eb
+	mov #gi.leb+6,(r1)+	; Eb <- 6 (chars are 6 wide)
+	mov #gi.ers,(r1)+	; incidentally, we'd like to erase this screen
+	sub r2,r1		; get difference
+	sub #gs.ldc,r1		; from gs.ldc
+	asr r1			; divide by 2 for word count
+	neg r1			; 2's complement word count
+	mov r2,r4
+	add #gs.ldc,r4
+	grnput r4,r1		; grnput address, count
+	jsr pc,grini		; initialize things
+	jmp grloop
+
+
+	; intialize line image
+grini:	push r1,r5
+	clr r4			; r4 will count the line number
+	mov r2,r3		; get pointer to array of lines
+	add #gs.lns,r3
+loop <	  ; r4 is line number counts up from 0
+	  ; r3 is pointer to array of lines increments continuously
+	  mov gs.ldc(r2),(r3)+	; each line is a select channel
+	  mov gs.lsm(r2),(r3)+	; followed by a select subchannel
+	  mov r4,r1		; current line number
+	  add r1,r1		; make word offset
+	  mov gllas(r1),(r3)+	; index into precomputed LLAs
+	  mov #gi.lea,(r3)+	; followed by a load horizontal
+	  mov #gi.spd+%spbyt,(r3)+ ; select byte unpack "peripheral"
+	  mov #gi.lpr+%lpbyt+%lpbys+%lpode+<chrlin+1/2>,(r3)+
+				; select byte unpack with odd end
+	  mov r4,r1		; get line number
+	  add r1,r1		; convert to word index
+	  add r2,r1		; to base of grinnell screen structure
+	  mov r3,gs.lin(r1)	; store pointer to line of characters
+	  mov #chrlin,r5	; 85. chars per line
+  loop <    movb #40,(r3)+	; store out space for line
+	    sorl r5
+	    >
+	  .if ne 0
+	  cmp r4,#25.		; was this line 25?
+	  if eq,<		; if it was put a C<channel #>,S<subchan #>
+	    movb #'C,-45.(r3)	;  in the middle of the screen!
+	    movb gs.ldc(r2),-(sp)
+	    add #60,(sp)
+	    movb (sp)+,-44.(r3)
+	    movb #'S,-43.(r3)
+	    movb gs.lsm(r2),-(sp)
+	    add #60,(sp)
+	    movb (sp)+,-42.(r3)
+	    >
+	  .endc
+	  mov (r1),r1		; ref through ptr to line
+	  sub #gl.chr-gl.ldc,r1	; make it ptr to grinnell instr instead of chr
+	  grnput r1,#-lgrnl	; output each line as its built
+	  bit #1,r3		; .even r3
+	  if ne,<
+	    inc r3
+	    >
+	  inc r4		; advance line number
+	  cmp r4,#linscr	; done all the lines yet?
+	  rptl lo		; exit when r4 grtr lines per screen
+	  >
+
+	; initialize screen params
+;	clr gs.xps
+;	clr gs.yps
+	clr r3
+	clr r4
+	; this sequence of code computes R3 and R4 from gs.xps, gs.yps
+;	mov gs.yps(r2),r3
+;	add r3,r3
+;	add r2,r3
+.iif ne	  gs.lin, .error "GS.LIN assumed 0 here"
+;	mov (r3),r4
+;	add gs.xps(r2),r4
+	pop r5,r1
+	rts pc
+
+.sbttl	Grinnell main loop
+
+; R0 -> TCB as usual
+; R1 -> usually current character
+; R2 -> Grinnell screen structure
+; R3 -> 2*line number  (R3+R2) should index into ptrs to lines
+; R4 -> Y pos of character
+; R5 -> general temp
+
+grloop:	call getchr
+grl1:	bic #177600,r1		; no need for random parity
+	cmp r1,#177		; throw padding away
+	beq grloop
+	cmp r1,#40
+	if lo,<
+	  mov pc,r5
+	  add #grdisp-.,r5
+	  add r1,r5
+	  add r1,r5
+	  add (r5),r5
+	  jsr pc,(r5)
+	  br grloop
+	  >
+	jsr pc,grordy
+	br grloop
+
+grordy:	cmp r4,#chrlin		; overflow case?
+	if hi,<			; overflow
+	  tst (r3)+		; move to next line
+	  cmp r3,#<linscr*2>-2	; bottom of screen?
+	  if his,<
+	    clr r3		; wrap to top
+	    >
+	  clr r4		; column zero
+	  >
+	mov r2,r5		; base address of line array
+	add r3,r5		; index by line
+	mov (r5),r5		; pointer to a line
+	add r4,r5		; to a char
+	movb r1,(r5)		; store character
+	mov gllas(r3),gs.buf(r2)
+	asl r4			; word offset
+	mov glles(r4),gs.buf+2(r2)
+	asr r4			; back to bytes
+	add #gi.wac,r1		; make a write alpha char instruction
+	mov r1,gs.buf+4(r2)
+	push r4
+	mov r2,r4
+	add #gs.ldc,r4
+	grnput r4,#-5
+	pop r4
+	inc r4			; advance the cursor (wow!)
+	rts pc
+
+grup:	tst gs.idl(r2)		; insert/delete mode?
+	if eq,<			; no
+	  tst r3		; top line?
+	  if eq,<
+	    rts pc
+	    >
+	  tst -(r3)		; up a line, subtract 2
+	  rts pc
+	  >
+	; delete line
+	push r3			; save current line number
+	mov r3,r5		; copy line index
+	add r2,r5		; pointer to array of line pointers
+	push (r5)		; save this line!
+.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+loop <	  cmp r3,#<linscr*2>-2	; we done?
+	  exitl his
+	  mov 2(r5),(r5)	; slide this line up
+	  mov (r5),r1		; get pointer to this line
+	  mov gllas(r3),gl.lla-gl.chr(r1) ; update LLA (X pos) for this line
+	  sub #gl.chr-gl.ldc,r1	; point r1 at grinnell instructions
+	  grnput r1,#-lgrnl	; output line
+	  tst (r3)+		; advance line count
+	  tst (r5)+		; advance line pointer
+	  rptl
+	  >
+	pop (r5)		; put this line back
+	push r4			; save h pos
+	clr r4			; clear out whole line
+	jsr pc,greol
+	pop r4			; restore hpos
+	pop r3			; restore our line pos (x pos)
+	rts pc
+
+grlf:	tst gs.idl(r2)		; insert/delete mode?
+	if eq,<			; no
+	  cmp r3,#<linscr*2>-2	;  on last line?
+	  if lo,<		;   no
+	    tst (r3)+
+	    rts pc
+	    >			;  otherwise, we are on last line..
+	  tst gs.rol(r2)	;  roll mode?
+	  if eq,<		;   no
+	    clr r3		;   go to top line
+	    >			;  else we are in roll mode, on last line..
+	  ; roll mode not implemented	  
+	  rts pc
+	  >			; else, we were in insert/delte mode..
+	cmp r1,#<linscr*2>-2	; meaningless on last line
+	if his,< rts pc >
+	push r3			; save current line number
+	mov r3,r5		; copy line index
+	add r2,r5		; pointer to array of line pointers
+	mov (r5),-(sp)		; save current line
+	mov linscr*2-2(r2),(r5)+
+.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+	push r5,r4
+	clr r4
+	jsr pc,greol
+	pop r4,r5
+loop <	  tst (r3)+		; move r3 to next line
+	  mov (r5),r1		; make next line current line
+	  mov (sp),(r5)		; put previous line into it
+	  mov r1,(sp)		; and make current line next line
+	  mov (r5)+,r1		; get pointer to this line
+	  mov gllas(r3),gl.lla-gl.chr(r1) ; update LLA (X pos) for this line
+	  sub #gl.chr-gl.ldc,r1	; point r1 at grinnell instructions
+	  grnput r1,#-lgrnl	; output line
+	  cmp r3,#<linscr*2>-2	; we done
+	  exitl his
+	  rptl
+	  >
+	tst (sp)+		; throw away last saved line pos
+	pop r3			; restore our line pos
+	rts pc
+
+grbs:	tst gs.idl(r2)		; insert/delete mode?
+	if eq,<			; no
+	  tst r4		; column 0?
+	  if hi,<
+	    dec r4
+	    >
+	  rts pc
+	  >
+	; insert delete not implemented
+	rts pc
+
+grrt:	tst gs.idl(r2)		; insert/delete?
+	if eq,<			; no
+	  cmp r4,#chrlin	; overflow off right margin?
+	  if lo,<		; no
+	    inc r4		; inscrease X-Pos
+	    rts pc
+	    >
+	  clr r4		; wrap off right to next line
+	  tst (r3)+
+	  cmp r3,#linscr*2	; bottom line?
+	  if his,<
+	    clr r3
+	    >
+	  rts pc
+	  >
+	; insert delete case not implmented
+	rts pc
+
+grcr:	clr r4			; CR - 0 col
+	rts pc			; don't auto-NL
+
+grhom:	clr r3			; clr Y
+	clr r4			; clr X
+	br grrst
+
+grcan:				; fall through to dm reset..
+grrst:	clr gs.idl(r2)		; clear insert/delete mode
+	clr gs.rol(r2)		; clear roll mode
+	clr gs.bln(r2)		; clear blink/bold or whatever
+	rts pc
+
+grbel:	; gee what do we do for a bell?
+	rts pc
+
+gri.d:	mov pc,gs.idl(r2)	; set insert delete mode
+	rts pc
+
+greol:	mov r2,r5		; base of grinnell screen structre
+.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+	add r3,r5		; index into GS.LIN
+	mov (r5),r5		; get ptr to a line
+	mov gllas(r3),gl.lla-gl.chr(r5) ; make sure the LLA command is accurat
+	mov #gi.lea,gl.lea-gl.chr(r5) ; and lea command
+	push r5			; save it
+	mov #20040,r1		; preload blanks outside of loop
+	mov r4,-(sp)		; copy column addr for munging
+	add r4,r5		; offset to current char
+	bit #1,r4		; odd address?
+	if ne,<			; yes,
+	  movb r1,(r5)+		; bring address to an even boundary
+	  inc (sp)
+	  >
+	add (sp)+,pc
+	.rept chrlin/2
+	  mov r1,(r5)+
+	.endr
+	.lif ne chrlin&1	; odd number of bytes per line?
+	movb r1,(r5)+		; clear out last byte
+	pop r5
+	push r3
+	mov r5,r3
+	sub #gl.chr-gl.ldc,r3	; point to start of line
+	grnput r3,#-lgrnl	; output the line
+	pop r3
+	rts pc
+
+; Waits seem to think that EOS and MR should be equivelant
+greos:	jmp grmr
+;	rts pc
+
+grstab: ; not implemented yet
+	rts pc
+
+grctab:	; not implemented yet
+	rts pc
+
+grtab:	bic #7,r4
+	add #10,r4
+	cmp r4,#chrlin
+	if hi,<
+	  mov #chrlin,r4
+	  >
+	rts pc
+	
+gradr:	call getchr		; get row address
+	bic #177600,r1
+	cmp #30,r1		; CAN?
+	if eq,<
+	  pop *
+	  br grcan
+	  >
+	cmp #2,r1
+	if eq,<
+	  pop *
+	  br grhom
+	  >
+	sub #140,r1		; Cursor address is in octal
+	if lt,<			;  to get values   0- 37 DM uses 140-177
+	  add #40,r1		;  to get values  40- 77 DM uses 100-140
+	  if lt,<		;  to get values 100-140 DM uses  40-100
+	    add #100,r1		; Of course we'll only ever see as high
+	    >			; as high as column 80 decimal =120 octal
+	  add #40,r1
+	  >
+	rts pc
+
+grabs:	jsr pc,gradr		; get Hpos (col) X
+	mov r1,r5		; holding bin, don't smash until we get both
+	jsr pc,gradr		; get Line # (row) Y
+	mov r1,r3
+	add r3,r3		; Line # is always times two
+	mov r5,r4		; Hpos
+	rts pc
+
+grron:	mov pc,gs.rol(r2)
+	rts pc
+
+grmr:	jsr pc,grini		; reinitialize everything
+	call getchr		; Check for either 2 Master resets in a row
+	cmp r1,#36		; or an MR followed by a Clear EOS.
+	beq 1$			; Sending the command twice is apparently
+	cmp r1,#37		; a standard way of padding the function
+	beq 1$			; on DMs.
+	tst (sp)+		; throw away our return addr
+	jmp grl1		; and proceed immediately to dispatch
+1$:	rts pc
+
+grbln:	mov pc,gs.bln(r2)
+	rts pc
+
+gresc:	call getchr
+	bic #177600,r1
+	jsr pc,grordy
+	rts pc
+
+grjunk:	rts pc
+
+grdisp:	grjunk-.	; 00 ^@
+	grjunk-.	; 01 ^A
+	grhom-.		; 02 ^B Home
+	grjunk-.	; 03 ^C
+	grjunk-.	; 04 ^D
+	grjunk-.	; 05 ^E
+	grjunk-.	; 06 ^F
+	grbel-.		; 07 ^G Bell
+	grbs-.		; 10 ^H Backspace - Right Cursor
+	grtab-.		; 11 ^I Tab
+	grlf-.		; 12 ^J Linefeed - Down Cursor
+	grctab-.	; 13 ^K Clear Tab
+	grabs-.		; 14 ^L Absolute Move
+	grcr-.		; 15 ^M Carriage Return
+	grbln-.		; 16 ^N Blink On
+	grjunk-.	; 17 ^O Form On
+	gri.d-.		; 20 ^P Insert/Delete
+	grjunk-.	; 21 ^Q Xmit Page
+	grjunk-.	; 22 ^R Print
+	grjunk-.	; 23 ^S Xmit Line
+	grjunk-.	; 24 ^T
+	grjunk-.	; 25 ^U
+	grjunk-.	; 26 ^V
+	greol-.		; 27 ^W Erase to end of Line
+	grcan-.		; 30 ^X Cancel
+	grstab-.       	; 31 ^Y Tab Set
+	grup-.		; 32 ^Z Up Cursor
+	gresc-.		; 33 ^[
+	grrt-.		; 34 ^\ Right Cursor
+	grron-.		; 35 ^] Roll Mode on
+	grmr-.		; 36 ^^ Master Rest
+	greos-.		; 37 ^_ Erase to end of Screen

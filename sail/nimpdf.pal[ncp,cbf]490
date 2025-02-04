@@ -1,0 +1,58 @@
+;;; -*-MIDAS-*-
+.if1
+	.print "Defining IMP machine Chaos Network configuration
+"
+.endc
+
+.insrt	chmacs
+
+setf ^"IMP interface address (0 = 176200)",impcsr
+.iif eq impcsr, impcsr==176200
+;setf ^"IMP interface vector (0 = 140)",impvec
+;.iif eq impvec, impvec==140
+
+
+;;; The Network Configuration and Definition for the ARPA-11 CHAOS Net
+
+asmmap===1			;use /23 mapping
+asmchi===0
+inhst==1			;the host number of this machine
+innet==20			;the host net number
+mxcilv==7			;maximum interrupt level of all the interfaces
+
+	makcif 20,1,tty,176560,360	; 1 19.2 to ARPA machine
+;	makcif 20,1,tty,176550,350	; 1 9600 to ARPA machine
+
+route <	0,0			;Net 1 9th floor Tech Square
+	,0,0			;Subnet 2 AI 9th floor eathernet
+	,0,0			;Subnet 3 MC IO 11 Pseudo net
+	,0,0			;Subnet 4 AI CHAOS 11 pseudo net
+	,0,0			;Subnet 5 XX Network 11 pseudo net
+	,0,0			;Subnet 6 unassigned
+	,0,0			;Subnet 7 unassigned
+	,0,0			;Subnet 10 LCSnet
+	,0,0			;Subnet 11 Arpanet pseudo net
+	,0,0			;Subnet 12
+	,0,0			;Subnet 13
+	,0,0			;Subnet 14
+	,0,0			;Subnet 15
+	,0,0			;Subnet 16
+	,0,0			;Subnet 17
+	,0,1			;Subnet 20 Arpa-11 Imp-11 TTY net
+	,20,2			;Subnet 21 NM-crock net
+	,20,2			;Subnet 22
+	,20,2			;Subnet 23
+	,20,2			;Subnet 24
+	,20,2			;Subnet 25
+	,20,2			;Subnet 26
+	,20,2			;Subnet 27
+	,20,2			;Subnet 30
+	,20,2			;Subnet 31
+	,20,2			;Subnet 32
+	,20,2			;Subnet 33
+	,0,0			;Subnet 34
+	,0,0			;Subnet 35
+	>
+
+rcvxmt <trncvr>
+

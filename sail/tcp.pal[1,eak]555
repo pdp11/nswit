@@ -1,0 +1,255 @@
+;;; Transmission Control Protocol			-*-PALX-*-
+
+tcppro==6			; IP protocol number for TCP
+
+dsect <
+	 .blkb iqh.ln
+tp.src:: .blkw 1
+tp.dst:: .blkw 1
+tp.seq:: .blkw 2
+tp.ack:: .blkw 2
+tp.flg:: .blkw 1
+%tpfin==1
+%tpsyn==2
+%tprst==4
+%tppsh==10
+%tpack==20
+%tpurg==40
+tp.win:: .blkw 1
+tp.cks:: .blkw 1
+tp.urg:: .blkw 1
+tp.opt::
+	>,tp.len
+
+tpminh==5*4			; min sized header is 5 32 bit words
+
+dsect <
+	 .blkw 1
+tc.src:: .blkw 1
+tc.dst:: .blkw 1
+tc.fhs:: .blkb 4
+
+;;; Send
+tcsuna:: .blkw 2
+tcsnxt:: .blkw 2
+tcswnd:: .blkw 2
+
+
+;;; Receive
+tcrnxt:: .blkw 2
+tcrwnd:: .blkw 2
+	>,tc.len
+
+.iif ndf ntpcon, ntpcon==32.	; must be a power of two
+defvar <
+tpcon:	.blkw ntpcon
+>
+
+tpdisc==ipfree
+tpallo==ipallo
+
+tpcksm:	mov r0,r1		; R1: pointer to pseudo header
+	add #iq.beg,r1		; ...
+	mov iq.len(r0),r2	; R2: length of pseudo header and data
+	swab r2			; TCP bytes are backward
+	add #iqh.ln-iq.beg+1,r2	; ...
+	asr r2			; in words
+	jcall cksm1		; compute checksum
+
+tpswab:	swab iq.len(r0)		; TCP bytes are backward, so flip them
+	swab tp.src(r0)		; ...
+	swab tp.dst(r0)		; ...
+	swab tp.flg(r0)		; ...
+	swab tp.win(r0)		; ...
+	swab tp.urg(r0)		; ...
+	swab tp.seq+0(r0)	; (so are the words of these double words,
+	swab tp.seq+2(r0)	;  but we will simply swap them on access)
+	swab tp.ack+0(r0)	; ...
+	swab tp.ack+2(r0)	; ...
+	preturn
+
+tprcvp:	call tpcksm		; compute checksum of TCP segment
+;	swab r3			; TCP bytes are backward
+	com r3			; zero?
+	if ne,<			; no
+	  jcall tpdisc		; discard
+	  >
+	call tpswab		; correct for backward byte ordering
+	mov tp.dst(r0),r1	; destination port
+	bic #-ntpcon,r1		; mod size of our connection hash table
+	asl r1			; *2 for word index
+	mov tpcon(r1),r1	; R1: next connection in hash table
+	if ne,<			; if any
+  loop <    cmp tc.dst(r1),tp.dst(r0)	; correct destination port?
+	    if eq,<			; yes
+ 	      cmp tc.src(r1),tp.src(r0)	; correct source port?
+	      beq 1$			; yes, this is it
+	      tst tp.src(r0)	; any source port matches?
+	      beq 1$		; yes, this is it
+	      >
+	    mov (r1),r1		; next connection
+	    rptl ne		; if any
+	    >
+	  >
+	;; no such connection, send a RST
+	call tprst		; send RST
+	jcall tpdisc		; discard segment
+1$:	;; connection found
+;	jmp @tc.sta(r1)		; dispatch to state machine
+	jcall tpdisc
+
+tprst:	push r0
+	bit #%tprst,tp.flg(r0)	; is this a RST?
+	bne 1$			; don't RST a RST, just discard
+	mov r0,r1		; R1: current segment
+	push #tp.len		; TPALLO arg: R0/ size in bytes
+	call tpallo		; allocate RST segment
+	pop r0
+	bcs 1$
+	mov iq.src+0(r1),iq.dst+0(r0)
+	mov iq.src+2(r1),iq.dst+2(r0)
+	mov iq.dst+0(r1),iq.src+0(r0)
+	mov iq.dst+2(r1),iq.src+2(r0)
+	movb iq.pro(r1),iq.pro(r0)
+	mov #tpminh,iq.len(r0)
+	mov tp.src(r1),tp.dst(r0)
+	mov tp.dst(r1),tp.src(r0)
+	mov #%tprst,tp.flg(r0)
+	bit #%tpack,tp.flg(r1)
+	if eq,<
+	  clr tp.seq+0(r0)
+	  clr tp.seq+2(r0)
+	  mov tp.seq+0(r1),r2
+	  mov tp.seq+2(r1),r3
+	  clrb r5
+	  bisb tp.flg+1(r1),r5
+	  ash #-4+2,r5
+	  bic #177703,r5
+	  sub r5,iq.len(r1)
+	  add iq.len(r1),r3
+	  adc r2
+	  mov r2,tp.ack+0(r0)
+	  mov r3,tp.ack+2(r0)
+	  bis #%tpack,tp.flg(r0)
+	  >
+	else <
+	  mov tp.ack+0(r1),tp.seq+0(r0)
+	  mov tp.ack+2(r1),tp.seq+2(r0)
+	  >
+	bis #<tpminh/4>_12.,tp.flg(r0)	; set header length (probably not
+					; necessary)
+	call tpswab		; TCP bytes are backward
+	call tpcksm		; compute checksum
+	com r3			; negate to make zero checksum
+	swab r3			; TCP is backward
+	mov r3,tp.cks(r0)	; store in header
+	call ipxmtp		; call IP to transmit RST
+1$:	pop r0			; restore register
+	preturn
+
+
+.if ne 0
+;;; LISTEN state.
+tplsn:	bit #%tprst,tp.flg(r0)
+	if ne,<
+	  jcall tpdisc
+	  >
+	bit #%tpack,tp.flg(r0)
+	if ne,<
+	  ;; send a RST
+	  >
+	bit #%tpsyn,tp.flg(r0)
+	if ne,<
+	  ;; check security/compartment
+	  ;; check precedence
+	  ;; fill in foreign socket
+	  ;; send SYN
+	  ;; move to SYN-RECEIVED
+	  >
+	jcall tpdisc		; should get here, but if we do, discard
+
+;;; SYN-SENT state.
+tpsyns:	bit #%tpack,tp.flg(r0)
+	if ne,<
+	  ;; if SEG.ACK =< ISS, or SEG.ACK > SND.NXT, send a RST
+	  ;; send SEG=SEG.ACK, RST
+	  ;; ??
+	  >
+	bit #%tprst,tp.flg(r0)
+	if ne,<
+	  ;; enter CLOSED state with "connection reset" message
+	  >
+	;; check security/compartment and precedence
+
+	bit #%tpsyn,tp.flg(r0)
+	if ne,<
+	  ;; RCV.NXT := SEG.SEQ+1, IRS :=  SEG.SEQ
+	  ;; advance SND.UNA to SEG.ACK, removing anything on retransmit queue
+	  ;; if SND.UNA > ISS, change to ESTABLISHED and send ACK
+	  ;; else change to SYN-RECEIVED and send SYN,ACK
+	  ;; if other controls/text, queue
+	  >
+	jcall tpdisc		; discard
+
+
+tpschk:	mov tp.seq+2(r0),r3
+	mov tp.seq+0(r0),r2
+	sub tcrnxt+0(r1),r3
+	sbc r2
+	sub tcrnxt+2(r1),r2
+	bne ...
+	cmp r3,tcrwnd(r1)
+	bhi ...
+	dec r3
+	add iq.len(r0),r3
+	bcs ...
+	cmp r3,tcrwnd(r1)
+	bhis ...
+	preturn
+
+.endc
+
+.if ne 0
+defvar <
+tpport:	.word 256.		; next port number to give out
+>
+
+tpgcon:	inc tpport
+	if eq,<
+	  mov #256.,tpport
+	  >
+	mov tpport,r1
+	bic #-ntpcon,r1
+	asl r1
+	tst tpconn(r1)
+	bne tpgcon
+	push #tc.len
+	call tpallo
+	pop r0
+	bcs 1$
+	mov r0,tpconn(r1)
+	mov tpport,tc.src(r0)
+1$:	preturn
+
+tpopen:	push r0,r1
+	call tpgcon
+	bcs 1$
+	mov xxx,tc.dst(r0)
+	mov yyy+0,tc.fhs+0(r0)
+	mov yyy+2,tc.fhs+2(r0)
+	clr tcsuna+0(r0)
+	clr tcsuna+2(r0)
+	clr tcsnxt+0(r0)
+	clr tcsnxt+2(r0)
+	push #tpminh
+	call tpallo
+	pop r1
+	call tpihdr
+	bis #%tpsyn,tp.flg(r1)
+	inc tcsnxt+0(r0)
+	call ipxmt
+	...
+	pop r1,r0
+	clc
+1$:	preturn
+.endc

@@ -1,0 +1,1020 @@
+; Virtual Terminal Program -*-PALX-*-
+
+.title	Virtual Terminal Program
+.sbttl	Startup
+
+.insrt  defns
+
+.macro	crash
+	bpt
+.endm
+
+.=0
+	0
+.=14
+	0
+	0
+
+.=1000
+
+go:	mov pc,sp		; set stack ptr
+	tst -(sp)		; don't smash ourselves
+	spl 7			; set high priority so no interrupts
+
+.if ne 0
+	mov #60,r0		; foolery for mux'ing system console
+	mov pc,r1
+	add #vecsav-.,r1
+	mov (r0)+,(r1)+
+	mov (r0)+,(r1)+
+	mov (r0)+,(r1)+
+	mov (r0)+,(r1)+
+.endc
+
+.if ne  pfail
+	mov pc,r0
+	add #powerf-.,r0	; set power fail vector
+	mov r0,@#24
+	mov #pr7,@#26		; ...
+.endc
+	clr time+0		; clear lo-order TIME
+	clr time+2		; clear hi-order TIME
+	mov pc,r0		; set up clock interrupt vector
+	add #clocki-.,r0
+	mov r0,@#100
+	mov #pr6+1,@#102	; carry bit set so clocki can do an adc
+.lif ne  pdp11-03
+	mov #100,@#lks		; turn on clock interrupts
+
+        call catchn
+	 1$-.
+	clr r0
+loop <	  add #4000,r0		; check by 1K word increments
+	  tst (r0)		; keep testing until we get a NXM trap
+	  rptl			; ...
+	  >
+1$:	tst -(r0)		; move back by 1 word, this should be the
+				; address of the last word of memory.  If
+				; this instruction causes a NXM trap, that 
+				; means memory did not end on an even 1K
+
+	mov #60000,r0		; for now, leave room for RT-11 KMon and DDT
+	push pc			; FSINIT arg1: bottom of free storage area
+	add #last-.,(sp)	; ...
+	push r0			; FSINIT arg2: top of free storage area
+	call fsinit		; initialize free storage
+
+	clr runlst
+	push pc
+	add #runlst-.,(sp)
+	pop runend
+
+	jsr pc,vtpini		; initialize all else
+	spl 0
+	jmp main
+
+patch:	.blkw 100
+
+.sbttl	Data structures
+
+runlst:	.word 0			; the run list
+runend:	.word 0			; pointer to last TCB on RUNLST, or to RUNLST
+				; itself if the list is null
+oldstk:	.word 0			; saved stack value
+locked:	.word 0			; how many times and input process had to wait
+				; for an output process
+time:	.blkw 2
+bits:	.byte 1,2,4,10,20,40,100,200
+
+; Define queue structure
+dsect <
+qsize::	 .blkw 1	; size of queue buffer
+qbp::	 .blkw 1	; ptr to buffer used as queue
+qfp::	 .blkw 1	; ptr to front of queue
+qrp::	 .blkw 1	; ptr to rear of queue
+	>,lq
+
+maxstk==8.		; number of words of stack allowed process
+
+; Define line paramter structure
+dsect <
+ldvtyp:: .blkw 1		; 1=DL, 2=DZ, 3=DZV, 4=DH, 5=DU
+ldvadr:: .blkw 1		; line device address (first of group)
+lvcadr:: .blkw 1		; vector address
+lunit::	 .blkw 1		; unit # for devices that have it (DZ DZV DH)
+lispd::	 .blkw 1		; input speed, bits per second
+lospd::	 .blkw 1		; output speed, bits per second
+ldvpar:: .blkw 1		; prototype device paramter word
+l1tcb::	 .blkw 1		; pointer to ITCBS word that this device has
+				; a unit on.  Really a hack for things like DZ
+	>,llps
+
+; Define Task Control Block -that portion which is common to both
+dsect <
+t.next:: .blkw 1		; used for linking onto run list
+t.stsz:: .blkw 1		; stack size
+; This order of T.REGS and T.STCK is required in WAKUP and SLEEP.
+t.regs:: .blkw 5		; r1,r2,r3,r4,r5
+t.stck:: .blkw maxstk		; input stack
+t.lps::	 .blkw llps		; copy of LPS for device
+	>,lctcb
+
+; Task Control Block - Input specific part
+dsect <
+         .blkb lctcb		; starts with the common portion of the TCB
+i.olnk:: .blkw 1		; output part we are linked to
+i.elnk:: .blkw 1		; output part we echo commands to
+i.cchr:: .blkw 1		; our command character
+i.blk::	 .blkw 1		; non-0 means input process is occupied
+i.q::	 .blkw lq		; input queue
+	>,litcb
+
+; Task Control Block - Output specific part
+dsect <
+	 .blkb lctcb
+o.link:: .blkw 1		; who last sent us output
+o.waku:: .blkw 1		; entry to call when doing an INSQ on me
+o.blk::	 .blkw 1		; non-0 means output processs is occupied
+o.mq::	 .blkw lq		; intermediate queue
+o.eq::	 .blkw lq		; the echoing queue
+o.oq::	 .blkw lq		; the output queue
+	>,lotcb
+
+; Comment needed here.
+dl==1
+dz==2
+dzv==3
+grn==4			; DRV11-B attached to a Grinnell GMR-27
+;dh==5
+;du==6
+
+dsect <				; define structure for ILCT
+; IDVTYP through IDVPAR inclusive are copied, thus the order is important.
+idvtyp:: .blkw 1		; device type
+idvadr:: .blkw 1		; device address
+icvadr:: .blkw 1		; vector address
+iunit::	 .blkw 1		; unit number
+iispd::	 .blkw 1		; input speed   (-1 is unknown, 0 means
+iospd::	 .blkw 1		; output speed      non-existant device )
+idvpar:: .blkw 1		; device parameter word
+	 >,lilct
+
+dsect <				; dfine structure for ITCT
+iinpc::	 .blkw 1		; initial input process PC
+ioupc::	 .blkw 1		; initial output process PC
+iechlk:: .blkw 1		; initial echo link
+ioulk::	 .blkw 1		; initial output link
+iinqsz:: .blkw 1		; initial input queue size
+imdqsz:: .blkw 1		; intermediate queue size
+iecqsz:: .blkw 1		; echo queue size
+iouqsz:: .blkw 1		; otuput queue size
+	 >,litct
+
+maxlin==48.
+
+devcnt:	.word 0			; the actual number of lines in use
+itcbs:	.blkw maxlin		; pointers to all input TCB's
+otcbs:	.blkw maxlin		; pointers to all output TCB's
+
+
+maxdev==4			; number of different device types
+devini:	dlini-.			; Dispatch table for device initializtion
+	dzini-.			; routines.  Indexed by 2*<device type>
+	dzvini-.
+	grnini-.
+;	dhini-.
+;	duini-.
+
+.sbttl Process Handling
+
+; Main Loop - run process off top of run list
+main:
+loop <	spl 7			; uninterruptible
+	push #pr0		; the wait should be at low priority
+	mov runlst,r0		; is there anything on the run list?
+	bne wakup
+	jsr pc,3$
+	wait
+	rptl
+	>
+3$:	rtt
+
+
+wakup:	mov (r0),runlst		; ...
+.iif ne t.next, .error "T.NEXT is assumed 0 here"
+	if eq,<			; RUNLST is now null
+	  push pc		; set RUNEND to ADDRESS(RUNLST)
+	  add #runlst-.,(sp)	; ...
+	  pop runend		; ...
+	  >
+	clr (r0)		; zero out link: several routines depend upon
+				; the fact that a running or sleeping process
+				; has a zero link
+	mtps (sp)+		; make us interruptible
+	mov sp,oldstk		; remember where the stack is now
+	mov r0,r1
+	mov t.stsz(r0),r2	; number of words on stack
+	add #t.stck,r1		; point r0 at top saved stack
+	add r2,r1		; move r0 down to bottom of saved stack
+	add r2,r1		;  2 adds to make item count into word address
+loop <	  mov -(r1),-(sp)	; restore saved stack
+	  sorl r2
+	  >
+	mov -(r1),r5
+	mov -(r1),r4
+	mov -(r1),r3
+	mov -(r1),r2
+	mov -(r1),r1
+	rts pc			; return from JSR PC,SLEEP
+	
+sleep:	add #t.regs,r0
+	mov r1,(r0)+
+	mov r2,(r0)+
+	mov r3,(r0)+
+	mov r4,(r0)+
+	mov r5,(r0)+
+	mov oldstk,r3
+	sub sp,r3
+	asr r3
+	cmp r3,#maxstk		; well, we'd better make sure it hasn't gone
+				; too far
+	if hi,< crash >		; IF HI will catch negatives too
+	mov r3,t.stsz-<t.regs+<5*2>>(r0)	; stack size
+loop <	  mov (sp)+,(r0)+	; save stack away
+	  sorl r3
+	  >
+	cmp sp,oldstk		; well, just for debugging
+	if ne,< crash >
+	br main
+
+.sbttl Initialization
+
+; anything wrong with some static variables?
+predva: .word 0			; previous device address
+bastcb:	.word 0			; base tcb, points to the ITCBS entry of the
+				; TCB which is the first of a multi-unit TCB
+vtpini:	mov pc,r1		; ptr to ILCT (Intial Line
+	add #ilct-.,r1		;  Configuration Table)
+	mov pc,r5		; pointer to ITCBS[0]
+	add #itcbs-.,r5		; ...
+	clr predva		; this will trip setting of bastcb first time
+	clr devcnt
+
+loop <	  tst (r1)		; look at device type
+	  exitl eq		; if 0 then we're done
+	  inc devcnt		; keep track of total lines
+
+	  push #litcb/2		; INITCB args: length of TCB
+	  jsr pc,initcb		; initialize the common portions
+	  pop r2		; get back pointer to TCB
+	  mov r2,(r5)		; put it in its place in ITCBS
+
+	  push #lotcb/2		; now for the output side
+	  jsr pc,initcb		; initialize the common portions
+	  pop r3		; get back pointer to TCB
+	  mov r3,otcbs-itcbs(r5)	; and put it in its place in OTCBS
+
+	  mov (r1),r0		; pick up device type
+	  cmp r0,#maxdev	; check for bad device type
+	  if hi,< crash >
+	  asl r0		; make device type into word index
+	  add pc,r0
+	  add #devini-.-2,r0	; -2 because devices are 1 based
+	  add (r0),r0
+	  call (r0)		; initialize device, ptr to ilct entry in r1
+
+	  tst (r5)+		; bump itcb index
+	  add #lilct,r1		; move to next line
+	  rptl
+	  >
+
+	; now iterate over ITCT allocating queues, setting intial PC's
+	; and setting up initial run list
+	mov pc,r1		; pointer to initial terminal configuration
+	add #itct-.,r1		; table in R1
+        mov pc,r5		; pointer to ITCBS[0]
+	add #itcbs-.,r5		; ...
+
+loop <  tst (r1)		; end?
+	exitl eq		; yes
+
+	mov otcbs-itcbs(r5),r0	; an output TCB
+
+	push imdqsz(r1),r0	; allocate intermeditate queue
+	add #o.mq,(sp)
+	call qinit
+	tst (sp)+
+	if ne,< crash >
+
+	push iecqsz(r1),r0	; allocate echo queue
+	add #o.eq,(sp)
+	call qinit
+	tst (sp)+
+	if ne,< crash >
+
+	push iouqsz(r1),r0	; allocate output queue
+	add #o.oq,(sp)
+	call qinit
+	tst (sp)+
+	if ne,< crash >
+
+	mov #1,t.stsz(r0)	; we're going to put one word on its stack
+	mov ioupc(r1),t.stck(r0)	; set first execution point
+	clr (r0)		; add us to run list, fortunately things are
+	mov r0,@runend		; not running yet, so no locking concerns etc.
+	mov r0,runend		; ...
+.iif ne  t.next, .error "T.NEXT assumed zero here"
+
+	mov (r5)+,r0		; an input TCB
+
+	push iinqsz(r1),r0	; allocate input queue
+	add #i.q,(sp)
+	call qinit
+	tst (sp)+
+	if ne,< crash >
+
+	mov #1,t.stsz(r0)	; we're going to put one word on its stack
+	mov (r1),t.stck(r0)	; set its first execution point
+.iif ne  iinpc, .error "IINPC assumed zero here"
+	mov iechlk(r1),r2	; echo link
+	asl r2			; word address
+	add pc,r2
+	mov otcbs-.-2(r2),i.elnk(r0) ; -2 because link numbers are 1 based
+	mov ioulk(r1),r2	; ouput link
+	asl r2			; word address
+	add pc,r2
+	mov otcbs-.-2(r2),i.olnk(r0) ; -2 because link numbers are 1 based
+	clr (r0)		; add us to run list, fortunately things are
+	mov r0,@runend		; not running yet, so no locking concerns etc.
+	mov r0,runend		; ...
+.iif ne  t.next, .error "T.NEXT assumed zero here"
+
+	add #litct,r1		; on to next entry in itct
+	rptl
+	>
+	rts pc			; note: we were called JSR PC,
+
+
+; INITCB allocates a TCB and the queue it points to
+;   called by JSR PC, since it uses R5
+;	ARGS:		        VALS:
+; SP -> TCB size	  SP -> Pointer to TCB
+; R5 -> index into ITCBS
+; R1 -> Initial Line Parameter Table
+
+initcb: push r0,r2
+	push 6(sp)		; ALLOC arg1: n_words
+	add #4,(sp)		; leave room for JSR in front of TCB
+	clr -(sp)		; ALLOC arg2: procees id (not used)
+	call alloc		; allocate TCB
+	pop r0,*		; pop off ptr to allocated block, error code
+	if ne,< crash >		; can't make allocation
+	add #4,r0		; the JSR will take 2 words in front of TCB
+	mov r0,6(sp)		; return val, pointer to TCB
+	mov #lilct/2,r2		; number of words to copy
+	add #t.lps,r0
+loop <    mov (r1)+,(r0)+	; copy initial Line parameter Structure
+	  sorl r2
+	  >
+	sub #lilct,r1		; restore r1 to point to ILPS
+	sub #<lilct+t.lps>,r0	; set r0 back to TCB
+	cmp t.lps+ldvadr(r0),predva	; is this the same device as the last?
+	if ne,<				; (eg. a multiline device like a DZ)
+	  mov r5,bastcb			; if not, then set a new base tcb
+	  mov t.lps+ldvadr(r0),predva	; remember device so can detect
+	  >				;  when changes
+	mov bastcb,t.lps+l1tcb(r0)	; so DZ's can index down units
+	mov #4037,-4(r0)	; put "JSR R0,@#" 2 words in front of TCB
+	pop r2,r0		; restore r0,r2
+	rts pc
+
+.sbttl Device Initialization
+
+; r1 -> Initial Line Parameter Structure
+; r2 -> Input TCB
+; r3 -> Output TCB
+dzini:
+dzvini:	push r4,r0
+	mov idvadr(r1),r4	; device registers address
+	mov pc,-(sp)		; set input vector
+	add #dzrint-.,(sp)
+	mov (sp)+,-2(r2)
+	mov pc,-(sp)		; set output vector
+	add #dzxint-.,(sp)
+	mov (sp)+,-2(r3)
+	tst iunit(r1)		; is this the first of the units?
+	if eq,<			; should only set the vector up for the first
+	  mov icvadr(r1),r0	; pointer to hardware interrupt vector
+	  mov r2,(r0)		; input TCB
+	  sub #4,(r0)+		; subtract 4 to pointer to JSR
+	  mov #pr5,(r0)+	; priority 5 for DZ's
+	  mov r3,(r0)		; output TCB
+	  sub #4,(r0)+		; subtract 4 to pointer to JSR
+	  mov #pr5,(r0)+
+				; once only device register initialization
+	  clrb 4(r4)		; clear XMIT line enables
+	  mov #040140,(r4)	; Enable XMIT and RCV ints, Master Scan
+	  ; note processor is masked until initialization is finished
+	  >
+				; unit specific intialization
+	mov idvpar(r1),2(r4)	; set parameter word for this line
+	mov iunit(r1),r0	; the unit we're after this time
+	add pc,r0
+	bisb bits-.(r0),5(r4)	; set DTR for this line
+	mov pc,r0		; initialize wakup entry for this device
+	add #dzwaku-.,r0
+	mov r0,o.waku(r3)	; set the wakup entry
+	pop r0,r4
+	return			; done initialization
+
+; r1 -> Initial Line Parameter Structure
+; r2 -> Input TCB
+; r3 -> Output TCB
+dlini:	push r4,r0		; save regs
+	mov idvadr(r1),r4	; device registers address
+	mov pc,-(sp)		; set input vector
+	add #dlrint-.,(sp)
+	mov (sp)+,-2(r2)
+	mov pc,-(sp)		; set output vector
+	add #dlxint-.,(sp)
+	mov (sp)+,-2(r3)
+	mov icvadr(r1),r0	; pointer to hardware interrupt vector
+	mov r2,(r0)		; input TCB
+	sub #4,(r0)+		; subtract 4 to pointer to JSR
+	mov #pr4,(r0)+		; priority 4 for DLs
+	mov r3,(r0)		; output TCB
+	sub #4,(r0)+		; subtract 4 to pointer to JSR
+	mov #pr4,(r0)+
+	mov #106,(r4)
+	mov pc,r0		; R0: pointer to DLWAKU
+	add #dlwaku-.,r0	; ...
+	mov r0,o.waku(r3)	; set the wakup entry
+	pop r0,r4		; restore regs
+	return			; done initialization
+
+grnini:	crash
+
+.sbttl	Interrupt handlers
+; DZ11 rcvr interrupt handler.
+dzrint:	push r1,r2		; enter with r0 pointing to input TCB
+loop <	  mov t.lps+ldvadr(r0),r2 ; get addr of DZ11
+	  mov 2(r2),r1		; read RBUF
+	  if pl,<		; character not valid, we've emptied FIFO
+	    pop r2,r1,r0	; restore regs
+	    rti			; dismiss interrupt
+	    >
+	  mov r1,r2		; get line no.
+	  swab r2		; ...
+	  bic #177770,r2	; ...
+	  add r2,r2		; double for indexing into words
+	  add t.lps+l1tcb(r0),r2 ; add base address for this group of DZ's
+	  mov (r2),r0		; and pick up the proper TCB ptr
+	  bic #103400,r1	; clear data valid bit and line no.
+	  jsr pc,inchar		; process char
+	  rptl			; go back and see if the DZ has more for us
+	  >
+
+; DZ11 xmtr interrupt handler.  Send to all lines which are ready.
+dzxint:	push r1,r2
+	mov t.lps+ldvadr(r0),r2
+loop <	  movb 1(r2),r1		; read CSR
+	  exitl pl		; no more lines ready
+	  bic #177770,r1	; ...
+	  mov t.lps+l1tcb(r0),r0	; ptr into ITCBS, the first unit
+	  add r1,r0		; index into ITCBS
+	  add r1,r0		;  need word index
+	  mov otcbs-itcbs(r0),r0 ; pick up the right TCB from OTCBS
+	  call remoq		; get character from output queue
+	   br 1$
+	  movb r1,6(r2)		; send character
+	  rptl
+
+1$:	  mov t.lps+lunit(r0),r1
+	  add pc,r1
+	  bicb bits-.(r1),4(r2)	; no char to send, stop transmission
+	  rptl
+	  >
+	pop r2,r1,r0
+	rti
+
+; DZWAKU turns on output interrupts for the DZ
+dzwaku:	mov t.lps+ldvadr(r0),-(sp)	;get address of this DZ's TCR
+	add #4,(sp)
+	mov t.lps+lunit(r0),-(sp)	; must make right enabling mask for
+	add pc,(sp)		; this line number (lunit)
+	add #bits-.,(sp)
+	bisb @(sp)+,@(sp)+	; turn on output interrupts
+	return
+
+.sbttl DL11 Interrupt Handlers
+
+; DL11 rcvr interrupt handler
+dlrint:	push r1			; save R1
+	mov t.lps+ldvadr(r0),r1	; get address of DL11
+	mov 2(r1),r1		; get the character + the error bits
+	jsr pc,inchar		; process the char
+	pop r1,r0		; restore R1 and R0 that was pushed by JSR
+	rti			; dismiss interrupt
+
+; DL11 xmtr interrupt handler
+dlxint:	push r1			; save R1
+	call remoq		; get character from output queue
+	 br 1$			; nothing in queue
+	mov t.lps+ldvadr(r0),r0	; get device address
+	movb r1,6(r0)		; output character
+	pop r1,r0
+	rti
+
+1$:	mov t.lps+ldvadr(r0),r0	; get device address
+	bic #100,4(r0)		; turn off output interrupts
+	pop r1,r0		; restore regs
+	rti
+
+dlwaku:	mov t.lps+ldvadr(r0),-(sp)	; get CSR address
+	add #4,(sp)		; Transmitter part (+4)
+	bis #100,@(sp)+		; turn on interrupts
+	return
+
+.sbttl Input Character Handling
+
+; All of the reciever interrupt handlers should JSR PC,INCHAR
+; INCHAR determines if the process for that character is blocked on input.
+; If it is, then it is woken up and run, otherwise the character is
+; stored away in its input buffer.
+; R0 -> TCB pointer
+; R1 -> Received character in the following format:
+;	Bit 14: Overrun, the previous character(s) has been lost
+;	Bit 13: Framing error, character stop bit was wrong (probably BREAK)
+;	Bit 12:	Parity error, character parity is incorrect
+;	Bits 0-7: Character
+
+inchar:	call insinq		; insert character in input queue
+	 nop			;  queue full error return, discard char
+	tst i.blk(r0)		; is the input "process" waiting for input?
+	if ne,<			; a saved PC of zero means blocked at inchr
+	  rts pc
+	  >
+	mov pc,i.blk(r0)	; make sure we don't come through here again
+				; again until we are quite ready for it
+	mov r1,t.regs(r0)	; put the char in r1
+	clr (r0)		; append process to RUNLST
+	mov r0,@runend		; ...
+	mov r0,runend		; ...
+.iif ne  t.next, .error "T.NEXT is assumed 0 here"
+	rts pc
+
+; Streamlined queue routines
+
+;INSQUE macro
+; QOFF = offset of this queue into TCB
+; REG  = which register to use to index into TCB
+; will branch to 1$ if queue is full
+
+.macro insque qoff,reg
+	push r2
+	mov qoff+qrp(reg),r2	; ptr to rear of queue
+	dec r2			; move to next character slot
+	cmp r2,qoff+qbp(reg)	; wrap around to end?
+	if lo,<
+	  add qoff+qsize(reg),r2	; yes, make ptr to end of buffer
+	  >
+	cmp r2,qoff+qfp(reg)	; room for this character?
+	if eq,<			; no
+	  pop r2
+	  br 1$
+	  >
+	movb r1,(r2)		; queue not full, put in this char
+	mov r2,qoff+qrp(reg)	; update ptr to rear of queue
+	pop r2
+.endm
+
+
+; REMQUE macro
+;  QOFF = offset of this queue into TCB
+;  REG  = which register to use to index into TCB
+;  will branch to 1$ if queue is empty
+
+.macro remque qoff,reg
+	cmp qoff+qrp(reg),qoff+qfp(reg)	; queue empry?
+	beq 1$				; yes
+	dec qoff+qfp(reg)		; move rear ptr to next char
+	cmp qoff+qfp(reg),qoff+qbp(reg)	; wrap around?
+	if lo,<
+	  add qoff+qsize(reg),qoff+qfp(reg) ; yes, put ptr at end of buffer
+	  >
+	movb @qoff+qfp(reg),r1		; get result
+.endm
+
+
+; REMINQ - removes a character from the input queue
+;	   Returns to .+2 if queue is not empty (succesful return)
+
+;	ARGS:				VALS:
+; R0 -> input TCB		  R1 -> character
+
+reminq:	remque i.q,r0		; generates most of remove q
+	tst (r5)+		; succesful return
+1$:	return			; unsuccesful return branches to 1$
+
+
+; INSINQ - inserts a character into the input queue
+;	   Returns to .+2 if queue is not full (succesful return)
+
+;	ARGS:				VALS:
+; R0 -> input TCB			(none)
+; R1 -> character
+
+insinq:	insque i.q,r0		; generates code to insert in q
+	tst (r5)+		; sucessful return
+1$:	return			; unsuccesful return branches to 1$
+
+
+; REMOQ - removes a character from the output queue
+;	   Returns to .+2 if queue is not empty (succesful return)
+
+;	ARGS:				VALS:
+; R0 -> otuput TCB		  R1 -> character
+
+remoq:	remque o.oq,r0		; generates most of remove q
+	tst (r5)+		; succesful return
+1$:	return			; unsuccesful return branches to 1$
+
+
+; INSOQ - inserts a character into the output queue
+;	   Returns to .+2 if queue is not full (succesful return)
+
+;	ARGS:				VALS:
+; R0 -> output TCB			(none)
+; R1 -> character
+
+insoq:	insque o.oq,r0		; generates code to insert in q
+	tst (r5)+		; sucessful return
+1$:	return			; unsuccessful return branches to 1$
+
+.sbttl  Output subroutines
+
+; PUTSTR takes a relative ptr to an asciz string after the CALL PUTSTR
+; and types the string on this line.  Clobbers R1.
+putstr:	push r4			; save reg
+	mov r5,r4		; relative ptr to asciz string
+	add (r5)+,r4		; make absolute
+loop <	  movb (r4)+,r1		; next char
+	  exitl eq		; null terminates
+	  call putchr		; send char to output process
+	  rptl
+	  >
+	pop r4			; restore reg
+	return
+
+; PUTCHR outputs a character from the input process.
+; This character is presumably already then a virtual terminal code.
+; The output process is located via I.OLNK and the character is then
+; placed in its output queue, waking up the process if it was dormant.
+putchr:	push r3
+	mov i.olnk(r0),r3	; get TCB of our output process
+	mfps -(sp)
+	spl 7			; this had better be uninterruptible
+	insque o.mq,r3		; insert character in queue at offset o.mq
+				; from TCB pointed to by R3
+	tst o.blk(r3)		; does he need to be woken up?
+	if eq,<			; yes
+	  mov r3,@runend	; append process to RUNLST
+	  mov r3,runend		; ...
+.iif ne  t.next, .error "T.NEXT is assumed 0 here"
+	  mov pc,o.blk(r3)	; prevent doing this twice, he's busy now
+	  >
+	mtps (sp)+		; restore priority
+	pop r3
+	return
+1$:	inc locked		; queue was full, we must busy wait on it
+	mov (r3),(r0)		; make the person that was to run after
+				; the output process run after us now
+	if ne,<
+	  mov r0,(r3)		; and make us run right after the output
+				; process.  This was we'll know immediately
+				; that the output process has dispossed
+				; of its last character
+	  >
+	else <
+	  mov r0,@runend
+	  mov r0,runend
+	  >
+	mtps (sp)+
+	pop r3			; no need to sleep with this on the stack
+	jsr pc,sleep		; aduei
+	br putchr		; and back we are..
+
+
+; ECHSTR takes a relative ptr to an asciz string after the CALL ECHSTR
+; and types the string on this line.  Clobbers R1.
+echstr:	push r4			; save reg
+	mov r5,r4		; relative ptr to asciz string
+	add (r5)+,r4		; make absolute
+loop <	  movb (r4)+,r1		; next char
+	  exitl eq		; null terminates
+	  call echchr		; output char
+	  rptl
+	  >
+	pop r4			; restore reg
+	return
+
+; ECHCHR outputs a character from the input process to the user's terminal.
+; This character is presumably already then a virtual terminal code.
+; The output process is located via I.ELNK, the character is placed
+; in its echo queue, waking it up if necessary.
+echchr:	push r3
+	mov i.elnk(r0),r3	; get TCB of our output process
+	mfps -(sp)
+	spl 7			; this had better be uninterruptible
+	insque o.eq,r3		; insert character in queue at offset o.eq
+				; from TCB pointed to by R3
+	tst o.blk(r3)		; is the process running?
+	if eq,<			; no
+	  mov r3,@runend	; append process to RUNLST
+	  mov r3,runend		; ...
+.iif ne  t.next, .error "T.NEXT is assumed 0 here"
+	  mtps (sp)+		; restore priority
+	  pop r3
+	  return
+	  >
+1$:	inc locked		; queue was full, we must busy wait on it
+	mov (r3),(r0)		; make the person that was to run after
+				; the output process run after us now
+	if ne,<
+	  mov r0,(r3)		; and make us run right after the output
+				; process.  This was we'll know immediately
+				; that the output process has dispossed
+				; of its last character
+	  >
+	else <
+	  mov r0,@runend
+	  mov r0,runend
+	  >
+	mtps (sp)+
+	pop r3			; no need to sleep with this on the stack
+	jsr pc,sleep		; aduei
+	br echchr		; and back we are..
+
+.sbttl Input Subroutines
+
+; GETCHR is called by output processes to get their next character
+;	ARGS:			  VALS:
+; R0 -> ouTCB as usual	    R1 -> Character
+
+getchr:	remque o.mq,r0		; remove character in queue at offset o.mq
+				; from TCB pointed to by R0
+	return			; return with character
+
+1$:	clr o.blk(r0)		; queue was empty, we must wait for character
+	jsr pc,sleep
+	br getchr
+
+.sbttl Device IO
+
+; OUTCHR is called by an output process to output chracters to its device
+;	ARGS:			  VALS:
+; R0 -> Output TCB as usual
+; R1 -> character
+
+outful: mov r0,@runend	; append process to RUNLST
+	mov r0,runend		; ...
+.iif ne  t.next, .error "T.NEXT is assumed 0 here"
+	mtps (sp)+		; ok, we can stop hogging the processor.
+	jsr pc,sleep
+				; fall through..
+outchr:	mfps -(sp)		; save priority
+	spl 7			; disable interrupts
+	call insoq		; put char in output queue
+	 br outful			; queue full
+	call @o.waku(r0)	; probably to turn on output interrupts
+	mtps (sp)+		; release high priority
+	return
+
+; INCHR is called by an input process to read characters from its device
+;	ARGS:			  VALS:
+; R0 -> in TCB as usual     R1 -> Character
+
+inchr:	mfps -(sp)
+	spl 7			; no nasty surprises after checking q
+	call reminq		; get a character
+	 br 1$			; queue empty
+	mtps (sp)+
+	return
+
+1$:	clr i.blk(r0)		; unblock ourselves
+	tst (sp)+		; forgot about restoring our priority
+	jsr pc,sleep		; wait for a character
+	br inchr
+
+.sbttl	Queue management
+
+; QINIT initializes a queue structure.
+
+;	ARGS:				VALS:
+; SP ->	ptr to queue		 SP ->	error code
+;	buffer size
+
+qinit:	push r1			; save reg
+	mov 4(sp),r1		; get ptr to queue structure
+	push 6(sp)		; get buffer size
+	mov (sp),qsize(r1)	; save in queue structure
+	inc (sp)		; convert from bytes to words to get
+	asr (sp)		; ALLOC arg1: n_words
+	push #0			; ALLOC arg2: process ID (not used)
+	call alloc
+	mov (sp),qbp(r1)	; set buffer ptr
+	mov (sp),qfp(r1)	; set front ptr
+	mov (sp)+,qrp(r1)	; set rear ptr
+	mov (sp)+,6(sp)		; propogate error code
+	pop r1,(sp)		; restore reg, move up return r5
+	return
+
+
+; INSQ inserts a character into the rear of a queue.
+
+;	ARGS:				VALS:
+; SP ->	queue ptr		 SP ->	error code
+;	character
+
+insq:	push r1,r2		; save regs
+	mov 6(sp),r1		; ptr to queue structure
+	mov qrp(r1),r2		; ptr to rear of queue
+	dec r2			; move to next char slot
+	cmp r2,qbp(r1)		; wrap around to end?
+	if lo,<
+	  add qsize(r1),r2	; yes, make ptr to end of buffer
+	  >
+	cmp r2,qfp(r1)		; room for this character?
+	if ne,<
+	  movb 10(sp),(r2)	; queue not full, put in this char
+	  mov r2,qrp(r1)	; update ptr to rear of queue
+	  clr 10(sp)		; indicate character inserted
+	  >
+	pop r2,r1,(sp)		; restore regs, pop off arg
+	return
+
+
+; REMQ removes a character from the front of a queue.
+
+;	ARGS:				VALS:
+; SP ->	queue pointer		 SP ->	character
+;					error code
+
+remq:	push (sp),r1		; make room for results, save regs
+	mov 6(sp),r1		; ptr to queue structure
+	cmp qrp(r1),qfp(r1)	; queue empty?
+	if ne,<
+	  dec qfp(r1)		; move rear ptr to next char
+	  cmp qfp(r1),qbp(r1)	; wrap around?
+	  if lo,<
+	    add qsize(r1),qfp(r1) ; yes, put ptr at end of buffer
+	    >
+	  movb @qfp(r1),4(sp)	; put character in its result slot
+	  clr 6(sp)		; indicate success
+	  >
+	pop r1			; restore reg
+	return
+
+.sbttl Useful subroutines
+
+; CATCHN is called to setup for an expected nxm trap.
+; When the nxm trap occurs control will be passed to address
+; specified by a relative ptr after the call.
+
+catchn:	mov r5,@#nxmcat		; set catch for address specified
+	add (r5)+,@#nxmcat	; by relative ptr after call
+	mov @#4,sav4
+	mov @#6,sav6
+	mov pc,-(sp)
+	add #nxmt-.,(sp)
+	mov (sp)+,@#4
+	clr @#6
+	return
+
+nxmt:	tst nxmcat		; catch set?
+	if eq,<
+	  halt			; no, crap out
+	  rti			; ignore it if continued (?)
+	  >
+	mov nxmcat,(sp)		; clobber PC on stack with catch address
+	clr nxmcat		; catch is now used up
+	mov sav4,@#4
+	mov sav6,@#6
+	rti
+nxmcat:	.word 0
+sav4:	.word 0
+sav6:	.word 0
+
+; C bit is set from interrupt vector so can do ADC instead of ADD #1,.
+clocki:	adc time+0
+	adc time+2
+	rti
+
+.if ne  pfail
+; POWERF is Console's power fail handler.
+powerf:	add #poweru-powerf,@#24
+	halt
+
+; POWERU is Console's power up handler.
+poweru:	add #powerf-poweru,@#24
+	jmp go
+.endc
+
+
+; SAVE6 routine saves R0 through R5 on stack, R0 at top:
+; SP ->	R0
+;	R1
+;	R2
+;	R3
+;	R4
+;	R5
+; Call by JSR R5,SAVE6.  Restore regs by REST6 routine.
+
+save6:	push r4,r3,r2,r1,r0	; R5 already on stack by JSR.
+	jmp (r5)		; return.
+
+
+; REST6 routine restores R0 through R5 from stack, where
+; R0 is considered to be the top word of the stack (which is
+; how SAVE6 pushes the registers).  Call by JSR R5,REST6.
+; REST6 returns with the 6 words popped off the stack.
+
+rest6:	tst (sp)+		; forget old R5 contents.
+	pop r0,r1,r2,r3,r4	; restore other regs.
+	rts r5			; return and restore R5.
+
+.sbttl IO Macros
+
+.macro put a0,a1,a2,a3,a4,a5,a6,a7
+       .irp d,<a0,a1,a2,a3,a4,a5,a6,a7>
+       .if nb d
+         mov #d,r1
+	 call putchr
+       .endc
+       .endm
+.endm
+
+.macro putchs a0,a1,a2,a3,a4,a5,a6,a7
+       call putstr
+       .litrl ^"
+       .iif nb a0,.byte a0
+       .iif nb a1,.byte a1
+       .iif nb a2,.byte a2
+       .iif nb a3,.byte a3
+       .iif nb a4,.byte a4
+       .iif nb a5,.byte a5
+       .iif nb a6,.byte a6
+       .iif nb a7,.byte a7
+       .byte 0
+"
+.endm
+
+.macro out a0,a1,a2,a3,a4,a5,a6,a7
+       .irp d,<a0,a1,a2,a3,a4,a5,a6,a7>
+       .if nb d
+         mov #d,r1
+	 call outchr
+       .endc
+       .endm
+.endm
+
+.macro outchs a0,a1,a2,a3,a4,a5,a6,a7
+       call outstr
+       .litrl ^"
+       .iif nb a0,.byte a0
+       .iif nb a1,.byte a1
+       .iif nb a2,.byte a2
+       .iif nb a3,.byte a3
+       .iif nb a4,.byte a4
+       .iif nb a5,.byte a5
+       .iif nb a6,.byte a6
+       .iif nb a7,.byte a7
+       .byte 0
+"
+.endm
+
+.insrt config
+
+.insrt c100
+
+.insrt s1kbd
+
+.insrt grinel
+
+.sbttl	Foofah
+
+	%enacr==1		; an error code used by fsm
+.insrt fsm
+
+constants
+
+	 last=.
+
+.if p1
+.print "Highest location = "
+typval \.
+.print "
+"
+.endc
+
+.end go

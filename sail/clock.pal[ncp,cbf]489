@@ -1,0 +1,94 @@
+;;; -*-MIDAS-*-
+
+.sbttl	Clock
+
+.iif ndf $$sleep, $$sleep===1	; sleep code
+
+
+;;; Initialize clock service.
+
+clkini:	clr clock+0		; T0 and counting
+	clr clock+2		; ...
+.lif ne $$sleep
+	clr clklst		; no tasks on clock wakeup list
+	mov #clkint,@#100	; initialize clock interrupt vector
+	mov #pr6,@#102		; ...
+.lif df  lks
+	bis #100,@#lks		; turn on clock interrupts
+	return
+
+
+;;; 60Hz clock interrupt.  Simply increments doubleword counter to keep track
+;;; of uptime.
+
+clkint:	inc clock+0		; add 1 to uptime
+	if eq,<			; if carry
+	  inc clock+2		; increment high order word
+	  >
+.if ne $$sleep
+	;; wake up tasks waiting on clock
+	push r0			; save register
+	mov clklst,r0		; R0: 1st task waiting on clock
+	if ne,<			; if any
+	  dec twait(r0)		; count him down
+	  if eq,<		; reached 0, his time has come
+    loop <    mov (r0),clklst	; save next task
+	      clr (r0)		; clear link field
+	      wake.h r0		; put on run queue
+	      mov clklst,r0	; R0: next task waiting on clock
+	      exitl eq		; if none, we're done
+	      tst twait(r0)	; if this task wanted same time
+	      rptl eq		; then wake him up too
+	      >
+	    >
+	  >
+	pop r0			; restore register
+.endc
+	rti
+
+
+.if ne $$sleep
+;;; Put task on clock wait list.  Stack argument is time in 60ths to wait.
+;;; Maximum wait time is therefore 18 minutes.
+
+sleep:	push r0,r1		; save registers
+	mov #clklst,r0		; R0: pointer to clock list head
+	spl 6			; lock out clock interrupts while scanning list
+loop <	  mov r0,r1		; R1: previous list element
+	  mov (r0),r0		; R0: next list element
+	  exitl eq		; if reached end, add to end
+	  sub twait(r0),6(sp)	; subtract number of ticks this task will
+				; count off
+	  rptl cc		; if our count didn't go below 0, then we
+				; are later so keep going
+	  add twait(r0),6(sp)	; our count went below 0, restore it
+	  sub 6(sp),twait(r0)	; and subtract our count from his because
+				; we'll be before him on list
+	  >
+	mov ctask,r0		; R0: task control block
+	mov 6(sp),twait(r0)	; store number of clock ticks to count off
+				; when we reach the front of the list
+	mov (r1),(r0)		; link into list
+	mov r0,(r1)		; ...
+	spl 0			; back to low priority
+	pop r1,r0,(sp)		; restore registers, remove argument
+	iot			; wait for wakeup
+	return
+.endc
+
+
+;;; Return system uptime in doubleword 60ths.
+
+uptime:	push (sp),(sp)		; create space for return value
+loop <	  mov clock+2,4(sp)	; read CLOCK
+	  mov clock+0,2(sp)	; ...
+	  cmp 4(sp),clock+2	; is value just read consistent?
+	  rptl ne		; no, try again
+	  >
+	return
+
+
+clock:	.blkw 2			; uptime in 60ths since start up
+.lif ne $$sleep
+clklst:	.blkw 1			; list ot tasks waiting for on clock
+

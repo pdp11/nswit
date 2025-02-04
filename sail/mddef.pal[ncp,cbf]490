@@ -1,0 +1,45 @@
+;;; -*-midas-*-
+.if1
+	.print /Defining MD machine Chaos Network configuration
+/
+.endc
+	.insrt	macs
+;;; The Network Configuration and Definition for the CHAOS Net
+
+inhst == 2			;the host number of this machine
+innet == 22			;the host net number
+mxcilv == 7			;maximum interrupt level of all the interfaces
+
+	makcif 22,2,tty,176520,320
+
+	route <innet,1		;Subnet 1 Main campus chaosnet
+	,innet,1		;Subnet 2 AI 9th floor ethernet
+	,innet,1		;Subnet 3 MC IO 11 Pseudo net
+	,innet,1		;Subnet 4 AI CHAOS 11 pseudo net
+	,innet,1		;Subnet 5 XX Network 11 pseudo net
+	,innet,1		;Subnet 6 Tech Square chaosnet
+	,innet,1		;Subnet 7 Plasma Fusion Center link
+	,innet,1		;Subnet 10 LCSnet
+	,innet,1		;Subnet 11 Arpanet pseudo net
+	,innet,1		;Subnet 12 VII LCSnet
+	,innet,1		;Subnet 13 EE pseudo subnet
+	,innet,1		;Subnet 14
+	,innet,1		;Subnet 15
+	,innet,1		;Subnet 16
+	,innet,1		;Subnet 17
+	,innet,1		;Subnet 20 Arpa-11 Imp-11 TTY net
+	,innet,1		;Subnet 21 NM-crock net
+	,0,1			;Subnet 22 MD-11 to Arpa-11 TTY (interface 1)
+	,innet,1		;Subnet 23 Device-6 to Arpa-11 TTY subnet
+	,innet,1		;Subnet 24 Device-7 to Arpa-11 TTY test net
+	,innet,1		;Subnet 25 unused
+	,innet,1		;Subnet 26 unused
+	,innet,1		;Subnet 27 unused
+	,innet,1		;Subnet 30 unused
+	,innet,1		;Subnet 31 unused
+	,innet,1		;Subnet 32 unused
+	,innet,1		;Subnet 33 unused
+	>
+
+	rcvxmt <trncvr>
+

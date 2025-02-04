@@ -1,0 +1,34 @@
+;;; -*-midas-*-
+.if1
+	.print /Defining CHAOS machine Chaos Network configuration
+/
+.endc
+	.insrt	macs
+;;; The Network Configuration and Definition for the Chaos-11 CHAOS Net
+
+inhst == 5			;the host number of this machine
+innet == 21			;the host net number
+mxcilv == 7			;maximum interrupt level of all the interfaces
+
+	makcif 21,5,nmc
+	makcif 22,2,tty,176620,260
+	route <21,4		;Net 1 9th floor Tech Square
+	,21,4			;Subnet 2 AI 9th floor eathernet
+	,21,4			;Subnet 3 MC IO 11 Pseudo net
+	,21,4			;Subnet 4 AI CHAOS 11 pseudo net
+	,21,4			;Subnet 5 XX Network 11 pseudo net
+	,21,4			;Subnet 6 unassigned
+	,21,4			;Subnet 7 unassigned
+	,21,4 			;Subnet 10 LCSnet
+	,21,4			;Subnet 11 Arpanet pseudo net
+	,0,0			;Subnet 12
+	,0,0			;Subnet 13
+	,0,0			;Subnet 14
+	,0,0			;Subnet 15
+	,0,0			;Subnet 16
+	,0,0			;Subnet 17
+	,21,4			;Subnet 20 Arpa-11 Imp-11 TTY net
+	,0,1			;Subnet 21 NM-crock net
+	,0,2>			;Subnet 22 Chaos-11 TTY Test net
+
+	rcvxmt <nmcvr, trncvr>

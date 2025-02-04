@@ -1,0 +1,100 @@
+;;; Chaos servers
+
+.iif ndf asmexser, asmexser===0
+.if ne asmexser
+
+.sbttl	- Chaos ex server
+
+exser:	mov pkdat+4(r0),r2
+	call nxmcat
+	  1$
+	mov (r2),-(sp)
+	mov sp,r2
+	call nxmclr
+	call chans,<r0,r1,r2,#2>
+	jcall logout
+1$:	call chans,<r0,r1,#0,#0>
+	jcall logout
+.endc
+
+.iif ndf asmdpser, asmdpser===0
+.if ne asmdpser
+
+.sbttl	- Chaos dp server
+
+dpser:	call nxmcat
+	  1$
+	mov pkdat+4(r0),@pkdat+6(r0)
+	call nxmclr
+	call chans,<r0,r1,#0,#0>
+1$:	jcall logout
+.endc
+
+.iif ndf asmechser, asmechser===0
+.if ne asmechser
+
+.sbttl	- Chaos ECHO server
+
+echser:	call chrply,<r0,r1,#3>	; reply to RFC with OPN
+loop <	  call chdiw,r1,r0	; read packet
+	  if cs,<		; connection closed
+	    call frepck		; free CLS packet if any
+	    exitl
+	    >
+	  call chdow,<r0,r1>	; send it back
+	  rptl cc		; go for more if connection open
+	  >
+	call chcls,<r1,#0>	; punt the connection
+	call logout
+.endc	; ne asmechser
+
+
+.iif ndf asmsnkser, asmsnkser===0
+.if ne asmsnkser
+
+.sbttl	- Chaos SINK server
+
+snkser:	call chrply,<r0,r1,#4>	; reply to RFC with OPN
+loop <	  call chdiw,r1,r0	; read packet
+	  exitl cs		; connection closed?
+	  call frepck		; free it
+	  rptl			; go for more
+	  >
+	call frepck		; free CLS packet if any
+	call chcls,<r1,#0>	; punt the connection
+	call logout
+.endc	; ne asmsnkser
+
+.iif ndf asmuptser, asmuptser===0
+.if ne asmuptser
+.sbttl	- Chaos UPTIME server
+
+uptser:	;; task created and started here with R0/ RFC, R1/ connection.
+	pcall uptime		; get time in seconds since Jan 1, 1900
+	mov sp,r2		; R2: pointer to TIME result
+	call chans,<r0,r1,r2,#4>	; send ANS with 4 bytes of time
+	cmp (sp)+,(sp)+		; remove TIME result
+	jcall logout		; and kill this process
+.endc	; ne asmuptser
+
+.iif ndf asmtimser, asmtimser===0
+.if ne asmtimser
+.sbttl	- Chaos TIME server
+
+timena:	.asciz "Time not available"	; error message
+	.even
+
+
+timser:	;; task created and started here with R0/ RFC, R1/ connection.
+	tst timsts		; time known?
+	if eq,<			; no
+	  call frepck		; free RFC
+	  call chcls,<r1,#timena>	; refuse
+	  jcall logout
+	  >
+	pcall time		; get time in seconds since Jan 1, 1900
+	mov sp,r2		; R2: pointer to TIME result
+	call chans,<r0,r1,r2,#4>	; send ANS with 4 bytes of time
+	cmp (sp)+,(sp)+		; remove TIME result
+	jcall logout		; and kill this process
+.endc	; ne asmtimser

@@ -1,0 +1,90 @@
+	.sbttl	System Tables
+
+	.csect	systab
+systab:
+
+	.if	df,.mglbl
+	.globl	k.attc,k.atid,k.rchn,k.watc,trfint
+	.globl	k.jobs,k.idle,k.trfl,w.iowt
+	.globl	timclk,timhi,timlo,chrsin,chrsil,chrsot,chrsol
+	.globl	chrsih,chrsoh,outcpu
+	.globl	kbintv,kbinbr,printv
+	.globl	frecnt,watcnt,actcnt,totjbs,trfcnt
+	.globl	otactb,otrt1b,otrt1c
+	.globl	active,actid
+	.endc
+
+k.attc = 1	;ID in TCB bad, chain bad or bug in list handle
+k.atid = 2	;ACTIVE ID not valid, system tables bad
+k.rchn = 3	;chain bombed, or looped in run queue
+k.watc = 4	;chain bombed, or looped in wait queue
+k.jobs = 5	;no job slots for urgent task, OVERLOAD!
+k.idle = 6	;undefined idle task
+k.ftal = 7	;some random fault while in the system (mem, inst, etc)
+k.trfl = 8.	;LOCK on scheduler did not work!, someone CHEATED!
+i.atid = 9.
+
+w.iowt = -2	;code for IO wait
+x.iowt = 150.	;ticks before rechecking IO
+
+otactb = 1
+otrt1b = 2
+otrt1c = 4
+
+trfinv = 2		;scheduler inteval (standard)
+trfint:	.blkw	1	;one actually used
+trfclk:	.blkw	1	;scheduler clock; next quantum when zero
+
+timclk:		;system clock
+timhi:	.blkw	1
+timlo:	.blkw	1
+cpuclk:	.blkw	1	;cpu time charged between scheduler calls
+relclk:	.blkw	1	;real time between scheduler calls
+
+chrsin:		;chars input
+chrsih:	.blkw	1
+chrsil:	.blkw	1
+chrsot:		;chars output
+chrsoh:	.blkw	1
+chrsol:	.blkw	1
+
+kbintv:	.blkw	1
+kbinbr:	.blkw	1
+printv:	.blkw	1
+
+mxjobs=30.		;max number of job slots allocated
+active:	.blkw	1	;id of the active task (ptr to TCB)
+actid:	.blkw	1	;index of active job -- JOBLST(ACTID) = ACTIVE
+fretcb:	.blkw	1	;chain of unused free tcb's
+frecnt:	.blkw	1	;count of blocks on this chain
+waitch:	.blkw	1	;chain of task who are waiting for something
+watcnt:	.blkw	1	;count of blocks on this chain
+chain:	.blkw	1	;runq
+actcnt:	.blkw	1	;count of active running jobs
+chaind:	.blkw	1	;end of run queue
+totjbs:	.blkw	1	;count of jobs started
+trfcnt:	.blkw	1	;count of scheduler runs
+
+chgcpu:	.blkw	1	;charged cPu time
+idlcpu:	.blkw	1	;idle cpu time
+trfcpu:	.blkw	1	;time in scheduler
+outcpu:	.blkw	1	;time in char sender
+
+joblst:	.blkw	mxjobs	;array of ptrs to TCB's
+
+idlflg:	.blkw	1	;toggle for double buffered idle lists
+idlstt:	.blkw	2	;start of lists
+idlmax:	.blkw	2	;ptr to end of lists
+idlcnt:	.blkw	2	;ptr to place in lists
+idlovl:	.blkw	1	;count of overloads
+idllse:	.blkw	1	;count of no TCBs
+idlwin:	.blkw	1	;count of tasks started from idle
+idllen=10.		;length of idle task lists
+idlls0:	.blkb	idllen+2
+idlls1:	.blkb	idllen+2
+
+.=systab+2000
+idle:		;TCB for idle process
+	.blkb	mxjobs*tcb.ln
+;
+	.page

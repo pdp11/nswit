@@ -1,0 +1,2006 @@
+;;; -*- PALX -*-
+
+;;; SPNSVR is called at intialization to start permanent chaos servers.
+;;; R5-> start address of server, asciz string pointer for contact name.
+
+spnsvr:	mov (r5)+,r1		; start address
+	if eq,<			; if zero, server has been patched out
+	  tst (r5)+		; skip over string pointer
+	  preturn		; and return
+	  >
+	push (r5)+,r1		; push string start address
+	pcall chlsn		; listen on appropriate contact name
+	cmp (sp)+,(sp)+		; pop return arguments whatever they are.
+	preturn			; and return
+
+.if ne  nkbd
+
+.if df ethcnt
+
+;;; ETHER command.
+ethcmd:	pcall nonsp		; read space(s)
+	push #ethcml
+	pcall getkwd
+	pop r3
+	pcall crchk		; wait for CR
+	mov #ethd1,r1
+	jcall @2(r3)
+
+ethcml:	key ^"initialize",ethin0
+	key ^"reset-receive",ethrsr
+	key ^"statistics",ethsts
+	.word 0
+
+.endc
+
+lstcon:	pcall crchk		; wait for confirmation
+	jcall chprst		; print out chaos net statistics
+
+
+;;; Read chaosnet host specifier.  Returns R1/ host number.
+
+gchst:	pcall qmark		; handle "?"
+	  .string ^"Octal chaos address or one of"
+	  .word chosts
+gchst1:	pcall digitp
+	if eq,<
+	  jcall getoct
+	  >
+	push #chosts
+	pcall getkwd
+	pop r1
+	mov 2(r1),r1
+	preturn
+
+gchstt:	pcall qmark		; handle "?"
+	  .string ^"RETURN or octal chaos address or one of"
+	  .word chosts
+	cmp r1,#15		; RETURN?
+	bne gchst1		; no, get host
+	clr r1			; else return 0
+	preturn
+
+hostab				; assemble host here
+
+
+;;; Read a host specifier argument.  Returns R2/ pointer to name, R3/ length.
+
+geths1:	pcall rejbcf		; reject CR
+gethst:	pcall qmark		; handle "?"
+	  .string ^"host/imp"
+	  .word 0
+	pcall getar1		; get string argument
+	tst r3			; make sure there is one
+	beq geths1		; ...
+	preturn
+
+
+;;;
+
+typpak:	push r3
+	mov pklen(r2),r3
+	bic #pkfcnt,r3
+	if ne,<
+	  push r1,r2
+	  add #pkdat,r2
+  loop <    movb (r2)+,r1
+	    cmpb r1,#215	; gross hack -- hack LISPM newline chars
+	    if eq,<
+	      printcr
+	      >
+	    else <
+	      pcall echoc
+	      >
+	    sorl r3
+	    >
+	  pop r2,r1
+	  >
+	pop r3
+	preturn
+
+;;; NETWORK CONNECT command.
+
+netcon:	pcall gchst		; get chaosnet host number
+	push r1			; NETOPN arg1: host number
+	pcall getcon		; get contact string
+				; GETCON result: NETOPN arg2: contact string
+	pcall nocchk		; insure nothing already open
+	pcall netopn		; open connection
+;	mov r1,kdstn(r0)	; save contact string for WHO
+	clr kdstn(r0)
+netcom:	mov #nulldo,koldd(r0)	; what to link to when done
+	printcr ^"Connection Open"
+	push r1			; CINIT arg1: connection
+	push r0			; CINIT arg2: destination
+	add #coobj,(sp)		; ...
+	push #32.		; CINIT arg3: packet size
+	push #0			; CINIT arg4: don't inhibit error messages
+	pcall cinit		; create destination object for chaos connection
+	pop ksrc(r0),kdst(r0)	; CINIT results: source and destination
+				; chaosnet objects
+	clrb echof(r0)		; initially remote echo
+.if ne asmled
+	clrb linedf(r0)		; and no line editor
+.endc
+	preturn
+
+
+;;; NETWORK OPEN command.  Command better be at least 4 letters long.
+;;; This command is mildly disgusting in technique.
+
+netocm:	pcall gchst		; get chaosnet host number
+	push r1			; NETOPN arg1: host number
+9$:	pcall qmark		; handle "?"
+	  .string ^"remote port name"
+	  .word 0
+	pcall getar1		; read port argument, R2/ string, R3/ length
+	tst r3
+	if eq,<
+	  pcall rejbc		; reject lone CR
+	  br 9$
+	  >
+	pcall crchk
+	pcall nocchk		; insure nothing already open
+
+	add r2,r3		; terminate port name with null
+	clrb (r3)		; ...
+	mov r2,r5
+
+netoc1:	;; (SP)/ host number, R5/ port name
+	mov bufp(r0),r4		; R4: pointer to scratch area for contact
+				; string
+	movb #'O,(r4)+
+	movb #'P,(r4)+
+	movb #'E,(r4)+
+	movb #'N,(r4)+
+	movb #40,(r4)+
+	pcall 2$		; put port name into contact string
+	mov r4,r3		; R3: end of port name
+	movb #40,(r4)+
+	mov r0,r5		; put user name into contact string
+	add #kuser,r5		; ...
+	pcall 2$		; ...
+.litrl ^|
+	.ascii " "
+	%sname
+	.asciz ": "
+|,%loc1
+	mov #%loc1,r5		; get name of this machine
+	pcall 2$		; put in in loc string
+	mov kport(r0),r5
+	asl r5
+	mov desctb(r5),r5
+	pcall 2$		; add to packet
+	clrb (r4)+		; terminate with null
+	mov (sp),r5		; remember host number
+	push bufp(r0)		; NETOPN arg2: contact name
+	pcall netopn		; open connection, connection in R1
+
+	;; now build string to put in KDSTN
+	clr kdstn(r0)		; in case we punt
+	push r5,#chosts		; VALKEY args: value, table
+	pcall valkey		; convert host number to string
+	pop r5			; VALKEY result: asciz pointer
+	if ne,<			; there is one
+	  push #darea		; ALLOC args: area, size in words
+	  push r5		; STRLN arg: asciz host name pointer
+	  pcall strln		; compute length
+	  mov bufp(r0),r2	; R2: pointer to port name
+	  add #5,r2		; ...
+	  sub r2,r3		; R3: length of port name
+	  add r3,(sp)		; add port length to host length
+	  add #3,(sp)		; account for space, null and rounding
+	  asr (sp)		; convert to words
+	  pcall alloc
+	  pop r4,*		; ALLOC results: pointer, error code
+	  if eq,<		; success
+	    mov r4,kdstn(r0)
+    loop <    movb (r5)+,(r4)+
+	      rptl ne
+	      >
+	    movb #40,-1(r4)
+    loop <    movb (r2)+,(r4)+	; put in port spec
+	      sorl r3
+	      >
+	    >
+	  >
+	br netcom		; finish opening
+
+;;; subroutine to add an asciz string in R5 to command buffer
+2$:	mov bufp(r0),-(sp)
+	add #lbuf,(sp)
+loop <	  cmp r4,(sp)
+	  exitl his
+	  movb (r5)+,(r4)+
+	  rptl ne
+	  dec r4
+	  >
+	tst (sp)+
+	preturn
+
+
+;;; STRLN - returns the length of an asciz string.  Takes and returns
+;;; argument on stack.
+strln:	push r0			; save regsiter
+	mov 4(sp),r0		; R0: string pointer
+	clr 4(sp)		; init at 0
+loop <	  tstb (r0)+		; end of string?
+	  exitl eq		; yes
+	  inc 4(sp)		; increment string length
+	  rptl
+	  >
+	pop r0			; restore register
+	preturn
+
+
+;;; NETWORK PRINT command.
+
+netpri:	pcall gchst		; get chaosnet host number
+	push r1			; NETOPN arg1: host number
+	pcall getcon		; get contact string
+				; GETCON result: NETOPN arg2: contact string
+	pcall netopn		; open connection
+netpr1:	;; copy input to terminal
+loop <	  cocall		; busy wait
+	  push r1		; CHDATI arg: connection
+	  pcall chdati		; get packet if any
+	  pop r2		; CHDATI result: packet oor 0
+	  if ne,<		; if packet
+	    pcall typpak	; type it
+	    push r2		; FREPK arg: pointer
+	    pcall frepk		; and free it
+	    >
+	  cmpb cnstat(r1),#%csopn	; connection still open?
+	  rptl eq		; yes, back for more
+	  >
+netpr2:	push r1,#0		; CHCLS args: close connection, close reason
+	pcall chcls		; close chaosnet connection
+	jcall crlf
+
+.if ne asmarp
+;;; FINGER command.
+
+finger:	mov r0,r4		; R4: pointer to scratch area
+	add #scrtch,r4		; ...
+	mov #arpaco,r5		; put in "ARPA "
+	pcall cncopy		; ...
+	pcall gethst		; get host name argument
+loop <	  movb (r2)+,(r4)+	; put in host name from command line
+	  sorl r3		; ...
+	  >
+.string ^" 117",%%temp
+	mov #%%temp,r5		; finish off; ICP to socket 117
+	pcall cncopy		; ...
+	pcall getarg		; get optional finger arguments
+	pcall crchk		; wait for confirmation
+
+	push arphst		; CHOPEN arg1: host number
+	push #1			; CHOPEN arg2: window size
+	push #charto		; CHOPEN arg3: arpanet RFC timeout
+	push r0			; CHOPEN arg4: contact string
+	add #scrtch,(sp)	; ...
+	pcall chopen		; open connection
+	pop r1			; CHOPEN result: connection
+	if cs,<			; if error
+	  if ne,<		; if error message
+	    mov r1,r2		; TYPPAK arg: packet
+	    pcall typpak	; type contents of packet
+	    push r1		; FREPK arg: pointer
+	    pcall frepk		; get rid of the packet
+	    >
+	  jcall crlf		; CRLF and return
+	  >
+
+	;; copy rest of command line to a packet for sending
+	push r0,r3
+	add #pkdat+2+1,r3
+	asr r3
+	kcall alcsiz
+	mov r0,r4
+	pop r3,r0
+
+	movb #200,pkop(r4)
+	mov r3,pklen(r4)
+	add #2,pklen(r4)
+	mov r4,r5
+	add #pkdat,r5
+	tst r3
+	if ne,<
+loop <	  movb (r2)+,(r5)+
+	  sorl r3
+	  >
+	>
+	movb #15,(r5)+
+	movb #12,(r5)+
+	;; send command line
+loop <	  push r4,r1
+	  pcall chdato
+	  bcc netpr1
+	  cmpb cnstat(r1),#%csopn
+	  exitl ne
+	  cocall
+	  rptl
+	  >
+	push r4
+	pcall frepk
+	br netpr2
+.endc
+
+;;; Get contact name string.
+
+getcon:	pcall qmark		; handle "?" and skip leading spaces
+	  .string ^"Contact name and arguments"
+	  .word 0
+	push (sp)		; create return value stack position
+	mov getp(r0),2(sp)	; return start of contact name and arguments
+loop <	  pcall getbc		; get next input character
+	  cmp r1,#15		; CR?
+	  exitl eq		; yes, do it
+	  pcall accbc		; not CR, just buffer it
+	  rptl
+	  >
+	pcall crlf		; echo CR
+	clrb @getp(r0)		; terminate command line with NUL to make into
+				; ASCIZ for CHOPEN argument
+	preturn
+
+
+;;; Open network connection.  Stack arguments are host number and contact
+;;; name.  Returns R1/ connection.
+
+netopn:	push 4(sp),#3,#chchto,2+6(sp)	; CHOPEN args: host number, window size,
+				; time out, contact name
+	pcall chopen		; open connection
+	pop r1			; CHOPEN result: connection or error packet
+	if cs,<			; if error
+	  if ne,<		; if error message
+	    mov r1,r2		; TYPPAK arg: packet
+	    pcall typpak	; type contents of packet
+	    push r1		; FREPK arg: pointer
+	    pcall frepk		; get rid of the packet
+	    >
+	  else <		; no error message, type one of our own
+	    print ^"Failed to establish connection"
+	    >
+	  pcall crlf		; CRLF and return
+	  jmp cmdabo
+	  >
+	pop (sp),(sp)		; remove arguments from stack
+	preturn
+
+;;; Chaos Telnet command.  Opens a Chaos connection using Arpanet new
+;;; telnet type protocol.
+;;; sp -> host number
+
+chtel:	mov (sp),r5		; save host number
+	push #3,#charto		; CHOPEN arg2 and arg3: window size, time out
+	push #telcon		; CHOPEN arg4: contact name
+	pcall chopen		; open connection
+	pop r2			; CHOPEN result: connection
+	if cs,<			; if error
+	  pcall typpak
+	  push r2
+	  pcall frepk
+	  jcall crlf
+	  >
+	clr kdstn(r0)		; in case we punt
+	push r5,#chosts		; VALKEY args: value, table
+	pcall valkey		; convert host number to string
+	pop r5			; VALKEY result: asciz pointer
+	if ne,<			; there is one
+	  push #darea		; ALLOC args: area, size in words
+	  push r5		; STRLN arg: asciz host name pointer
+	  pcall strln		; compute length, left on stack
+	  inc (sp)		; round up
+	  asr (sp)		; and make into word count
+	  pcall alloc		; allocate block, 
+	  pop r1,*		; ALLOC results: pointer, error code
+	  push r1
+    loop <  movb (r5)+,(r1)+
+	    rptl ne
+	    >
+	  pop r1
+	  >
+	jcall chtlnt
+
+telcon:	.asciz "TELNET"
+	.even
+
+;;; TELNET protocol codes.
+iac==377
+will==373
+wont==374
+do==375
+dont==376
+sb==372
+se==360
+tnnop==361
+dm==362
+ip==364
+ayt==366
+brk==363
+
+binary==0
+echo==1
+sga==3
+tm==6
+logo==18.
+ttyloc==23.
+optmax==23.
+
+
+.if ne asmarp
+;;; TELNET command.
+
+arpaco:	.asciz "ARPA "
+	.even
+
+telnet:	pcall gethst		; get host number, r2/ pointer, r3/ length
+
+	pcall qmark		; handle "?"
+	  .string ^"RETURN or socket number"
+	  .word 0
+	mov r2,r4		; save host number string
+	mov r3,r5
+	pcall getar1		; get socket number
+	push r2,r3		; and save it; keep length on top of stack
+	mov r4,r2		; swap r2,r3 back to host number string
+	mov r5,r3
+
+.if ne 0
+	pcall qmark
+	  .string ^"Chaos to ARPA net gateway address"
+	  .word chosts
+	cmp r1,#15
+	if eq,<
+	  mov arphst,r1
+	  >
+	else <
+	  pcall gchst1
+	  >
+.endc
+
+	pcall crchk		; wait for confirmation
+	pcall nocchk		; insure no connection open
+
+	add (sp),r5		; ALLOCW arg: byte size; sum up host number
+	add #5+6,r5		; string + socket number string + overhead
+	push r5
+	pcall allocw		; allocate storage for contact string
+	pop r1			; ALLOCW result: pointer
+	mov r1,r4		; R4: next byte to write in contact string
+	mov #arpaco,r5		; put in "ARPA "
+	pcall cncopy		; ...
+loop <	  movb (r2)+,(r4)+	; put in host name from command line
+	  sorl r3		; ...
+	  >
+	movb #40,(r4)+		; space before socket number
+	pop r3,r2		; get string for socket
+	tst r3			; did user specify a socket?
+	if eq,<			; no,
+	  movb #'2,(r4)+	; default to socket 27
+	  movb #'7,(r4)+
+	  >
+	else <			; yes,
+  loop <    movb (r2)+,(r4)+	; copy in user's socket
+	    sorl r3
+	    >
+	  >
+	clrb (r4)		; end the string
+	;; altogether the string built up above looks something like:
+	;; "ARPA host/imp socket"
+	push arphst		; CHOPEN arg1: host number
+	push #1,#charto		; CHOPEN arg2 and arg3: window size, time out
+	push r1			; CHOPEN arg4: contact name
+	pcall chopen		; open connection
+	pop r2			; CHOPEN result: connection
+	if cs,<			; if error
+	  push #darea,r1	; FREE args: area, pointer
+	  pcall free		; free contact string
+	  pcall typpak		; type contents of packet
+	  push r2		; FREPK arg: pointer
+	  pcall frepk		; get rid of the packet
+	  jcall crlf		; CRLF and return
+	  >
+.endc
+
+chtlnt:	printcr ^"Connection Open"
+	mov #nulldo,koldd(r0)	; what to link to when done
+	mov r1,kdstn(r0)	; save contact string for WHO
+	push r0			; TNINIT arg1: command processor object
+	push r2			; CINIT arg1: connection
+	push #nulldo		; CINIT arg2: destination
+	push #80.		; CINIT arg3: packet size
+	push #0			; CINIT arg4: don't inhibit error messages
+	pcall cinit		; create destination object for chaos connection
+				; CINIT results: TNINIT args: source and
+				; destination chaosnet objects and
+	push r0			; terminal destination object
+	add #coobj,(sp)		; ...
+	pcall tninit		; create TELNET destination object
+	pop ksrc(r0),kdst(r0)	; TNINIT results: source and destination objects
+	clrb echof(r0)		; initially remote echo
+.if ne asmled
+	clrb linedf(r0)		; and no line editor
+.endc
+
+	push r0			; save ourself
+	mov ksrc(r0),r0		; R0: telnet source object
+	sub #tniso,r0		; turn into negotiator
+	mov #sga,r1		; SWILL arg: telnet option
+	pcall swill		; WILL SUPPRESS GO AHEAD
+	bisb #1,uoptst+sga(r0)	; we've requested negotiation
+	mov #sga,r1		; SDO arg: telnet option
+	pcall sdo		; DO SUPPRESS GO AHEAD
+	bisb #1,soptst+sga(r0)	; we've requested negotiation
+	mov #echo,r1		; SDO arg: telnet option
+	pcall sdo		; DO ECHO
+	bisb #1,soptst+echo(r0)	; we've requested negotiation
+	mov #ttyloc,r1		; SWILL arg: telnet option
+	pcall swill		; WILL SEND TTY LOCATION
+	bisb #1,uoptst+ttyloc(r0)	; we've requested negotiation
+	mov tnodst(r0),r0	; call chaosnet destination object
+	pcall @force(r0)	; at its FORCE entrypoint
+	pop r0			; restore ourself
+
+	preturn
+
+cncopy:	movb (r5)+,(r4)+
+	bne cncopy
+	dec r4
+	preturn
+
+;;; TELNET output (keyboard input to network output) destination object.
+;;; (Also used by TELSER for task to network output.)
+
+dsect <
+	 .blkb ldptcl		; destination object protocol
+tnodst:: .blkw 1		; destination object to send to
+tntskf:: .blkw 1		; task flag: says whether called at SENDW
+				; or SEND entrypoint
+tnotni:: .blkw 1		; telnet input destination object, used to
+				; share negotiation status
+	>,ltnodobj
+
+
+;;; SENDW entrypoint.  Sends data using TELNET protocol conventions to
+;;; chaosnet destination.
+
+tnosw1:	mov pc,tntskf(r0)
+	br tnos1
+tnosw:	mov pc,tntskf(r0)
+tnos3:	cmp r1,#15		; CR?
+	if eq,<			; yes, need to send CR LF if not in binary
+	  mov tnotni(r0),r1
+	  tstb uoptst+binary(r1)	; we said we'd TRANSMIT-BINARY?
+	  if pl,<			; no
+	    mov #tncrlf,r1	; SENDS arg: string pointer
+	    br tnos2		; send 2 character string
+	    >
+	  mov #15,r1		; restore CR for sending in binary mode
+	  >
+	;; SENDW entrypoint for TELSER network output.
+tnos1:	cmp r1,#iac		; IAC?
+	if eq,<			; yes, needs to be doubled to be data
+	  mov #tniac,r1		; SENDS arg: string pointer
+	  br tnos2		; send 2 character string
+	  >
+	tst tntskf(r0)
+	if ne,<
+	  mov tnodst(r0),r0	; call chaosnet destination object to
+	  jcall @sendw(r0)	; send the character
+	  >
+	mov tnodst(r0),r0
+	jcall @send(r0)
+tncrlf:	.byte 15,12		; CR LF for SENDS
+tniac:	.byte iac,iac		; IAC IAC for SENDS
+	.even
+
+
+;;; BREAK entrypoint.  Send a TELNET break sequence.
+
+tnobrk:	push r1			; save register
+	push r0
+	mov tnodst(r0),r0
+	pcall @break(r0)	; send ARPAnet INS
+	mov (sp),r0
+	mov #1$,r1		; R1: pointer to two byte sequence
+	pcall tnos2		; send IAC BREAK uninterruptibly
+	pop r0
+	mov #2$,r1		; R1: pointer to two byte sequence
+	pcall tnos2		; send IAC DM uninterruptibly
+	pop r1			; restore register
+	preturn
+1$:	.byte iac,ip		; TELNET command for break
+2$:	.byte iac,dm		; TELNET command for resynch after INS
+	.even
+
+tnos2:	tst tntskf(r0)
+	if eq,<
+	  movb 1(r1),-(sp)
+	  movb (r1),r1
+	  mov tnodst(r0),r0	; SENDS arg: chaosnet destination object
+	  push r0
+	  pcall @send(r0)
+	  pop r0
+	  movb (sp)+,r1
+	  jcall @send(r0)
+	  >
+	push r2			; save register
+	mov #2,r2		; SENDS arg: string length
+	mov tnodst(r0),r0	; SENDS arg: chaosnet destination object
+	pcall @sends(r0)	; send CR LF or IAC IAC uninterruptibly
+	pop r2			; restore register
+	preturn
+
+
+;;; FORCE entrypoint.
+
+tnofor:	mov tnodst(r0),r0	; call chaosnet destination object
+	jcall @force(r0)	; at its FORCE entrypoint
+
+
+;;; CLOSE entrypoint.
+
+tnocls:	push #darea,r0		; FREE args: area, pointer
+	mov tnodst(r0),r0	; chaosnet destination object for CLOSE
+	pcall free		; free telnet destination object
+	jcall @close(r0)	; pass close to network destination object
+
+
+;;; SEND and SENDS entrypoints.  Just forward onto Chaos object.
+
+tnos:	clr tntskf(r0)
+	br tnos3
+tnosx:	clr tntskf(r0)
+	br tnos1
+
+tnoss:	mov tnodst(r0),r0
+	jcall @sends(r0)
+
+;;; TELNET input destination object.  Receives a TELNET data stream and
+;;; transmits the data to its destination.  Used by TELNET command to pass
+;;; terminal output from a remote host to the terminal.  Also used by
+;;; TELSER to pass keyboard input from a remote host to a command
+;;; processor task.
+
+dsect <
+	 .blkb ldptcl		; destination object protocol
+tnodst:: .blkw 1		; chaosnet destinaton object
+tniso::	 .blkb lsptcl		; source object protocol
+tnisrc:: .blkw 1		; chaosnet source object
+tnidst:: .blkw 1		; terminal destination object
+tnicp::	 .blkw 1		; command processor
+tnnegt:: .blkw 1		; negotiation type
+uoptst:: .blkb optmax+1		; user telnet option status
+soptst:: .blkb optmax+1		; server telnet option status
+wtmc==uoptst+tm			; unack'd WILL TM count
+dtmc==soptst+tm			; unack'd DO TM count
+	 .even
+	>,ltnidobj
+
+
+;;; LINK entrypoint.
+tnilnk:	mov r1,tnidst-tniso(r0)
+	preturn
+
+;;; STATUS entrypoint.
+tnists:	mov tnidst-tniso(r0),r1
+	preturn
+
+
+;;; SENDW entrypoint.  Process TELNET protocol data stream, handling
+;;; negotiations, and sending data to destination.
+
+tnisnd:	cmp r1,#iac		; IAC?
+	if ne,<			; no, just data
+1$:	  tstb dtmc(r0)		; if no outstanding DO TMs (i.e. MUZZLE
+	  if le,<		; command in effect) then
+	    mov tnidst(r0),r0	; call terminal destination object
+	    jcall @sendw(r0)	; at its SENDW entrypoint
+	    >
+	  preturn		; outstanding DO TM, throw away output
+	  >
+	;; IAC received.
+	mov #2$,sendw(r0)	; process next byte as TELNET command
+	preturn
+2$:	;; Byte after IAC received.
+	mov #tnisnd,sendw(r0)	; next byte is data until we decide otherwise
+	cmp r1,#iac		; is it an IAC?
+	beq 1$			; yes, double IAC sends one as data
+	cmp r1,#will		; WILL, WONT, DO, DONT?
+	if lo,<			; no, ignore anything else (NOP, SGA, IP, etc.)
+	  preturn		; (WILL is least of the 4, and only IAC is
+	  >			; higher, so a less than test suffices)
+	;; negotation command of some sort.
+	mov r1,tnnegt(r0)	; save negotiation type
+	mov #3$,sendw(r0)	; process next byte as TELNET option number
+	preturn
+3$:	;; Option number ofter IAC WILL/WONT/DO/DONT received.
+	mov #tnisnd,sendw(r0)	; next byte is data
+	push r2			; save register
+	mov tnicp(r0),r2	; R2: command processor object
+	if ne,<			; if any
+	  tstb tnnegm(r2)	; print negotiations?
+	  if ne,<		; yes
+	    mov tnnegt(r0),r2	; R2: negotiation type
+	    push r0,r1		; save registers
+	    mov tnicp(r0),r0	; switch to command processor object in order
+				; to make use of output subroutines
+	    print ^"received "
+	    asl r2		; *2 for word index
+	    mov negnam-<will*2>(r2),r2	; ECHOS arg: ASCIZ negotiation type name
+	    pcall echos		; print negotiation type
+	    mov r1,r2		; ECHOUD arg: option number
+	    pcall echoud	; print option number
+	    mov #40,r1		; ECHOC1 arg: character
+	    pcall echoc1	; finish off with space
+	    pop r1,r0		; restore registers
+	    >
+	  >
+	mov tnnegt(r0),r2	; R2: negotiation type again
+	push r3			; save register
+	mov r1,r3		; R3: option number *2 for indexing
+	asl r3			; ...
+	cmp r2,#do		; DO or DONT?
+	if his,<		; yes
+	  sub #do+1,r2		; DO -) -2, DONT -) 0
+	  asl r2		; ...
+	  cmp r1,#optmax	; option number greater than our table?
+	  if hi,<		; yes, we don't support it then
+	    pcall uuopt		; call unsupported user option routine
+	    >
+	  else <		; option number not too large
+	    pcall @uopt(r3)	; call appropriate user option routine
+	    >
+	  br 4$
+	  >
+	;; must be WILL or WONT
+	sub #will+1,r2		; WILL -) -2, WONT -) 0
+	asl r2			; ...
+	cmp r1,#optmax		; option number greater than our table?
+	if hi,<			; yes, we don't support it then
+	  pcall usopt		; call unsupported server option routine
+	  >
+	else <			; option number not too large
+	  pcall @sopt(r3)	; call appropriate server option routine
+	  >
+4$:	push r0
+	mov tnodst(r0),r0
+	pcall @force(r0)
+	pop r0
+	pop r3,r2		; restore registers
+	preturn
+
+
+;;; BREAK entrypoint.  The ARPA server on our chaosnet uses packet opcode 202
+;;; to signal a INR, which the chaosnet object turns into a call to the break
+;;; entrypoint.  Just call through to our destination.
+
+tnibrk:	mov tnidst(r0),r0
+	jcall @break(r0)
+
+
+;;; FORCE entrypoint.  Just call through to our destination.
+
+tnifor:	mov tnidst(r0),r0
+	jcall @force(r0)
+
+
+;;; CLOSE entrypoint.
+
+tnicls:	push #darea,r0		; FREE args: area, pointer
+	mov tnidst(r0),r0	; for CLOSE call
+	pcall free		; free self
+	jcall @close(r0)	; pass close to our destination
+
+
+;;; Errors for now.
+
+tnis:	tniss:	bpt
+
+
+negnam:	.string ^"WILL "
+	.string ^"WONT "
+	.string ^"DO "
+	.string ^"DONT "
+
+uopt:	.word suopt		; binary
+	.word uuopt		; echo
+	.word uuopt		; rcp
+	.word suopt		; supress-ga
+	.word uuopt		; nams
+	.word uuopt		; status
+	.word dtm		; timing-mark
+.rept ttyloc-tm-1
+	.word uuopt
+.endr
+	.word locopt		; ttyloc
+.rept optmax-ttyloc
+	.word uuopt
+.endr
+.iif ne  <.-uopt>/2-optmax-1,	.error UOPT table wrong size
+
+sopt:	.word ssopt		; binary
+	.word secho		; echo
+	.word usopt		; rcp
+	.word ssopt		; supress-ga
+	.word usopt		; nams
+	.word usopt		; status
+	.word wtm		; timing-mark
+.rept logo-tm-1
+	.word usopt
+.endr
+	.word wlogo		; logout
+.rept optmax-logo
+	.word usopt
+.endr
+.iif ne  <.-sopt>/2-optmax-1,	.error SOPT table wrong size
+
+
+sdo:	mov #do,r2
+	br sndiac
+
+sdont:	mov #dont,r2
+	br sndiac
+
+swill:	mov #will,r2
+	br sndiac
+
+swont:	mov #wont,r2
+;	br sndiac
+
+sndiac:	mov r1,-(sp)		; construct IAC <type> <option>
+	mov #iac,-(sp)		; on stack
+	movb r2,1(sp)		; ...
+	mov sp,r1		; SENDS arg: string pointer
+	mov #3,r2		; SENDS arg: string length
+	push r0			; save ourself
+	mov tnodst(r0),r0	; call chaosnet destination object
+	pcall @sends(r0)	; at its SENDS entry to send a string
+	mov (sp),r0
+	mov tnicp(r0),r0	; R0: command processor object
+	if ne,<			; if any
+	  tstb tnnegm(r0)	; print negotiations?
+	  if ne,<		; yes
+	    print ^"sent "
+	    clr r2
+	    bisb 3(sp),r2
+	    asl r2
+	    mov negnam-<will*2>(r2),r2
+	    pcall echos
+	    mov 4(sp),r2
+	    pcall echoud
+	    mov #40,r1
+	    pcall echoc1
+	    >
+	  >
+	pop r0			; restore ourself
+	cmp (sp)+,(sp)+		; remove string from stack
+	preturn
+
+;;; TELNET negotation handlers.  Called with R1/ option number,
+;;; R2/ negotiation type (0 for DONT/WONT, -2 for DO/WILL).
+
+;;; Unknown option user option (DO/DONT) handler.
+uuopt:	tst r2			; DO?
+	if ne,<			; yes
+	  pcall swont		; reply WONT
+	  >			; no need to reply to DONT, as we're already
+	preturn			; in that state (can't have accepted
+				; previously if we've never heard of the
+				; option!)
+
+;;; Simple supported user telnet option handler (invoked for received DO/DONT).
+;;; These options are preferred on, so a received DO or DONT just sets the
+;;; state (we have to honor a DONT according to protocol).
+suopt:	add r0,r1		; do first part of UOPTST(R0)(R1)
+	bitb #1,uoptst(r1)	; is this a reply to our request?
+	if eq,<			; no
+	  cmpb r2,uoptst(r1)	; already in requested state?
+	  if ne,<		; no
+	    movb r2,uoptst(r1)	; set option status to -2 for on, 0 for off
+	    sub r0,r1		; undo double indexing
+	    asr r2		; DO -) WILL, DONT -) WONT
+	    add #will+1,r2	; ...
+	    jcall sndiac	; reply, accepting request
+	    >
+	  >
+	movb r2,uoptst(r1)	; set option status to -2 for on, 0 for off
+	preturn
+
+;;; Unknown server option (WILL/WONT) handler.
+usopt:	tst r2			; WILL?
+	if ne,<			; yes
+	  pcall sdont		; reply DONT
+	  >			; no need to reply to WONT, as we're already
+	preturn			; in that state (can't have accepted
+				; previously if we never heard of the
+				; option!)
+
+;;; Simple supported server telnet option handler (invoked for received
+;;; WILL/WONT). These options are preferred on, so a received WILL or WONT just
+;;; sets the state (we have to honor a WONT according to protocol).
+ssopt:	add r0,r1		; do first part of SOPTST(R0)(R1)
+	bitb #1,soptst(r1)	; is this a reply to our request?
+	if eq,<			; no
+	  cmpb r2,soptst(r1)	; already in requested state?
+	  if ne,<		; no
+	    movb r2,soptst(r1)	; set option status to -2 for on, 0 for off
+	    sub r0,r1		; undo double indexing
+	    asr r2		; WILL -) DO, WONT -) DONT
+	    add #do+1,r2	; ...
+	    jcall sndiac	; reply, accepting request
+	    >
+	  >
+	movb r2,soptst(r1)	; set option status to -2 for on, 0 for off
+	preturn
+
+;;; Server echo option handler (received WILL ECHO).
+secho:	mov tnicp(r0),r3	; R3: command processor object
+	beq ssopt		; if any
+;	tstb echof(r3)		; if user desires any echo at all, either
+;	beq ssopt		; remote or local, then let other side chose
+				; which
+	movb r2,echof(r3)	; -2 -) 0 (remote echo), 0 -) -1 (local echo)
+	asrb echof(r3)		; ...
+	comb echof(r3)		; ...
+.lif ne asmled
+	movb echof(r3),linedf(r3)	;If foreign host negotiates for local
+					; echoing, also turn on line editor
+	br ssopt
+
+
+;;; DO/DONT timing mark.  Server sends a DO TM when it wants to synchronize
+;;; input with output (e.g. for flushing typeahead after an error).  We can
+;;; have sent ahead a WILL TM "response" at the user's request (e.g. if user
+;;; anticipated flushing, and wants to resume typeahead).  [Actually, there
+;;; currently isn't a command to do this.]
+dtm:	decb wtmc(r0)		; decrement count of "WILL TM"s sent and
+				; unack'd
+	if mi,<			; none
+	  clrb wtmc(r0)		; keep count at zero
+	  tstb r2		; DO?
+	  if mi,<		; yes
+	    ;; should wait for all character in output buffer to be sent.  oh well.
+	    pcall swill		; reply WILL, saying we're synch'd
+	    >			; (ignore DONTs)
+	  >
+	else <			; this is a reply to our WILL TM
+	  tstb r2		; DO?
+	  if pl,<		; no, DONT
+	    print ^"timing mark ignored
+"
+	    >
+	  >
+	preturn
+
+;;; WILL/WONT timing mark.  Server sends WILL/WONT TM in reply to our DO TM.
+;;; Currently we never send DO TM.  The muzzle command uses this to know when
+;;; to resume output.
+wtm:	decb dtmc(r0)		; decrement count of "DO TM"s sent
+	if mi,<			; none were sent
+	  clrb dtmc(r0)		; keep count at zero
+	  tstb r2		; WILL?
+	  if mi,<		; yes
+	    jcall sdont		; reply DONT, meaning TM ignored
+	    >
+	  >
+	preturn
+
+
+;;; WILL/WONT logout.
+wlogo:	tstb r2			; WILL?
+	if mi,<			; yes
+	  bitb #1,soptst+logo(r0)	; we requested it?
+	  if ne,<		; yes, so this is a reply
+	    bicb #1,soptst+logo(r0)	; request no longer pending
+;	    pcall clscon		; close the connection
+;	    jmp tnbeg
+	    preturn
+	    >
+	  jcall sdont		; unrequested, so refuse
+	  >
+	bicb #1,soptst+logo(r0)	; request no longer pending
+;	printcr ^"LOGOUT refused"
+	preturn
+
+
+locopt:	pcall suopt		; negotiate
+	tstb uoptst+ttyloc(r0)	; accepted?
+	if mi,<			; yes
+	  mov tnicp(r0),r1	; R1: command processor object
+	  if ne,<		; if any
+	    mov kport(r1),r1	; R1: description of our location
+	    asl r1		; ...
+	    mov desctb(r1),r1	; ...
+	    mov r1,r2		; R2: copy
+    loop <    tstb (r1)+	; find end of string
+	      rptl ne		; ...
+	      >
+	    sub r2,r1		; R1: length of location
+	    add #5-1,r1		; add in 5 for IAC SB TTYLOC ... IAC SE
+	    push r1		; save length
+	    push r1		; ALLOCW arg: size
+	    pcall allocw	; allocate block to hold telnet command
+	    pop r1		; ALLOCW result: pointer
+	    mov #sb_8+iac,(r1)+	; put in first three bytes
+	    movb #ttyloc,(r1)+	; ...
+    loop <    movb (r2)+,(r1)+	; put in location
+	      rptl ne		; ...
+	      >
+	    movb #iac,-1(r1)	; put in ending
+	    movb #se,(r1)+	; ...
+	    pop r2		; R2: length
+	    sub r2,r1		; R1: pointer to beginning
+	    push #darea,r1	; FREE args: area, pointer
+	    push r0		; save ourself
+	    mov tnodst(r0),r0	; call network object to send string
+	    pcall @sends(r0)	; ...
+	    pop r0		; restore ourself
+	    pcall free		; free string
+	    preturn
+	    >
+	  >
+	preturn
+
+;;; TELNET input and output object initialization.  Stack arguments are
+;;; command processor object (for negotiation monitoring only),
+;;; source and destination chaosnet objects, and terminal destination object.
+;;; Stack results are source and destination telnet objects.
+tninit:	push r0,r1,r2		; save registers
+	push #ltnidobj		; ALLOCW arg: byte size
+	pcall allocw		; allocate telnet input destination object
+	pop r1			; ALLOCW result: pointer
+	mov #tnis,send(r1)	; set destination protocol entrypoints
+	mov #tnisnd,sendw(r1)	; ...
+	mov #tniss,sends(r1)	; ...
+	mov #tnibrk,break(r1)	; ...
+	mov #tnifor,force(r1)	; ...
+	mov #tnicls,close(r1)	; ...
+	mov #tnilnk,tniso+link(r1)	; set source protocol entrypoints
+	mov #tnists,tniso+status(r1)	; ...
+	mov 16(sp),tnicp(r1)	; remember command processor object
+	mov 14(sp),tnodst(r1)	; remember chaosnet destination object
+	mov 12(sp),tnisrc(r1)	; remember chaosnet source object
+	mov 10(sp),tnidst(r1)	; remember terminal destination object
+	mov 12(sp),r0		; call chaosnet source object at its
+	pcall @link(r0)		; link entrypoint to get data sent to us
+
+	push #ltnodobj		; ALLOCW arg: byte size
+	pcall allocw		; allocate telnet output destination object
+	pop r0			; ALLOCW result: pointer
+	mov #tnos,send(r0)	; set destination protocol entrypoints
+	mov #tnosw,sendw(r0)	; ...
+	mov #tnoss,sends(r0)	; ...
+	mov #tnobrk,break(r0)	; ...
+	mov #tnofor,force(r0)	; ...
+	mov #tnocls,close(r0)	; ...
+	mov 14(sp),tnodst(r0)	; remember chaosnet destination object
+	mov r1,tnotni(r0)	; remember telnet input in telnet output
+
+	mov r0,16(sp)		; return telnet output destination object
+	mov r1,14(sp)		; return source object
+	add #tniso,14(sp)	; ...
+
+	pop r2,r1,r0,(sp),(sp)	; restore registers, remove two arguments
+	preturn
+
+.endc	; ne nkbd
+
+.sbttl	Chaosnet
+
+;;; Chaosnet NCP.
+
+.insrt cncp
+
+
+.if eq asmchp
+pkarea==darea
+.iff
+defvar <
+pkarea:	.blkb larea
+>
+.endc
+
+.insrt chsall
+
+.sbttl	- Chaosnet NCP tasking support
+
+
+; CRTASK - creates a new task
+; ARGS: r0, r1, r2, r3, r4, r5, initial pc
+; VALS: return TCB (for debugging purposes only)
+
+crtask:	proc 7,1,<r0,r1>
+
+	push #darea,#ltcb/2	; ALLOC args: area, n_words
+	pcall alloc		; allocate TCB
+	pop r0,*		; pop off ptr to allocated, error code
+	if ne,<			; couldn't make allocation, return failure
+	  rtnerr
+	  >
+	mov r0,out1(fp)		; return value: ptr to TCB
+	push r0,arg7(fp),#30.*2	; TINIT args: TCB, initial PC, stack size
+	pcall tinit		; initialize task
+	;; set registers
+	mov tsp(r0),r1
+.irp x,<arg1,arg2,arg3,arg4,arg5,arg6>
+	mov x(fp),(r1)+		; store all the regs
+.endr
+	return
+
+.insrt	chsser
+
+;;; Task to get time from a chaosnet host.
+
+timtsk:	mov #timlst,r2
+loop <	  mov (r2)+,r1
+	  exitl eq
+	  cmp r1,myhost
+	  rptl eq
+	  mov #timest,r4
+	  pcall nettim
+	  rptl cs
+	  pcall timset
+	  >
+	jmp logout
+
+.if eq coast-west
+;;; List of chaosnet hosts to ask time.
+timlst:	.word s1vax		; VAX
+	.word arpa		; Arpa machine
+	.word aswit		; ASWIT
+	.word bswit		; BSWIT
+	.word cswit		; CSWIT
+	.word 0			; end of list
+	.blkw 2			; patch space
+.iff
+;;;
+timlst:	.word mc
+	.word ml
+        .word multics
+	.word eecs
+	.word 0
+	.blkw 2
+.endc
+
+nettim:	push r1,#1		; CHOPEN args 1 & 2: host, window size,
+	push #chchto,r4		; args 3 & 4: time out, contact name
+	call chopen		; ask host for the time
+	pop r1			; CHOPEN result: connection or error packet
+	if cc,<			; OPN received?
+				; yes, that's not supposed to happen
+	  push r1,#0		; CHCLS args: connection, reason
+	  call chcls		; close connection in anger
+	  br 1$
+	  >
+	tst r1			; ANS received?
+	if ne,<			; maybe
+	  cmpb pkop(r1),#%coans
+	  if eq,<		; yes
+	    push (sp),(sp)	; make room for result
+	    mov pkdat+0(r1),2(sp)
+	    mov pkdat+2(r1),4(sp)
+	    push r1		; FREPK arg: pointer
+	    pcall frepk		; free packet
+	    clc
+	    preturn
+	    >
+	  push r1		; FREPK arg: pointer
+	  pcall frepk		; free packet
+	  >
+1$:	sec
+	preturn
+
+timest:	.asciz "TIME"		; contact name
+	.even
+
+.iif ndf asmsndser, asmsndser===0
+.if ne asmsndser
+.sbttl	- Chaos SEND server
+
+;;; Task created and started here with R0/ RFC, R1/ connection.
+
+sndser:	mov pklen(r0),r2
+	bic #pkfcnt,r2
+	sub #5,r2
+	blos sndrej
+	mov r0,r3
+	add #pkdat+5,r3
+	clr r5
+loop <	  movb (r3)+,r4
+	  sub #'0,r4
+	  blo sndrej
+	  cmp r4,#9.
+	  bhi sndrej
+	  mul #10.,r5
+	  add r4,r5
+	  sorl r2
+	  >
+	cmp r5,#nhport-1
+	bhi sndrej
+	push r0,r1,#5		; CHRPLY args: RFC, connection, window size
+	call chrply		; accept RFC
+	asl r5
+	mov dport(r5),r5
+	mov r1,r4
+loop <	  push r4
+	  call chdiw
+	  pop r0
+	  exitl cs
+	  push r0
+	  mov pklen(r0),r2
+	  bic #pkfcnt,r2
+	  if ne,<
+	    mov r0,r3
+	    add #pkdat,r3
+    loop <    movb (r3)+,r1
+	      cmpb r1,#215
+	      if eq,<
+		mov #15,r1
+		mov r5,r0
+		pcall @sendw(r0)
+		mov #12,r1
+		>
+	      mov r5,r0
+	      pcall @sendw(r0)
+	      sorl r2
+	      >
+	    >
+	  pcall frepk
+	  rptl
+	  >
+	if ne,<
+	  push r0
+	  pcall frepk
+	  >
+	push r4,#0
+	call chcls
+	jcall logout
+
+sndrej:	push r1,#sndbad
+	call chcls		; refuse
+	jcall logout
+
+sndbad:	.asciz "Bad port number"
+	.even
+.endc	; ne asmsndser
+
+netprt:	mov fnetp,r2		; R2: first network port number
+	asl r2			; *2 for indexing
+loop <	  tst sport(r2)		; is it free?
+	  if eq,<		; make sure no one else is grabbing it
+	    tst btab(r2)	; test corresponding back pointer
+	    exitl eq		; if also free, we've got it
+	    >
+	  tst (r2)+		; increment port #
+	  cmp r2,#nhport*2	; exhausted ports?
+	  rptl lo		; no, try next one
+	  sec			; indicate failure
+	  br 1$
+	  >
+	asr r2
+;	clc
+1$:	preturn
+
+noport:	.asciz "No network ports available"
+	.even
+
+.iif ndf asmconser, asmconser===0
+.if ne asmconser
+.sbttl	- Chaos CONNECT server
+
+;;; Task created and started here with R0/ RFC, R1/ connection.
+
+conser:	pcall netprt		; R2: network port number
+	if cs,<			; none available
+	  call chcls,<r1,#noport>
+	  call logout
+	  >
+	push r0,r1,#5		; CHRPLY args: RFC, connection, window size
+	call chrply		; accept RFC
+	push r1,#nulldo,#pkmdsz,#-1
+				; CINIT args: connection, destination object
+				; for network input, packet size, inhibit
+				; error messages
+	pcall cinit		; create chaosnet objects for network i/o
+	pop r5,r3		; CINIT results: source and destination
+				; chaosnet objects
+	push r2			; KINIT arg: port number
+	asl r2
+	mov r5,sport(r2)
+	mov r3,dport(r2)
+	pcall kinit		; create command processor to listen to net
+	jmp logout
+.endc	; ne asmconser
+
+.iif ndf asmtelser, asmtelser===0
+.if ne asmtelser
+.sbttl	- Chaos TELNET server
+
+;;; Task created and started here with R0/ RFC, R1/ connection.
+
+telser:	pcall netprt		; R2: network port number
+	if cs,<			; none available
+	  call chcls,<r1,#noport>
+	  call logout
+	  >
+	push r2			; save port number as KINIT arg1
+	push r0,r1,#5		; CHRPLY args: RFC, connection, window size
+	call chrply		; accept RFC
+	push #0			; TNINIT arg1: command processor object (none)
+	push r1,#nulldo,#pkmdsz,#-1
+				; CINIT args: connection, destination object
+				; for network input, packet size, inhibit
+				; error messages
+	pcall cinit		; create chaosnet objects for network i/o
+				; CINIT results: TNINIT args: source and
+				; destination chaosnet objects and
+	push #nulldo		; terminal destination object
+	pcall tninit		; turn chaos connection into telnet connection
+	pop r5,r3		; TNINIT results: source, destiniation telnet
+				; objects
+	mov r5,r0		; R0: telnet output destination object
+	sub #tniso,r0		; ...
+
+	mov #tsisnd,sendw(r0)
+	mov #tnosw1,sendw(r3)	; change SEND entrypoints to not do CR
+	mov #tnosx,send(r3)	; hacking
+
+	mov r1,r4		; R4: connection
+	mov #sga,r1		; SDO arg: telnet option
+	pcall sdo		; DO SUPPRESS GO AHEAD
+	bisb #1,uoptst+sga(r0)	; we've requested negotiation
+	mov #sga,r1		; SWILL arg: telnet option
+	pcall swill		; WILL SUPPRESS GO AHEAD
+	bisb #1,soptst+sga(r0)	; we've requested negotiation
+	mov #echo,r1		; SWILL arg: telnet option
+	pcall swill		; WILL ECHO
+	bisb #1,soptst+echo(r0)	; we've requested negotiation
+	mov tnodst(r0),r0	; call chaosnet destination object
+	pcall @force(r0)	; at its FORCE entrypoint
+
+	mov (sp),r2
+	asl r2
+	mov r5,sport(r2)
+	mov r3,dport(r2)
+				; KINIT arg already on stack
+	pcall kinit		; create command processor to listen to net
+	jmp logout
+
+
+;;; Co-routine point for TNISW1.
+tsis1:	mov #tsisnd,sendw(r0)	; restore SENDW entrypoint
+	preturn			; ignore this character; this loses if
+				; character is IAC; worry?
+
+;;; SENDW entrypoint for TELSER flavor.
+
+tsisnd:	cmp r1,#15		; CR?
+	if eq,<			; yes
+	  tstb uoptst+binary(r0)	; has he said he'd TRANSMIT-BINARY?
+	  if pl,<			; no
+	    mov #tsis1,sendw(r0)	; ignore next character
+	    >
+	  >
+	cmp r1,#iac		; IAC?
+	if ne,<			; no, just data
+1$:	  mov tnidst(r0),r0	; call terminal destination object
+	  jcall @sendw(r0)	; at its SENDW entrypoint
+	  >
+	;; IAC received.
+	mov #2$,sendw(r0)	; process next byte as TELNET command
+	preturn
+2$:	;; Byte after IAC received.
+	mov #tsisnd,sendw(r0)	; next byte is data until we decide otherwise
+	cmp r1,#iac		; is it an IAC?
+	beq 1$			; yes, double IAC sends one as data
+	cmp r1,#will		; WILL, WONT, DO, DONT?
+	if lo,<			; no, ignore anything else (NOP, SGA, IP, etc.)
+	  preturn		; (WILL is least of the 4, and only IAC is
+	  >			; higher, so a less than test suffices)
+	;; negotation command of some sort.
+	mov r1,tnnegt(r0)	; save negotiation type
+	mov #3$,sendw(r0)	; process next byte as TELNET option number
+	preturn
+3$:	;; Option number ofter IAC WILL/WONT/DO/DONT received.
+	mov #tsisnd,sendw(r0)	; next byte is data
+	push r2			; save register
+	mov tnnegt(r0),r2	; R2: negotiation type again
+	push r3			; save register
+	mov r1,r3		; R3: option number *2 for indexing
+	asl r3			; ...
+	cmp r2,#do		; DO or DONT?
+	if his,<		; yes
+	  sub #do+1,r2		; DO -) -2, DONT -) 0
+	  asl r2		; ...
+	  cmp r1,#optmax	; option number greater than our table?
+	  if hi,<		; yes, we don't support it then
+	    pcall usopts	; call unsupported user option routine
+	    >
+	  else <		; option number not too large
+	    pcall @sopts(r3)	; call appropriate user option routine
+	    >
+	  br 4$
+	  >
+	;; must be WILL or WONT
+	sub #will+1,r2		; WILL -) -2, WONT -) 0
+	asl r2			; ...
+	cmp r1,#optmax		; option number greater than our table?
+	if hi,<			; yes, we don't support it then
+	  pcall uuopts		; call unsupported server option routine
+	  >
+	else <			; option number not too large
+	  pcall @uopts(r3)	; call appropriate server option routine
+	  >
+4$:	push r0
+	mov tnodst(r0),r0
+	pcall @force(r0)
+	pop r0
+	pop r3,r2		; restore registers
+	preturn
+
+
+uopts:	.word suopts		; binary
+	.word uuopts		; echo
+	.word uuopts		; rcp
+	.word suopts		; supress-ga
+.rept optmax-sga
+	.word uuopts
+.endr
+.iif ne  <.-uopts>/2-optmax-1,	.error UOPTS table wrong size
+
+sopts:	.word ssopts		; binary
+	.word ssopts		; echo
+	.word usopts		; rcp
+	.word ssopts		; supress-ga
+.rept optmax-sga
+	.word usopts
+.endr
+.iif ne  <.-sopts>/2-optmax-1,	.error SOPTS table wrong size
+
+;;; TELSER negotation handlers.  Called with R1/ option number,
+;;; R2/ negotiation type (0 for DONT/WONT, -2 for DO/WILL).
+
+;;; Unknown option user option (WILL/WONT) handler.
+uuopts:	tst r2			; WILL?
+	if ne,<			; yes
+	  pcall sdont		; reply DONT
+	  >			; no need to reply to WONT, as we're already
+	preturn			; in that state (can't have accepted
+				; previously if we've never heard of the
+				; option!)
+
+;;; Simple supported user telser option handler (invoked for received WILL/WONT).
+;;; These options are preferred on, so a received WILL or WONT just sets the
+;;; state (we have to honor a WONT according to protocol).
+suopts:	add r0,r1		; do first part of UOPTST(R0)(R1)
+	bitb #1,uoptst(r1)	; is this a reply to our request?
+	if eq,<			; no
+	  cmpb r2,uoptst(r1)	; already in requested state?
+	  if ne,<		; no
+	    movb r2,uoptst(r1)	; set option status to -2 for on, 0 for off
+	    sub r0,r1		; undo double indexing
+	    asr r2		; WILL -) DO, WONT -) DONT
+	    add #do+1,r2	; ...
+	    jcall sndiac	; reply, accepting request
+	    >
+	  >
+	movb r2,uoptst(r1)	; set option status to -2 for on, 0 for off
+	preturn
+
+;;; Unknown server option (DO/DONT) handler.
+usopts:	tst r2			; DO?
+	if ne,<			; yes
+	  pcall swont		; reply WONT
+	  >			; no need to reply to DONT, as we're already
+	preturn			; in that state (can't have accepted
+				; previously if we never heard of the
+				; option!)
+
+;;; Simple supported server telser option handler (invoked for received
+;;; DO/DONT). These options are preferred on, so a received DO or DONT just
+;;; sets the state (we have to honor a DONT according to protocol).
+ssopts:	add r0,r1		; do first part of SOPTST(R0)(R1)
+	bitb #1,soptst(r1)	; is this a reply to our request?
+	if eq,<			; no
+	  cmpb r2,soptst(r1)	; already in requested state?
+	  if ne,<		; no
+	    movb r2,soptst(r1)	; set option status to -2 for on, 0 for off
+	    sub r0,r1		; undo double indexing
+	    asr r2		; DO -) WILL, DONT -) WONT
+	    add #will+1,r2	; ...
+	    jcall sndiac	; reply, accepting request
+	    >
+	  >
+	movb r2,soptst(r1)	; set option status to -2 for on, 0 for off
+	preturn
+.endc	; ne asmtelser
+
+.sbttl	- Chaosnet objects
+
+.iif ndf asmcht, asmcht===1	; chaosnet objects use tasking
+
+dsect <
+.iif eq asmcht,	 .blkb ldptcl	; destination object protocol
+.if ne asmcht
+	 .blkb ltdobj		; task destination object
+cdkflg:: .blkb 1		; task kill flag, non-zero=kill task
+cdbflg:: .blkb 1		; task break flag, non-zero=send break
+	 .even
+.endc
+cdsndw:: .blkw 1		; the two steps in the destination object
+cdsnd1:: .blkw 1		; finite state machine
+cdconn:: .blkw 1		; chaosnet connection
+cdpktp:: .blkw 1		; current packet
+cddatp:: .blkw 1		; pointer into current packet
+cdcnt::	 .blkw 1		; room left in current packet
+cdsiz::	 .blkw 1		; number of data bytes in current packet
+cdsobj:: .blkw 1		; corresponding source object
+.if eq asmcht
+cdpksz:: .blkw 1		; number of data bytes to reserve in packets
+.endc
+	>,lcdobj
+
+
+.if eq asmcht
+;;; This is a nop for now.
+
+chsend:	preturn
+
+
+;;; Chaosnet connection SENDW entrypoint.  Caller must be a task.
+
+chsndw:	push cdpksz(r0)		; CHGPKT arg: packet size
+	pcall chgpkt		; allocate a packet
+	bcs chsnd2		; connection closed
+	;; fall through to CHSND1 to put byte in packet
+
+chsnd1:	movb r1,@cddatp(r0)	; put data into packet
+	inc cddatp(r0)		; advance pointer
+	dec cdcnt(r0)		; decrement room left
+	if eq,<			; if no room left, then packet is full
+	  jcall chforc		; so send it off
+	  >
+chsnd2:	preturn
+
+
+;;; Chaosnet destination SENDS entrypoint.  Caller must be a task.
+
+chsnds:	tst cdpktp(r0)		; packet allocated?
+	beq 1$			; no, allocate one
+	cmp r2,cdcnt(r0)	; room in packet for whole string?
+	if lo,<			; no
+	  pcall chforc		; send old packet
+1$:	  push r2		; CHGPKT arg: packet size
+	  pcall chgpkt		; allocate a new one
+	  bcs 2$
+	  >
+	push r2			; save string length
+loop <	  movb (r1)+,@cddatp(r0)	; put next byte into packet
+	  inc cddatp(r0)		; ...
+	  sorl r2		; until whole string copied
+	  >
+	sub (sp)+,cdcnt(r0)	; update room left in packet
+	if eq,<			; if no more room
+	  pcall chforc		; then send it off
+	  >
+2$:	preturn
+.endc	; eq asmcht
+
+;;; Chaosnet BREAK entrypoint.
+
+chbrk:	pcall chforc		; send any outstanding packet
+	push #20.		; CHGPKT arg: packet size
+	pcall chgpkt		; get a new one
+	bcs 1$			; connection closed
+	push r0
+	mov cdpktp(r0),r0	; R0: pointer to packet
+	movb #202,pkop(r0)	; set opcode to 202; this means send a break
+				; to this code; it means send an ARPAnet INS
+				; to the ARPA server
+	pop r0				
+1$:	preturn
+
+
+;;; Chaosnet internal subroutine to allocate a packet for filling.
+;;; Stack argument is packet size.
+chgpkt:	push r1			; save register
+	;; bug here!  two tasks executing this at same time will lose.
+
+	;; wait for window to empty a little in order to batch things a
+	;; little better.  otherwise we sit in CHFORC trying to send a 1
+	;; character packet while other characters show up in input buffer.
+loop <	  push cdconn(r0)	; CHSTAT arg: connection
+	  call chstat		; check if output is possible
+	  exitl cc		; exit if so
+	  mov cdconn(r0),r1
+	  cmpb cnstat(r1),#%csopn	; connection open?
+	  sec			; set carry to indicate error in case we take
+				; the NE branch
+	  bne 1$		; no, connection not open, error
+	  cocall
+	  rptl
+	  >
+
+	cmp 4(sp),#pkmdsz	; min with maximum packet size
+	if hi,<			; ...
+	  mov #pkmdsz,4(sp)	; ...
+	  >
+.if ne 0
+	push 4(sp)		; ALLOCW arg: byte size
+	add #pkdat,(sp)		; ...
+	pcall allocw		; allocate a packet with room for argument
+				; bytes of data
+	pop r1			; ALLOCW result: pointer
+.iff
+	push r0,r3
+loop <	  mov 4+4(sp),r3
+	  add #pkdat+1,r3
+	  asr r3
+	  pcall alcsiz
+	  if cs,<
+	    cocall
+	    rptl
+	    >
+	  >
+	mov r0,r1
+	pop r3,r0
+.endc
+	movb #%codat,pkop(r1)	; set opcode
+	mov r1,cdpktp(r0)	; set packet pointer
+	add #pkdat,r1		; pointer to first data byte
+	mov r1,cddatp(r0)	; set pointer to next data byte to
+	mov 4(sp),cdcnt(r0)	; set room in packet
+	mov 4(sp),cdsiz(r0)	; for PKLEN calculation
+	mov cdsnd1(r0),sendw(r0); future SENDW operations come just store
+				; into packet
+	clc
+1$:	pop r1,(sp)		; restore register, remove argument
+	preturn
+
+
+;;; Chaosnet connection FORCE entrypoint.  Caller must be a task.
+
+chforc:	push r1			; save register
+	mov cdpktp(r0),r1	; R1: packet pointer
+	if ne,<			; if there's a packet
+	  mov cdsiz(r0),pklen(r1)  ; calculate the length field from
+	  sub cdcnt(r0),pklen(r1)  ; the room variable
+	  mov cdsndw(r0),sendw(r0) ; next SENDW operation must allocate a packet
+	  ;; loop until the packet is on its way
+  loop <    call chdato,<cdpktp(r0),cdconn(r0)>
+	    exitl cc		; sent
+	    mov cdconn(r0),r1	; R1: connection
+	    cmpb cnstat(r1),#%csopn	; still open?
+	    if eq,<		; no, give up
+	      cocall		; wait
+	      rptl
+	      >
+	    push #darea,cdpktp(r0)	; FREE arg: area, pointer
+	    pcall free		; free packet
+	    >
+	  clr cdpktp(r0)	; packet is now dealt with
+	  >
+	pop r1			; restore register
+	preturn
+
+.if eq asmcht
+;;; Chaosnet destination CLOSE entrypoint.
+
+chclos:	tst cdpktp(r0)		; packet?
+	if ne,<			; yes
+	  push #darea,cdpktp(r0)	; FREE args: area, pointer
+	  clr cdpktp(r0)	; don't try to free it twice
+	  pcall free		; free packet
+	  >
+	push cdconn(r0),#0	; CHCLS args: connection, reason
+	call chcls		; close connection
+	push #darea,r0		; FREE args: area, pointer
+	pcall free		; free chaosnet destination object
+	preturn
+.endc	; eq asmcht
+
+
+.if ne asmcht
+
+;;; Task for sending out data from buffered Chaos object.
+
+chadst:	mov ctask,r0		; get a pointer to ourselves
+	sub #tdtcb,r0		; ...
+loop <	  pcall numq		; NUMQ result: R1/ number of bytes
+	  if eq,<		; no data
+	    tstb cdkflg(r0)	; were we awakened to die?
+	    exitl ne		; yes
+	    tstb cdbflg(r0)	; send a break?
+	    if eq,<		; no
+	      iot		; wait for TDSEND to wake us
+	      rptl
+	      >
+	    clrb cdbflg(r0)	; clear the flag
+	    pcall chbrk		; get packet with break opcode
+	    rptl cs
+	    >
+	  else <
+	    mov clock,r2	; R2: now + 1/15 second
+	    add #4,r2		; ...
+    loop <    asl r1		; buffer more than half full?
+	      cmp r1,qsize(r0)	; ...
+	      exitl hi		; yes, better send it then
+	      cmp clock,r2	; 1/30 second or more elapsed since we got
+				; first byte?
+	      exitl pl		; yes, don't delay output too long
+	      push #2		; sleep for 1/30 or until next input
+	      pcall sleep	; ...
+	      pcall numq	; get new buffer size
+	      rptl
+	      >
+	    ;; don't do NUMQ until window allows a packet
+	    mov cdconn(r0),r1	; R1: connection
+    loop <    call chstat,r1	; ready for a packet?
+	      exitl cc		; yes
+	      cmpb cnstat(r1),#%csopn	; open?
+	      bne 1$		; no
+	      cocall		; wait
+	      rptl		; and try again
+	      >
+	    pcall numq		; NUMQ result: R1/ number of bytes
+	    push r1		; CHGPKT arg: packet size
+	    add #20.,(sp)	; ...
+	    pcall chgpkt	; allocate a packet
+	    if cs,<		; connection went away
+1$:	      pcall tdremq	; remove the byte that woke us up
+	      rptl		; go back to sleep if no connection, have
+	      >			; faith that someone will kill us
+	    >
+  loop <    pcall tdremq	; see if there's another byte
+	    exitl cs		; no, we're done
+	    movb r1,@cddatp(r0)	; put byte in packet
+	    inc cddatp(r0)	; ...
+	    dec cdcnt(r0)	; have we filled this packet?
+	    rptl ne		; no, continue filling
+	    >
+	  pcall chforc		; send the packet
+	  rptl			; and go back for some more
+	  >
+	tst cdpktp(r0)		; packet?
+	if ne,<			; yes
+	  push #darea,cdpktp(r0)	; FREE args: area, pointer
+	  clr cdpktp(r0)	; don't try to free it twice
+	  pcall free		; free packet
+	  >
+	push cdconn(r0),#0	; CHCLS args: connection, reason
+	call chcls		; close connection
+	pcall freeq		; free our queue
+	jcall tkill		; kill the task and free the object
+
+;;; Chaosnet task based destination CLOSE entrypoint.
+chtcls:	incb cdkflg(r0)		; set the flag for process to close things
+	wake.l r0,tdtcb		; and wake it up
+	preturn
+
+;;; Chaosnet task based BREAK entrypoint.
+chtbrk: movb #-1,cdbflg(r0)	; set break flag
+	preturn
+
+;;; SENDS entrypoint for Chaos task object.  This should work for any task
+;;; object that wants SENDS to work.  It's just not very cheap.
+;;; It also may not work correctly (uninterruptibly) if interrupt level
+;;; is also sending to the same object.  I don't think there are actually
+;;; any cases of this.
+;;; Must be called from a task.
+;;; R1 - pointer to string
+;;; R2 - count of chars
+
+chtsns:
+.if ne 0			; can't do all this crap and still work
+				; from interrupt level
+	cmp r2,qsize(r0)	; can't SENDS more than qsize
+	if los,<		; if it is, though just insert it
+  loop <    push qfp(r0)	; compute free chars in queue
+	    sub qrp(r0),(sp)	; subtract rear ptr from front ptr
+	    if los,<		; if rp was in front of or equal to fp
+	      add qsize(r0),(sp)	; then things are wrapped
+	      >
+	    cmp (sp)+,r2	; is there enough room in queue?
+	    exitl his		; yes.
+	    jsr pc,resced	; no, we'll wait a little and try again
+	    rptl		; ...
+	    >
+	  >
+.endc
+	tst r2			; zero characters?
+	if ne,<			; no
+	  push r3		; get a register, since we can't use R1
+	  mov r1,r3
+loop <	    movb (r3)+,r1
+	    pcall tdsnd1	; use non clock updating version, things
+	    sorl r2		; are expensive enough as is
+	    >
+	  pop r3
+	  >
+	preturn
+.endc	; ne asmcht
+
+dsect <
+	 .blkb lsptcl		; source object protocol
+csconn:: .blkw 1		; chaosnet connection
+csdst::	 .blkw 1		; destination object to copy to
+csptim:: .blkw 2		; time last packet recieved
+csnoer:: .blkw 1		; nonzero to inhibit error messages
+cstcb::	 .blkb ltcb		; task control block for tasking
+	>,lcsobj
+
+
+;;; STATUS entrypoint.  Not not implemented because not yet needed.
+
+cssts:	mov csdst(r0),r1
+	preturn
+
+
+;;; LINK entrypoint.
+
+cslnk:	mov r1,csdst(r0)
+	preturn
+
+
+;;; Chaosnet source task.  Copy data from chaosnet connection to a
+;;; destination object.
+
+cstask:	mov ctask,r5		; R5: pointer to source object
+	sub #cstcb,r5		; ...
+loop <	  cocall
+	  cmp csdst(r5),#nulldo	; wait for there to be a destination
+	  rptl eq
+	  >
+loop <	  call chdiw,csconn(r5),r4	; get next packet
+	  if cs,<			; connection closed
+	    tst r4		; error packet?
+	    exitl eq		; no
+	    tst csnoer(r5)
+	    if ne,<
+	      push r4
+	      pcall frepk
+	      exitl
+	      >
+	    ;; fall through to print error packet
+	    >
+	  pcall uptime		; get system uptime
+	  pop csptim+0(r5),csptim+2(r5)	; low order, high order words
+	  cmpb pkop(r4),#202	; break?
+	  if eq,<		; yes
+	    mov csdst(r5),r0	; R0: destination
+	    pcall @break(r0)	; send break and then handle data in packet
+	    >			; normally
+	  ;; send data of packet in R4 to our destination
+	  mov pklen(r4),r3	; R3: number of data bytes
+	  bic #pkfcnt,r3	; ...
+	  if ne,<		; if any
+	    mov r4,r2		; R2: pointer to 1st data byte
+	    add #pkdat,r2	; ...
+    loop <    clr r1		; R1: next data byte
+	      bisb (r2)+,r1	; ...
+	      mov csdst(r5),r0	; R0: destination
+	      pcall @sendw(r0)	; send
+	      sorl r3		; until done packet
+	      >
+	    >
+	  push r4		; FREPK arg: packet pointer
+	  pcall frepk		; free packet
+	  rptl			; go back for more
+	  >
+	mov csdst(r5),r0	; R0: destination
+	pcall @close(r0)	; propagate close to our destination
+	push csconn(r5),#0	; CHCLS args: connection, close reason
+	call chcls		; close chaos connection (no reason)
+	mov r5,r0		; TKILL arg: what to free
+	jcall tkill		; suicide
+
+;;; Chaosnet object creation.  Stack arguments are connection and destination
+;;; object for created chaosnet source object to send to, nominal packet size,
+;;; and error message inhibit boolean.
+
+cinit:	push r0			; save register
+
+	;; source object creation
+	push #lcsobj		; ALLOCW arg: size in bytes
+	pcall allocw		; allocate chaosnet source object/task
+	pop r0			; ALLOCW result: pointer
+	mov #cslnk,link(r0)	; set source protocol entrypoints
+	mov #cssts,status(r0)	; ...
+	mov 4(sp),csnoer(r0)	; no error message boolean
+	mov 12(sp),csconn(r0)	; pass it the connection pointer
+	mov 10(sp),csdst(r0)	; and a destination object to send to
+	pcall uptime		; get system uptime
+	pop csptim+0(r0),csptim+2(r0)	; low order, high order words
+	mov r0,10(sp)		; return the source object
+	push r0			; TINIT arg1: task control block
+	add #cstcb,(sp)		; ...
+	push #cstask,#22.*2	; TINIT args 2 and 3: initial PC, stack size
+	pcall tinit		; initialize tcb and put task on run queue
+	mov 12(sp),r0
+	inc cnrcnt(r0)		; so two calls to CHCLS are needed
+
+.if eq asmcht
+	;; destination object creation
+	push #lcdobj		; ALLOCW arg: byte size
+	pcall allocw		; allocate destination object
+	pop r0			; ALLOCW result: pointer
+	mov #chsend,send(r0)	; set destination protocol entrypoints
+	mov #chsndw,sendw(r0)	; ...
+	mov #chsndw,cdsndw(r0)
+	mov #chsnd1,cdsnd1(r0)
+	mov #chsnds,sends(r0)	; ...
+	mov #chforc,force(r0)	; ...
+	mov #chclos,close(r0)	; ...
+	mov #chbrk,break(r0)	; ...
+	mov 6(sp),cdpksz(r0)	; set packet size to maximum
+.iff
+	push #lcdobj,#chadst	; TDINIT args: size of object, initial PC,
+	push #22.*2,6+6(sp)	; stack size, and size of input queue
+	pcall tdinit		; returns object in R0
+	mov #tdsndw,cdsndw(r0)
+	mov #tdsndw,cdsnd1(r0)
+	mov #chtsns,sends(r0)	; ...
+				; force is defaulted to NOPSUB by TDINIT
+	mov #chtcls,close(r0)	; different close entrypoint
+	mov #chtbrk,break(r0)
+	clrb cdkflg(r0)		; init task killing flag
+	clrb cdbflg(r0)		; init break flag
+.endc	; asmcht
+	mov 12(sp),cdconn(r0)	; pass connection to destination object
+	clr cdpktp(r0)		; no packet yet
+	mov r0,12(sp)		; return destination object
+	pop r0,(sp),(sp)	; restore register, remove two arguments from
+				; stack
+	preturn
+
+.if eq config-cswit
+.sbttl	ARPA gateway server request
+
+arplsn:	push #0,#0,#0,#0,#0,(r5)+,#arptsk
+	call crtask
+	pop *
+	rts r5
+
+arptsk:	
+loop <	  ;; open connection to Arpa machine and tell it we want to get ICP's
+	  ;; for certain sockets.
+	  push arphst,#1	; CHOPEN args: host number, window size, 
+	  push #chchto,r5	; time out, contact name
+	  call chopen		; attempt to connect to SERVER at S1-GATEWAY
+	  pop r1		; CHOPEN result: connection
+	  if cs,<		; open failed
+	    mov #30.*60.,r4	; retry in about 30 seconds
+	    mov r1,r0		; FREPCK arg: pointer
+	    kcall frepck	; free CLS packet if any
+	    br 3$
+	    >
+	  ;; open succeeded, now try to read data packet for response.
+	  push r1		; CHDIW arg: connection
+	  call chdiw		; get response
+	  pop r0		; CHDIW result: packet
+	  bcs 1$		; connection closed, try later
+	  mov #20.*60.,r4	; retry in 20 seconds if we win
+	  cmpb pkop(r0),#200	; created?
+	  beq 2$		; yes, win
+	  cmpb pkop(r0),#203	; duplicate?
+	  beq 2$		; yes, win
+	  mov #5*60.,r4		; retry in 5 seconds if temporary failure
+	  cmpb pkop(r0),#202	; temporary failure?
+	  beq 2$		; yes
+1$:	  mov #15.*60.,r4	; default to fast retry, 15 seconds
+	  ;; other replies are strange and use default of 15 seconds
+2$:	  pcall frepck		; free packet if any
+	  push r1,#0		; CHCLS args: connection, reason
+	  call chcls		; close our end
+3$:	  push r4		; SLEEP arg: 60ths
+	  pcall sleep		; wait a bit
+	  rptl			; go try again
+	  >
+
+.endc	; eq config-cswit
+
+.iif ndf asmopnser, asmopnser===0	; open server, default off
+.iif ne asmopnser,	.insrt opnsvr

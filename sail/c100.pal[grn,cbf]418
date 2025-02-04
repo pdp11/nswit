@@ -1,0 +1,395 @@
+
+.sbttl Concept 100
+
+        MC==33		; C100 Multicode, introduces control sequences
+
+c1in:	clr r2
+c1il:	call inchr
+	bic #177600,r1		; clear parity bit
+	cmp #34,r1
+	beq c1foo
+c1iput:	bis r2,r1
+	call putchr
+	cmp r1,#255		; + and - keep the edit bit on
+	beq c1il
+	cmp r1,#253
+	beq c1il
+	cmp r1,#217		; as do partial and infinity
+	beq c1il
+	cmp r1,#216
+	beq c1il
+	cmp r1,#260
+	if lt,<
+	  clr r2
+	  >
+	cmp r1,#272
+	if gt,<
+	  clr r2
+	  >
+	br c1il
+
+c1foo:	call inchr	; get which function code this is
+	bic #177600,r1
+	mov r1,r3	; save this char
+	call inchr	; should be a CR, throw it away
+	cmp r3,#100	; F12 Control
+	if eq,<
+	  mov #200,r2
+	  br c1il
+	  >
+	cmp r3,#101	; F13 Meta
+	if eq,<
+	  mov #200,r1
+	  call putchr
+	  br c1il
+	  >
+	cmp r3,#102	; F14 Control-Meta
+	if eq,<
+	  mov #200,r2
+	  mov r2,r1
+	  call putchr
+	  br c1il
+	  >
+	cmp r3,#'7	; F3 Hold - ^_
+	if eq,<
+	  mov #037,r1
+	  >
+	cmp r3,#'?	; F11 - Cancel
+	if eq,<		;  make next key non-edit
+	  clr r1
+	  >
+	cmp r3,#'5	; F1 FF - ^L
+	if eq,<
+	  mov #14,r1
+	  >
+	cmp r3,#'6	; F2 VT - ^K
+	if eq,<
+	  mov #13,r1
+	  >
+	cmp r3,#'8	; F4 - Escape (Null)
+	if eq,<
+	  clr r1
+	  >
+	cmp r3,#'9	; F5 - Clear (^^)
+	if eq,<
+	  mov #36,r1
+	  >
+	cmp r3,#074	; F8 (less than sign) - ^\
+	if eq,<
+	  mov #034,r1
+	  >
+	br c1iput
+
+; Datamedia 2500 output codes to Concept codes
+; TST R2 is mi if insel mode is on, TSTB R2 is mi is roll mode is on
+; BIT R2,#1 is NE if Blinking is on
+; R3 is X Pos
+; R4 is Y Pos
+; R5 is generally smashable
+c1out:	clr r2
+	clr r3
+	clr r4
+	out MC,'U,MC,'S		; enter programmer mode, set page mode
+dmloop:	call getchw
+dml1:	bic #177600,r1		; no need for random parity
+	cmp r1,#40
+	if lo,<
+	  mov pc,r5
+	  add #dmdisp-.,r5
+	  add r1,r5
+	  add r1,r5
+	  add (r5),r5
+	  jsr pc,(r5)
+	  br dmloop
+	  >
+	jsr pc,dmordy
+	br dmloop
+
+dmordy:	cmp r3,#79.		; are we about to go to last column?
+	if eq,<			; yes
+	  mov r1,r5		; save the char
+	  out MC,'R		; Repeat Character Vertical
+	  mov r5,r1		; output char, but it will not cause wrap
+	  call outchr
+	  out 41		; with a repeat count of 1
+	  clr r3		; we will wrap to column 0 of next line
+	  cmp r4,#23.		; Last column of last line?
+	  if ne,<		; no
+	    out 15,12		; simulate DM's auto-CRLF
+	    inc r4		; next line
+	    >
+	  else <		; last line
+	    tstb r2		; roll mode?
+	    if pl,<		; no
+	      clr r4		; then by Datamedia defintion, we should be
+	      out MC,'?		; line 0, column 0
+	      >			; else if not roll mode, it scrolled, we must
+	    else <		; roll mode
+	      out 15,12		; scroll, and leave line count at 23.
+	      >
+	    >
+  loop <    call getchw		; then get a char
+	    bic #177600,r1
+	    cmp #15,r1		; is it a CR?
+	    rptl eq
+	    >
+	  cmp #12,r1		; Line feed?
+	  if eq,<
+	    rts pc		; flush it and go back to main loop
+	    >
+	  tst (sp)+		; otherwise it was not either of the evil
+	  br dml1		; characters, so we must go to dispatch
+	  >
+	inc r3
+	call outchr		; not last column, we're safe
+	rts pc
+
+dmup:	tst r2			; insert/delete mode?
+	if pl,<			; no
+	  out MC,73		; MC,semi-colon
+	  dec r4		; Y Pos
+	  tst r4
+	  if lt,<
+	    clr r4
+	    >
+	  rts pc
+	  >
+	out MC,2		; MC,^B delete lin
+	mov #24.,r5		; (24-Vpos)*3 chars of padding
+	sub r4,r5
+	mov r5,-(sp)
+	add r5,r5
+	add (sp)+,r5
+loop <	out 177
+	sorl r5
+	>
+	rts pc
+
+dmlf:	tst r2			; insert/delete mode?
+	if pl,<			; no
+	  cmp r4,#23.		;  on last line?
+	  if lt,<		;   no
+	    out 12
+	    inc r4
+	    rts pc
+	    >			;  otherwise, we are on last line..
+	  tstb r2		;  roll mode?
+	  if pl,<		;   no
+	    out MC,74		;   cursor down will always wrap
+	    clr r4		;   now we're sure it wrapped to first line
+	    rts pc
+	    >			;  else we are in roll mode, on last line..
+	  out 12		;   Line Feed, and we know r4 is still 23.
+	  rts pc
+	  >			; else, we were in insert/delte mode..
+	out MC,22		;  MC,^R Insert Line
+	mov #24.,r5		; (24-Vpos)*3 chars of padding
+	sub r4,r5
+	mov r5,-(sp)
+	add r5,r5
+	add (sp)+,r5
+loop <	out 177
+	sorl r5
+	>
+	rts pc
+
+dmbs:	tst r2			; insert/delete mode?
+	if pl,<			; no
+	  tst r3		; X Pos
+	  if gt,<
+	    out 10		; ^H BackSpace
+	    dec r3
+	    >
+	  rts pc
+	  >
+	out MC,21		; MC,^Q Delete Char	
+	rts pc
+
+dmrt:	tst r2			; insert/delete?
+	if pl,<			; no
+	  cmp r3,#79.
+	  if eq,<
+	    clr r3
+	    cmp r4,#23.
+	    beq dmlf
+	    >
+	  out MC,'=
+	  inc r3
+	  rts pc
+	  >
+	out 40,10		; Insert a space and back over it
+	rts pc
+
+dmcr:	clr r3			; CR - 0 col
+	out 15			; note, we are using modified DM's that
+	rts pc			; don't auto-NL
+
+dmhom:	clr r3
+	clr r4
+	out MC,'?		; Home
+	br dmrst
+
+dmcan:				; fall through to dm reset..
+dmrst:  tst r2			; Insert mode?
+	if mi,<
+	  out MC,0		; MC,^@ Exit Insert Mode
+	  bic #100000,r2	; clear Insert/Delete Mode
+	  >
+	tstb r2			; roll mode?
+	if mi,<
+	  out MC,'S		; turn page mode on
+	  bic #200,r2		; roll mode off
+	  >
+	bit #1,r2		; Is standout on?
+	if ne,<			; yes
+	  out MC,'e		;  then shut it off
+	  bic #1,r2
+	  >
+	rts pc
+
+dmbel:	out 7
+	rts pc
+
+dmi.d:	bis #100000,r2
+	out MC,20		; turn insert mode on
+	rts pc
+
+dmeol:	out MC,23		; MC ^S - EOL
+	mov #15.,r5		; 16 milliseconds padding
+  loop <  out 177
+	  sorl r5
+	  >
+	rts pc
+
+dmeos:	out MC,3		; MC ^C
+	mov #24.,r5		; (24-Vpos)*16 chars of padding
+	sub r4,r5
+	ash #4,r5		; multiply by 16
+  loop <  out 177
+	  sorl r5
+	  >
+	rts pc
+
+dmstab:	;out MC,133
+	rts pc
+
+dmctab:	;out MC,137
+	rts pc
+
+dmtab:	out 11			; for now we presume 8 column tabs
+	bic #7,r3
+	add #10,r3
+	rts pc
+	
+dmadr:	call getchw		; get row address
+	bic #177600,r1
+	cmp #30,r1		; CAN?
+	if eq,<
+	  pop *
+	  br dmcan
+	  >
+	cmp #2,r1
+	if eq,<
+	  pop *
+	  br dmhom
+	  >
+	sub #140,r1		; Cursor address is in octal
+	if lt,<			;  to get values   0- 37 DM uses 140-177
+	  add #40,r1		;  to get values  40- 77 DM uses 100-140
+	  if lt,<		;  to get values 100-140 DM uses  40-100
+	    add #100,r1		; Of course we'll only ever see as high
+	    >			; as high as column 80 decimal =120 octal
+	  add #40,r1
+	  >
+	rts pc
+
+dmabs:	jsr pc,dmadr		; get line # (row)
+	mov r1,r5		; holding bin, don't smash r3 until we
+	jsr pc,dmadr		; get Hpos (col)
+	mov r1,r4		; know we have got the column also,
+	mov r5,r3		; since this is an abortable sequence
+	out MC,'a
+	mov r4,r1
+	add #40,r1
+	call outchr		; output Line # first
+	mov r3,r1
+	add #40,r1
+	call outchr		; then column
+	rts pc
+
+dmron:	bis #200,r2		; roll mode on
+	out MC,'s		; set C100 to Scroll mode
+	rts pc
+
+dmmr:	clr r3			; Master reset. - Clear whole screen
+	clr r4			; and home cursor.
+	out 14			; this is the most efficient
+	mov #94.,r5		; book padding at 9600 baud
+loop <	  out 177
+	  sorl r5
+	  >
+	call getchw		; Check for either 2 Master resets in a row
+	cmp r1,#36		; or an MR followed by a Clear EOS.
+	beq 1$			; Sending the command twice is apparently
+	cmp r1,#37		; a standard way of padding the function
+	beq 1$			; on DMs.
+	tst (sp)+		; throw away our return addr
+	jmp dml1		; and proceed immediately to dispatch
+1$:	rts pc
+
+dmbln:	out MC,'E		; Enter standout mode
+	bis #1,r2		; stnadout mode one
+	rts pc
+
+dmesc:	out MC,'D		; Introduce an extended graphic
+	call getchw
+	bic #177600,r1
+	add #140,r1		; map into something printable
+	jsr pc,dmordy
+	out MC,'d
+	rts pc
+
+dmjunk:	rts pc
+
+dmdisp:	dmjunk-.	; 00 ^@
+	dmjunk-.	; 01 ^A
+	dmhom-.		; 02 ^B Home
+	dmjunk-.	; 03 ^C
+	dmjunk-.	; 04 ^D
+	dmjunk-.	; 05 ^E
+	dmjunk-.	; 06 ^F
+	dmbel-.		; 07 ^G Bell
+	dmbs-.		; 10 ^H Backspace - Right Cursor
+	dmtab-.		; 11 ^I Tab
+	dmlf-.		; 12 ^J Linefeed - Down Cursor
+	dmctab-.	; 13 ^K Clear Tab
+	dmabs-.		; 14 ^L Absolute Move
+	dmcr-.		; 15 ^M Carriage Return
+	dmbln-.		; 16 ^N Blink On
+	dmjunk-.	; 17 ^O Form On
+	dmi.d-.		; 20 ^P Insert/Delete
+	dmjunk-.	; 21 ^Q Xmit Page
+	dmjunk-.	; 22 ^R Print
+	dmjunk-.	; 23 ^S Xmit Line
+	dmjunk-.	; 24 ^T
+	dmjunk-.	; 25 ^U
+	dmjunk-.	; 26 ^V
+	dmeol-.		; 27 ^W Erase to end of Line
+	dmcan-.		; 30 ^X Cancel
+	dmstab-.       	; 31 ^Y Tab Set
+	dmup-.		; 32 ^Z Up Cursor
+	dmesc-.		; 33 ^[
+	dmrt-.		; 34 ^\ Right Cursor
+	dmron-.		; 35 ^] Roll Mode on
+	dmmr-.		; 36 ^^ Master Rest
+	dmeos-.		; 37 ^_ Erase to end of Screen
+
+.sbttl Sail Datamedia
+
+sailin:	call inchr
+	call putchr
+	br sailin
+
+sailou:	call getchw
+	call outchr
+	br sailou

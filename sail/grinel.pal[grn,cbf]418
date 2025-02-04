@@ -1,0 +1,1340 @@
+	.sbttl	Grinnell Support
+
+; Grinell Instruction Set
+gi.wid==  000000	; Write image data (12 bits of data)
+gi.lsm==  010000	; Load subchannel mask (12 bits of mask)
+gi.wgd==  020000	; Write graphic data (8 bits of data)
+gi.wac==  022000	; Write alphanumeric character (8 bit of character)
+gi.lwm==  024000	; Load write mode. 8 bits of mode
+  %wminv==200		;   inverse video
+  %wmor== 100		;   inclusive or mode
+  %wmsub==040		;   zeros unselected subchannel within a channel
+  %wmvec==020		;   vector graphic modes (not rectilinear)
+  %wm2hi==010		;   double height mode
+  %wm2wi==004		;   double width mode
+  %wmscs==002		;   cursor=La+Lb and Ea+Eb rather than La and Ea
+  %wmcso==001		;   cursor on
+gi.lum==  026000	; Load update mode.  6 bits of mode.
+			;		0    1      2     3
+			; Update Ea    Ea   Ec	Ea+Eb Ea+Ec  low order 2 bits
+			; Update La    La   Lc  La+Lb La+Lc  middle 2 bits
+			; Scroll Reg   Sr Home  down1  up 1  high order 2 bits
+gi.ers==  030000	; Erase screen
+gi.erl==  032000	; Erase line
+gi.slu==  034000	; Special location update.  7 bits of mode
+			;   low 6 bits defined as for gi.lum
+  %smfsc==100		;   "fast scroll" mode
+gi.egw==  036000	; Execute graphic write
+
+  %lrfgw==2000		; Load Register Force Graphic Write bit
+gi.ler==  040000	; Load Ea relative
+gi.lea==  044000	; Load Ea
+gi.leb==  050000	; Load Eb
+gi.lec==  054000	; Load Ec
+gi.llr==  060000	; Load La relative
+gi.lla==  064000	; Load La
+gi.llb==  070000	; Load Lb
+gi.llc==  074000	; Load Lc
+
+gi.ldc==  100000	; Load Display Channels (12 bits of channel mask)
+gi.np1==  110000	; No-op 1
+
+gi.spd==  120000	; Select Peripheral Device  12 bits of selection
+  %spmrd== 400		;   memory read back
+  %spbyt==1000		;   byte unpack
+  %spint==2000		;   interrupt enable
+  %sptst==4000		;   internal diagnostic test
+
+gi.lpa==  130000	; Load Peripheral Address (12 bits device dependant)
+gi.lpr==  140000	; Load Peripheral Register (12 bits device dependant)
+  %lpbyt==6000		;   packed byte mode
+  %lpgra==4000		;   graphic data
+  %lpima==0000		;   image data
+  %lpbys==1000		;   bytes swap mode
+  %lpode== 400		;   odd byte at end flag
+
+
+gi.lpd==  150000	; Load Peripheral Data (12 bits device dependant)
+gi.rpd==  160000	; Read Back Peripheral Data (12 bits device dependant)
+
+gi.nop==  170000	; another No-Op
+
+.sbttl	Grinnell Data Definitions
+
+linspc==12.		; 12. vertical scan lines per line
+linscr==512./linspc	; 42. lines on the screen
+chrlin==85.		; 85. characters per line
+
+; Define the Grinnell cursor queue arrays
+
+; The following is static for easy access by interrupt level.
+; This makes it good for only 1 grinnell per implementation.
+; This can be fixed without too much trouble by indexing each by a
+;  system number which could stored in the Grinnell TCB.
+grlock:	.word .+2	; points to lock word for op currently in progress
+	.word 0		; to get smashed by unitialized grlock
+ngrns:	.word 0		; the number of Grinnell screens in use
+.if ne 0		; obsolete cursor cruft
+grcust:	.word 0		; when non-zero its time to output some cursors
+lgrcus:	.word 0		; -<7*<number of Grinnell screens in use>>
+agrcus:	.blkw 16.	; arry to hold pointers to cursor cmnds in TCBs
+grcus:	.blkw 16.*7.	; 7 words per cursor command per Grinnell screen
+; we'd like to use Newman memory instead of this:
+grblob:	.blkw linscr	; array of temps for line rotating
+.endc
+
+
+nmnpag:	.word 0		; last Newman page we used
+
+; Define the queue words for a Grinnell output queue header
+dsect <
+giqsta:: .blkw 1	; pointer to first word of buffer
+giqend:: .blkw 1	; pointer to last word in buffer
+giqget:: .blkw 1	; pointer to next entry to extract
+giqput:: .blkw 1	; pointer to the last item entered
+	>,lgiqhd
+
+; Define the primary Grinnell output interrupt queue
+; This one has two word entries, pointer and twos complement of length.
+gr1iq:	.blkb lgiqhd	; space for header
+sgr1iq == 50.		; one for each possible Grinnell in a system
+	.blkw sgr1iq*3	; 3 words per slot
+
+
+; Define a Grinnell line
+dsect <
+; Note that GRINI must be changed if the order of these entries change
+gl.lck:: .blkw 1	; lock word. Non-zero means line not yet output.
+gl.bld:: .blkw 1	; bold flag. =0 no bold, <0 all bold, >0 some bold
+gl.ldc:: .blkw 1	; select channel instruction
+gl.lsm:: .blkw 1	; select subchannel
+gl.lla:: .blkw 1	; lla positions vertically on screen (top=1000)
+gl.lea:: .blkw 1	; lea positions horizontally on screen (left edge=0)
+gl.lwm:: .blkw 1	; write mode instr in case whole line inverse
+gl.spd:: .blkw 1	; select peripheral device for byte unpack
+gl.lpr:: .blkw 1	; load perhiph dev instr to start byte upack sequence
+gl.chr:: .blkb chrlin+1	; chrlin characters in a line, +1 for cursor lossage
+	.even
+	>,lgrnl		; lgrnl= length of a grinnel line in bytes
+
+grbufs===20+<chrlin*2>	; output buffer size, enough for a whole line of chars
+			; plus an lwm command between each one
+
+; Define all the storage needed to run 1 Grinnell screen
+dsect <
+gs.lin:: .blkw linscr	; pointers to first char in each line, index by line
+g.tcb::	 .blkw 1	; TCB ptr, in case its convenient
+
+g.pend:: .blkw 1	; flag word of postponed operations
+   %id==1		;   an insert or delete operation is pending
+;gs.scr:: .blkw linscr	; an extra set of line pointers for ins/del operations
+
+g.clen:: .blkw 1	; length of g.cbuf currently used in bytes
+g.cldc:: .blkw 1	; ldc command to select this channel
+g.clsm:: .blkw 1	; lsm to select this subchannel
+g.cbuf:: .blkw 12.	; buffer for cursor commands
+gs.flg:: .blkw 1
+
+g.pldc:: .blkw 1	; will hold pointer to g.bldc
+g.ebuf:: .blkw 1	; will hold pointer to apx end of g.buf
+g.pbuf:: .blkw 1	; will hold pointer to g.buf
+g.blck:: .blkw 1	; lock on this output buffer
+g.bldc:: .blkw 1	; a precomputed load channel command
+g.blsm:: .blkw 1	; and a precomputed load subchannel command
+g.buf::	 .blkw grbufs	; output buffer
+
+gs.idl:: .blkw 1	; insert delete mode
+gs.rol:: .blkw 1	; roll mode
+gs.bld:: .blkw 1	; bold mode
+gs.lwm:: .blkw 1	; write mode word currently in effect ?
+			; this is the first word of this screens output buff:
+gs.xgp:: .blkw 1	; graphic X position
+gs.ygp:: .blkw 1	; graphic Y position
+gs.lns:: .blkb lgrnl*linscr ; memory for linscr lines
+	>,lgrns		; lgrns= length of a grinnel screen
+
+.lif lt lgrns-8192.,  .error "Grinnell screen storage greater than 8K bytes!"
+
+gp===r2			; register on which non-GS. grinnell stuff is based
+
+gllas:	.rept linscr
+	  .word gi.lla+764-<linspc*.rpcnt>
+	.endr
+
+glles:	.rept chrlin-1		; +2 to leave room for marker on left margin
+	  .word gi.lea+<6*.rpcnt>+2
+	.endr
+	.word gi.lea+<6*<chrlin-1>>+1	; rightmost cursor can't overlap
+	.word gi.lea+<6*<chrlin-1>>+1	; overflow case pin at right margin
+	.word gi.lea+<6*<chrlin-1>>+1	; very obscure case in GREOL
+
+.sbttl Initialization
+
+; GRNINI - initialize DRV11-B and allocate Newman pages
+;  r1 -> Initial Line Parameter Structure
+;  r2 -> Input TCB
+;  r3 -> Output TCB
+
+grnini:	push r4,r0,r2		; save some regs
+	tst iunit(r1)		; is this the first unit (unit 0)?
+	if eq,<			; only set up vectors and do certain
+				; allocations for the first unit
+	  ; Set the JSR R0,@#DRVINT that the interrupt vector points to.
+	  ;  Interestingly this only needs to be done before the first TCB.
+	  mov idvadr(r1),r4	; device register address
+	  mov pc,-(sp)		; set interrupt vector
+	  add #drvint-.,(sp)
+	  mov (sp)+,-2(r3)	; set for output TCB only
+				; there may not be an input TCB
+	  mov icvadr(r1),r0	; pointer to hardware interrupt vector
+	  mov r3,(r0)		; set it to point to 4 before the TCB
+	  sub #4,(r0)+		; subtract the 4 and advance to vector PS
+	  mov #pr5,(r0)		; pretend we really have 4 interrupt levels
+
+	  mov #grlock+2,grlock	; set it to something harmless
+;	  clr grcust		; zero cursor display flag
+	  clr ngrns		; initialize number of Grinnell Screens
+;	  clr lgrcus		; initialize word count of Grinnell cursor
+				; output buffer
+
+	  mov #gr1iq,r0		; pointer to primary queue structure
+	  mov #gr1iq+lgiqhd,r2	; pointer to first word of queue buffer
+	  mov r2,(r0)+		; set start of queue
+	  mov #gr1iq+lgiqhd+<6*sgr1iq>,(r0)+ ; set end of queue
+	  mov r2,(r0)+		; set get ptr
+	  mov r2,(r0)+		; set put ptr
+
+	  mov #232,nmnpag	; initialize Newman page no.
+	  bis #1,@#nm.enb	; enable Newman
+	  >
+
+	inc ngrns		; count off one Grinnell screen
+	pop r2,r0,r4		; restore regs
+	return
+
+.sbttl Grinnell Execution
+
+grnin:	jsr pc,sleep		; better never wake up again, there is no
+				; grinnel input
+	bpt
+	br grnin
+
+
+grnout:	mov nmnpag,t.nmp(r0)	; give us these 2 Newman pages
+	add #2,nmnpag		; advance Newman page count
+	movb t.nmp(r0),t.nmp+1(r0) ; set up a word in g.nmp which when moved
+	incb t.nmp+1(r0)	; into the Newman map, maps in both pages
+	mov t.nmp(r0),@#nm.map+2 ; map in both the pages
+
+	mov #win2,r2		; start at beginning of Newman window
+
+	; compute up a load channel and load subchannel
+	mov t.lps+ldvpar(r0),r5	; device parameter word is connector number
+	sub #10.,r5		; connector numbering starts at 10.
+	clr r4			; for divide
+	div #4,r4		; 4 subchannels per channel, div yields
+				; channel in r4, subchannel in r5
+	mov #1,r1		; make into mask
+	ash r4,r1
+	add #gi.ldc,r1		; load channel instruction
+	mov r1,g.bldc(gp)	; save it
+	mov r1,g.cldc(gp)	; and again for cursor
+	mov #1,r1		; make into mask
+	ash r5,r1
+	add #gi.lsm,r1		; load subchannel instruction
+	mov r1,g.blsm(gp)	; save it
+	mov r1,g.clsm(gp)
+
+	mov gp,r5		; computer up a ptr to G.BLDC
+	add #g.bldc,r5
+	mov r5,g.pldc(gp)	; save it
+	mov gp,r5		; compute ptr to bear end of G.BUF
+	; fudge to calculation to leave room for llas and the like
+	add #g.buf+<grbufs*2>-<grbufs/6+10>,r5
+	mov r5,g.ebuf(gp)	; some mode restoring commands and cruft
+	mov gp,r5		; compute up a ptr to G.BUF
+	add #g.buf,r5
+	mov r5,g.pbuf(gp)	; save it, but keep it, we're about to use
+
+	mov #gi.spd+%spbyt,(r5)+ ; Set peripheral device for byte unpacking
+	mov #gi.lwm+%wmvec,(r5)+ ; Load Write Modes for vector mode
+	mov #gi.lum+2,(r5)+	; Load update mode, Ea <- Ea + Eb
+	mov #gi.leb+6,(r5)+	; Eb <- 6 (chars are 6 wide)
+	mov #gi.llb,(r5)+	; Lb <- 0
+	mov #gi.ers,(r5)+	; incidentally, we'd like to erase this screen
+	sub gp,r5		; get difference
+	sub #g.bldc,r5		; from g.bldc
+	asr r5			; divide by 2 for word count
+	neg r5			; 2's complement word count
+	mov gp,-(sp)		; address of our grinnell command buffer
+	add #g.bldc,(sp)
+	push r5			; count
+	clr g.blck(r2)		; this should be the first use of this buffer
+				; so we explicitly clear the lock
+	jsr pc,grput1		; output stuff
+	jsr pc,grini		; initialize things
+	mov #gi.nop,g.cbuf(gp)	; initialize cursor just enough so it doesn't
+	mov #2,g.clen(gp)	; bomb out
+	mov g.pbuf(gp),r5	; initialize R5 to G.BUF pointer
+	jmp grloop
+
+
+	; intialize line image
+grini:	push r1,r5
+	clr r4			; r4 will count the line number
+	mov r2,r3		; get pointer to array of lines
+	add #gs.lns,r3
+loop <	  ; r4 is line number counts up from 0
+	  ; r3 is pointer to array of lines increments continuously
+	  cmp r3,#win3-lgrnl	; are we within 1 line of Newman boundary?
+	  if his,<		; yes,
+	    cmp r3,#win3	; but have we already stepped past boundary?
+	    if lo,<		; no,
+	      mov #win3,r3	; then bump upward to be at window boundary
+	      >
+	    >
+	  clr (r3)+		; each line starts with a lock
+	  clr (r3)+		; and a bold flag
+	  mov g.bldc(gp),(r3)+	; each line is a select channel
+	  mov g.blsm(gp),(r3)+	; followed by a select subchannel
+	  mov r4,r1		; current line number
+	  add r1,r1		; make word offset
+	  mov gllas(r1),(r3)+	; index into precomputed LLAs
+	  mov glles,(r3)+	; followed by a load horizontal (column 0)
+	  mov #gi.lwm+%wmvec,(r3)+ ; the write modes for the line
+	  mov #gi.spd+%spbyt,(r3)+ ; select byte unpack "peripheral"
+	  mov #gi.lpr+%lpbyt+%lpbys+%lpode+<chrlin+1/2>,(r3)+
+				; select byte unpack with odd end
+	  mov r4,r1		; get line number
+	  add r1,r1		; convert to word index
+	  add r2,r1		; to base of grinnell screen structure
+	  mov r3,gs.lin(r1)	; store pointer to line of characters
+	  mov #chrlin+1,r5	; 85. chars per line
+  loop <    movb #40,(r3)+	; store out space for line
+	    sorl r5
+	    >
+	  .if ne 0
+	  cmp r4,#25.		; was this line 25?
+	  if eq,<		; if it was put a C<channel #>,S<subchan #>
+	    movb #'C,-45.(r3)	;  in the middle of the screen!
+	    movb g.bldc(gp),-(sp)
+	    add #60,(sp)
+	    movb (sp)+,-44.(r3)
+	    movb #'S,-43.(r3)
+	    movb g.blsm(gp),-(sp)
+	    add #60,(sp)
+	    movb (sp)+,-42.(r3)
+	    >
+	  .endc
+	  mov (r1),-(sp)	; ref through ptr to line
+	  sub #gl.chr-gl.ldc,(sp) ; make it ptr to grinnell instructions
+	  push #-<<lgrnl-gl.ldc>/2> ; -length of line in words
+	  jsr pc,grput1		; send to Grinnel
+	  bit #1,r3		; .even r3
+	  if ne,<
+	    inc r3
+	    >
+	  inc r4		; advance line number
+	  cmp r4,#linscr	; done all the lines yet?
+	  rptl lo
+	  >
+
+	; initialize screen params
+	clr r3
+	clr r4
+	clr g.pend(gp)
+	clr gs.idl(r2)
+	clr gs.bld(r2)
+	mov #gi.lwm+%wmvec,gs.lwm(r2)
+	clr gs.xgp(r2)
+	clr gs.ygp(r2)
+	pop r5,r1
+	rts pc
+
+.sbttl	Grinnell interrupt queue management
+
+; This is the DRV-11B operation complete interrupt handler.
+; It takes requests from gi1iq and outputs them to the Grinnell
+
+; DRVINT is called by the JSR R0,@#DRVINT located at -4 off the first Grinnell
+; TCB, which is executed after a DRV11-B operation complete interrupt.
+; R0 -> TCB Pointer
+; SP -> Saved R0
+;	Saved PC
+;	Saved PS
+drvint:	mov t.lps+ldvadr(r0),r0	; get addr of Grinnell interface (DRV11-B)
+	tstb 4(r0)		; is it ready yet?
+	if mi,<			; yes
+	  push r1
+	  clr @grlock		; unlock last frob
+	  mov #grlock+2,grlock
+	  mov gr1iq+giqget,r1	; ptr to current entry
+	  cmp gr1iq+giqput,r1	; compare with ptr past last item put
+	  if ne,<		; not equal, there is something in gr1iq
+	    add #6,r1		; advance get ptr
+	    cmp r1,gr1iq+giqend	; wrap?
+	    if his,<		; yes,
+	      mov gr1iq+giqsta,r1 ; wrap get ptr
+	      >
+	    mov r1,gr1iq+giqget ; update get ptr
+	    movb (r1),@#nm.map+1 ; map in the Newman window
+	    tst (r1)+
+	    mov (r1),2(r0)	; send pointer to the Grinnell
+	    sub #2,(r1)		; move pointer to lock word
+	    mov (r1)+,grlock	; and store it in GRLOCK
+	    mov (r1)+,(r0)	; send count to the Grinnell
+	    mov #101,4(r0)	; start the output and enable op complete int
+	    >
+	  pop r1
+	  >
+	pop r0
+	rti
+
+
+
+; GRPUT1 inserts a request in the primary Grinnell interrupt queue
+; called by JSR PC,GRPUT1, no error returns possible
+; SP -> -length		
+;	pointer	(may compute Grinnell page from this)
+grput1:	push r2,r3
+	bit @4+4(sp),#77600	; all Grinnell commands start with an LDC
+	if ne,< crash >
+1$:	mfps -(sp)
+	mtps #340
+	cmp gr1iq+giqput,gr1iq+giqget ; queue empty?
+	if eq,<
+	  mov t.lps+ldvadr(r0),r2 ; get addr of Grinnell interface (DRV11-B)
+	  tstb 4(r2)		; is it busy?
+	  if mi,<		; no, let's use it right now
+	    clr @grlock		; the last output must be complete, clear
+				; the current lock
+	    clr r3		; default to no Newman mapping
+	    cmp 6+4(sp),#win0	; is object in Newman?
+	    if his,<
+	      cmp 6+4(sp),#win3	; is this in 3rd Newman page?
+	      if his,<		; yes,
+	        sub #win3-win1,6+4(sp) ; wi
+	        movb @#nm.map+3,r3 ; r3 holds Newman page number
+	        >
+	      else <		; no, not in 3rd Newman page, must be 2nd
+	        sub #win3-win2,6+4(sp)
+	        movb @#nm.map+2,r3
+	        >
+	      >
+	    movb r3,@#nm.map+1	; map in DMA level Newman window
+	    mov 4+4(sp),(r2)+	; stuff count
+	    mov 6+4(sp),(r2)+	; then address
+	    sub #2,6+4(sp)	; point to lock word
+	    mov pc,@6+4(sp)	; lock it
+	    mov 6+4(sp),grlock 	; this is the locked one now
+	    mov #101,(r2)	; start output, set op complete interrupt
+	    br 2$
+	    >
+	  >
+	mov gr1iq+giqput,r2	; get put pointer
+	add #6,r2		; advance put pointer
+	cmp r2,gr1iq+giqend	; wrap?
+	if his,<		; yes,
+	  mov gr1iq+giqsta,r2	; set put pointer back to start of queue
+	  >
+	cmp gr1iq+giqget,r2	; queue full?
+	if eq,<			; yes, full
+	    mov r0,@runend	; put ourselves at end of run list
+	    mov r0,runend
+	    mtps (sp)+		; restore low priority
+	    jsr pc,sleep	; go wait for a short time,
+	    mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	    br 1$		; then try again
+	    >
+	mov r2,gr1iq+giqput	; store back updated put pointer
+	clr (r2)
+	mov 6+4(sp),r3
+	cmp 6+4(sp),#win0	; is object in Newman?
+	if his,<
+	  cmp r3,#win3		; is this in 3rd Newman page?
+	  if his,<		; yes,
+	    sub #win3-win1,r3
+	    movb @#nm.map+3,(r2) ; r3 holds Newman page number
+	    >
+	  else <		; no, not in 3rd Newman page, must be 2nd
+	    sub #win3-win2,r3
+	    movb @#nm.map+2,(r2)
+	    >
+	  >
+	tst (r2)+
+	mov r3,(r2)+		; pointer
+	mov 4+4(sp),(r2)+	; put the length in the queue
+	sub #2,6+4(sp)		; get pointer to lock (just before buffer)
+	mov pc,@6+4(sp)		; lock this line
+2$:	mtps (sp)+		; restore low priority
+	pop r3,r2,(sp),(sp)	; pop off saved R2, clean up stack and return
+	rts pc			; return
+
+; GBFXCL excludes a Grinnell buffer.
+; Checks to see if a buffer is waiting in output queue (G.BLCK non zero).
+; If so, reschedule and check again.
+; R0 -> TCB
+gbfxcl:	tst g.blck(gp)		; is the buffer available for writing yet?
+	if ne,<
+	  mfps -(sp)		; save priority
+ 	  mtps #340		; masked for inserting in runlst
+	  mov r0,@runend
+	  mov r0,runend
+	  mtps (sp)+
+	  jsr pc,sleep
+	  mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	  br gbfxcl
+	  >
+	rts pc
+
+; GLNXCL excludes access to a Grinnell output line.
+; Checks to see if a line is waiting in output queue (GL.LCK non zero)
+; If so, reschedule and check again.
+; We really should implement a time out of some sort on this.
+
+; R0 -> TCB
+; R1 -> Line
+glnxcl:	tst gl.lck-gl.chr(r1)	; is this line available for writing yet?
+	if ne,<
+	  mfps -(sp)		; save priority
+ 	  mtps #340		; masked for inserting in runlst
+	  mov r0,@runend
+	  mov r0,runend
+	  mtps (sp)+
+	  jsr pc,sleep
+	  mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	  br glnxcl
+	  >
+	rts pc
+
+; GRPLIN - Outputs a line to the Grinnell
+; called by JSR PC,
+; 	ARGS:				 VALS:
+; R1 -> pointer to 1st char in line	 (none)
+grplin:	push r1			; pointer for outputting current line
+	sub #gl.chr-gl.ldc,(sp)
+	push #-<<lgrnl-gl.ldc>/2> ; -length of line in words
+	jsr pc,grput1		; output it
+	rts pc
+
+.sbttl	Grinnell main loop
+
+; R0 -> TCB as usual
+; R1 -> usually current character
+; R2 -> Grinnell screen structure
+; R3 -> 2*line number  (R3+R2) should index into ptrs to lines
+; R4 -> Y pos of character
+; R5 -> points to current position in G.BUF
+; Grinnell Params, there are default states that should be restored to:
+;  Update mode: La<-La, Ea<-Ea+Eb
+;  La: not to be relied on   Lb: 0   Lc: 0
+;  Ea: not to be relied on   Eb: +6  Ec: 0
+;  Write mode: Vector Mode
+;  Peripheral device: byte upack selected
+
+grloop:
+	clr gs.rol(r2)		; here so grmr doesn't clear it
+loop <
+	  ; main loop for reading and dispatching
+  loop <    call getchr
+	     br grslep		; no characters to process
+grdspt:     tst gs.flg(r2)
+	    if ne,<
+	      jsr pc,gbfxcl	; we were awakened, turn the cursor off
+	      jsr pc,grcusf	; ...
+	      jsr pc,grsend
+	      clr gs.flg(r2)	; foo
+	      >
+	    bic #177600,r1	; no need for random parity
+	    cmp r1,#177		; throw padding away
+	    rptl eq
+	    cmp r1,#40
+	    if lo,<
+	      cmp r5,g.pbuf(gp) ; is there something pending to send?
+	      if ne,<		; yes,
+		jsr pc,grsend	; send it; this is nec only until we change
+	        >		; everything not to smash R5
+	      add r1,r1		; word offset
+	      jsr pc,@grdisp(r1) ; dispatch on these
+	      mov g.pbuf(gp),r5	; may have gotten smashed
+	      rptl
+	      >
+	    jsr pc,grordy	; put an ordinary character in output buffer
+	    cmp r5,g.ebuf(gp)	; are we near end of buffer?
+	    rptl lo		; get another character only if room
+	    >			; otherwise we fall through to grslep..
+	  ; might  be interesting to meter here someday ..
+
+; no more characters to process, write out a cursor and go to sleep
+; GS.FLG 0 means we have just been through GRDSPT loop
+; -1 means we wrote out a cursor last time
+;  1 means we did not write out a cursor
+grslep:	  jsr pc,grpend		; perform any pending operations
+	  jsr pc,gbfxcl		; make sure we can modify buffer
+	  tst gs.flg(r2)		
+	  if lt,<		; last cursor was on, see if transition time
+	    bit #40,time
+	    if eq,<
+	      jsr pc,grcusf	; shut cursor off
+	      jsr pc,grsend
+	      neg gs.flg(r2)
+	      >
+	    >
+	  else <
+	    if gt,<
+	      bit #40,time
+	      if ne,<
+	        jsr pc,grcusn
+	        jsr pc,grsend
+	        neg gs.flg(r2)
+	        >
+	      >
+	    else <
+	      if eq,<
+	        jsr pc,grcusn
+	        jsr pc,grsend
+	        mov #-1,gs.flg(r2)
+	        >
+	      >
+	    >
+	  mfps -(sp)		; mask ourselves so there is no window between
+	  mtps #340		; the discovery that we still have no chars
+	  .if ne 0
+	  call getchr		; and the actual zeroing of O.BLK
+	   br 2$		; indeed we are out of chars
+	  mtps (sp)+		; restore priority
+	  jsr pc,gbfxcl		; we have a character, turn the cursor off
+	  jsr pc,grcusf		; ...
+	  jsr pc,grsend
+	  br grdspt		; no, one arrived while we were doing cursor!
+	  .endc
+
+;2$:	  clr o.blk(r0)		; indicate we will need wakeup
+	  mov r0,@runend	; run us constantly
+	  mov r0,runend
+	  mtps (sp)+
+	  jsr pc,sleep		; sleep
+	  mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	  rptl
+	  >
+
+; GRSEND - send out a Grinnell buffer if there are any commands in it
+;	ARGS:
+; R5 -> current position in buffer
+grsend:	cmp r5,g.pbuf(gp)	; is there anything in the buffer?
+	beq 1$			; no, then we're done
+	push g.pldc(gp)		; otherwise, send it it; push ptr to buffer
+	sub (sp),r5		; compute how many words in buffer
+	asr r5			; convert byte difference to words
+	neg r5			; two's complement
+	push r5			; GRPUT1 arg
+	jsr pc,grput1		; send it
+	mov g.pbuf(gp),r5	; reset G.BUF pointer to show empty buffer
+1$:	rts pc			; done
+
+; GRORDY is called to put a displayable graphics on the Grinnell screen.
+; It places it in the screen image, then places the commands to cause
+; the character to be immediately displayed in the buffer (G.BUF).
+; If nothing is in the buffer already it starts by placing the commands
+; to turn off the cursor in the buffer and then the characters.  This
+; routine does not actually output the buffer.
+;	ARGS:				VALS:
+; R5 -> current pos in G.BUF	  R5 -> new position in G.BUF
+; R4 -> current horiz position    R4 -> new horizontal position
+; R3 -> current vertical pos	  R3 -> new vertical position
+; R1 -> the character		  R1 -> not meaningful
+grordy:	push r1			; better save our character
+	cmp r5,g.pbuf(gp)	; are there already commands in buffer?
+	if eq,<
+	  jsr pc,grpend		; perform any pending operations
+	  jsr pc,gbfxcl		; make sure we can modify buffer
+	  ; then as this is the first char in the buffer, we must
+	  ; establish certain settings
+	  mov gs.lwm(r2),(r5)+	; set current write modes
+	  mov gllas(r3),(r5)+	; LLA command for positioning of first char
+	  asl r4		; make horizontal position into word offset
+	  mov glles(r4),(r5)+	; so we can index into GLLE commands
+	  asr r4		; convert back to horizontal byte offeset
+	  >
+	tst gs.idl(r2)		; insert delete mode?
+	if ne,<
+	  push r5
+	  jsr pc,grinsc		; insert a space
+	  pop r5
+	  >			; and then we'll write over it, gross
+	cmp r4,#chrlin-1	; at past right margin now?
+	if hi,<			; yes, then cause wrapping
+	  clr r4		; horizontal pos to zero
+	  jsr pc,grsend		; flush out the buffer
+	  jsr pc,grlf		; increment the line number
+	  mov g.pbuf(gp),r5	; GRLF probably smashed R5
+	  mov gs.lwm(r2),(r5)+	; set current write modes
+	  mov gllas(r3),(r5)+	; and put out a new X
+	  asl r4
+	  mov glles(r4),(r5)+	; and new Y positioning commands
+	  asr r4
+	  >
+	mov r2,r1		; base address of line array
+	add r3,r1		; index by line
+	mov (r1),r1		; pointer to a line
+	add r4,r1		; to a char
+	movb (sp),(r1)		; store character
+	bisb gs.bld(r2),(r1)	; copy current state of bold flag
+	mov #gi.wac,(r5)+	; make up instr to write the char
+	movb (sp)+,-2(r5)	; pop the saved char and put into WAC instr
+	inc r4			; advance horizontal position
+	rts pc			; and thats all for now.  The main loop takes
+				; responsibility for seeing this actually
+				; gets sent out
+
+; GRCUSN - place commands to draw in a cursor in G.BUF.  Also sets up commands
+; to erase said cursor to buffer used by GRCUSF
+;	ARGS:
+; R5 -> position in G.BUF
+; R4 -> current horiz position
+; R3 -> current vertical pos
+grcusn:	mov #gi.lwm+%wmvec,(r5)	; presume normal first
+	push r1			; save R1 in any event
+	mov r2,r1		; base address of line array
+	add r3,r1		; index by line
+	mov (r1),r1		; pointer to a line
+	add r4,r1
+	cmp r4,#chrlin-1	; at right margin?
+	if hi,<			; hmm, a sbc might work here..
+	  dec r1
+	  >
+	tstb (r1)		; is the char the cursor is on inverse?
+	if mi,<			; yes,
+	  bis #%wminv,(r5)
+	  >
+	mov (r5)+,g.cbuf(gp)
+	mov #%wminv,r1		; and toggle the inversion, so the buffer
+	xor r1,g.cbuf(gp)	; will contain the commands to erase the curs
+	mov gp,r1		; pointer cursor buffer
+	add #g.cbuf+2,r1	; point to after the LWM instr already there
+	mov gllas(r3),(r1)	; place commands both in buffer and cursor
+	mov (r1)+,(r5)+		; buffer
+	asl r4			; convert horizontal position to word offset
+	mov glles(r4),(r1)	; pick up horizontal positioning command
+	asr r4
+	bis #%lrfgw,(r1)	; and turn on the "do it" bit
+	mov (r1)+,(r5)+		; copy the one we already have in cusor buffer
+	sub #g.cbuf,r1		; compute number of cursor commands*2
+	sub gp,r1
+	mov r1,g.clen(gp)	; save it
+	pop r1
+	rts pc
+
+
+; GRCUSF - places into G.BUF commands to erase the cursor
+;	ARGS:				VALS:
+; R5 -> position in G.BUF	  R5 -> updated position in G.BUF
+; R1 -> smashed
+grcusf: push r3,r1		; save r3
+	mov g.clen(gp),r3	; number of bytes of cursor commands
+	asr r3			; turn it into a word count
+	mov gp,r1		; pointer to commands to erase cursor
+	add #g.cbuf,r1
+loop <    mov (r1)+,(r5)+	; copy cursor erasing commands into buffer
+	  sorl r3
+	  >
+	pop r1,r3		; restore r3
+	rts pc
+
+	.sbttl Grinnell Datamedia Simulation
+
+grdisp:	grjunk			; 00 ^@
+	grjunk			; 01 ^A
+	grhom			; 02 ^B Home
+	grjunk			; 03 ^C
+	grjunk			; 04 ^D
+	grjunk			; 05 ^E
+	grjunk			; 06 ^F
+	grbel			; 07 ^G Bell
+	grbs			; 10 ^H Backspace - Right Cursor
+	grtab			; 11 ^I Tab
+	grlf			; 12 ^J Linefeed - Down Cursor
+	grctab			; 13 ^K Clear Tab
+	grabs			; 14 ^L Absolute Move
+	grcr			; 15 ^M Carriage Return
+	grbln			; 16 ^N Blink On
+	grjunk			; 17 ^O Form On
+	gri.d			; 20 ^P Insert/Delete
+	grjunk			; 21 ^Q Xmit Page
+	grjunk			; 22 ^R Print
+	grjunk			; 23 ^S Xmit Line
+	grgraf			; 24 ^T S-1 Graphics protocol
+	grjunk			; 25 ^U reserved for scroll up
+	grjunk			; 26 ^V reserved for scroll down
+	greol			; 27 ^W Erase to end of Line
+	grcan			; 30 ^X Cancel
+	grstab			; 31 ^Y Tab Set
+	grup			; 32 ^Z Up Cursor
+	gresc			; 33 ^[
+	grrt			; 34 ^\ Right Cursor
+	grron			; 35 ^] Roll Mode on
+	grmr			; 36 ^^ Master Rest
+	greos			; 37 ^_ Erase to end of Screen
+
+
+; GRPEND perform any pending operations.  For now just output a possibly
+; rotated screen.  Called JSR PC,
+; Can be called from praticaly anywhere.  Does not smash regs
+; R2 -> screen array of course
+grpend:	bit #%id,g.pend(gp)	; is an insert or delete pending?
+	beq 1$			; no, then nothing to do
+	push r3,r1,r5		; save regs
+	mov r2,r3		; pointer to start of screen array
+.iif ne gs.lin,  .error "GS.LIN assumed zero here."
+	mov #linscr,r5		; count of lines
+loop <	  mov (r3)+,r1		; pointer to line
+	  jsr pc,grplin		; output it
+	  sorl r5		; for linscr number of lines
+	  >
+	bic #%id,g.pend(gp)	; clear the pending flag
+	pop r5,r1,r3		; restore regs
+1$:	rts pc			; thats it
+
+grup:	tst gs.idl(r2)		; insert/delete mode?
+	if eq,<			; no
+	  tst r3		; top line?
+	  if eq,<
+	    rts pc
+	    >
+	  tst -(r3)		; up a line, subtract 2
+	  rts pc
+	  >
+	; delete line
+	; GRLDLN is also an internal interface
+	; takes line number in R3, smashes R1,R5
+grdln:	push r3			; save current line number
+	mov r3,r5		; copy line index
+	add r2,r5		; pointer to array of line pointers
+	push (r5)		; save this line!
+.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+loop <	  cmp r3,#<linscr*2>-2	; we done?
+	  exitl his
+	  mov 2(r5),(r5)	; slide this line up
+	  mov (r5),r1		; get pointer to this line
+	  jsr pc,glnxcl		; make sure we can modify it
+	  mov gllas(r3),gl.lla-gl.chr(r1) ; update LLA (X pos) for this line
+;	  jsr pc,grplin		; output the line pointed to by R1
+	  tst (r3)+		; advance line count
+	  tst (r5)+		; advance line pointer
+	  rptl
+	  >
+	pop (r5)		; put this line back
+	push r4			; save h pos
+	clr r4			; clear out whole line
+	jsr pc,greol
+	pop r4			; restore hpos
+	pop r3			; restore our line pos (x pos)
+	bis #%id,g.pend(gp)	; indicate a delete line is pending
+	rts pc
+
+grlf:	tst gs.idl(r2)		; insert/delete mode?
+	if eq,<			; no
+	  cmp r3,#<linscr*2>-2	;  on last line?
+	  if lo,<		;   no
+	    tst (r3)+
+	    rts pc
+	    >			;  otherwise, we are on last line..
+	  tst gs.rol(r2)	;  roll mode?
+	  if eq,<		;   no
+	    clr r3		;   go to top line
+	    rts pc
+	    >			;  else we are in roll mode, on last line..
+	  clr r3		; go to top line
+	  jsr pc,grdln
+	  jsr pc,grdln
+	  jsr pc,grdln
+	  jsr pc,grdln
+	  jsr pc,grdln		; delete the top line
+	  mov #<linscr*2>-<5*2>,r3 ; make ourselves sticky on bottom line
+	  rts pc
+	  >
+	cmp r3,#<linscr*2>	; make sure we're not beyond last line
+	if his,< crash >	; random error check
+	push r3			; save current line number
+	mov r3,r5		; copy line index
+	add r2,r5		; pointer to array of line pointers
+	mov (r5),-(sp)		; save current line
+	mov <linscr*2>-2(r2),(r5)+
+.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+	push r5,r4
+	clr r4
+	jsr pc,greol		; to clear out a line
+	pop r4,r5
+	; when we enter this loop
+	; R3 index of the current line
+	; R5 points to the next line
+	; (sp) points to current line (saved line)
+loop <	  cmp r3,#<linscr*2>-2	; last line?
+	  exitl his
+	  tst (r3)+		; bring R3 in sync with R5
+	  mov (r5),r1		; make next line current line
+	  mov (sp),(r5)		; put previous line into it
+	  mov r1,(sp)		; and make current line next line
+	  mov (r5)+,r1		; get pointer to this line
+	  jsr pc,glnxcl		; make sure we can modify this line
+	  mov gllas(r3),gl.lla-gl.chr(r1) ; update LLA (X pos) for this line
+;	  jsr pc,grplin		; output line
+	  rptl
+	  >
+	tst (sp)+		; throw away last saved line pos
+	pop r3			; restore our line pos
+	bis #%id,g.pend(gp)	; indicate an insert line is pending
+	rts pc
+
+grbs:	tst gs.idl(r2)		; insert/delete mode?
+	if eq,<			; no
+	  tst r4		; column 0?
+	  if hi,<
+	    dec r4
+	    >
+	  rts pc
+	  >
+	mov r2,r1		; base of Grinnell Screen
+.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+	add r3,r1		; index into GS.LIN
+	mov (r1),r1		; get a ptr to a line
+	jsr pc,glnxcl		; make sure we can modify line
+	push r1			; remember pointer to line
+	add r4,r1		; get a pointer to the character
+	mov #chrlin-1,r5	; maximum number of chars in line
+				; (ordinal because r4 is ordinal)
+	sub r4,r5		; number of chars we have to move
+	ble 1$			; watch out for cursor at end or beyond
+loop <	  movb 1(r1),(r1)+	; shift chars over
+	  sorl r5
+	  >
+	movb #40,(r1)		; put blank in last position
+1$:	mov (sp)+,r1		; get back ptr to line
+	tstb (r1)		; hueristic: if 1st char in line is inverse	
+	if mi,<
+	  bis #%wminv,gl.lwm-gl.chr(r1) ; turn on inverse for whole line
+	  >
+	jsr pc,grplin		; output line
+	bic #%wminv,gl.lwm-gl.chr(r1)
+	rts pc
+
+grrt:	tst gs.idl(r2)		; insert/delete?
+	if eq,<			; no
+	  cmp r4,#chrlin	; overflow off right margin?
+	  if lo,<		; no
+	    inc r4		; inscrease X-Pos
+	    rts pc
+	    >
+	  clr r4		; wrap off right to next line
+	  tst (r3)+
+	  cmp r3,#<linscr*2>-2	; bottom line?
+	  if his,<
+	    clr r3
+	    >
+	  rts pc
+	  >
+grinsc:	mov r2,r1		; base of Grinnell Screen
+.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+	add r3,r1		; index into GS.LIN
+	mov (r1),r1		; get a ptr to a line
+	jsr pc,glnxcl		; make sure we can modify line
+	push r1			; remember pointer to line
+	mov #chrlin-1,r5	; max char
+	add r5,r1		; ptr to last chr
+	sub r4,r5		; count of chars to move
+	ble 1$			; watch out for cursor at edge or beyond
+loop <	  movb -(r1),1(r1)	; shift chars over
+	  sorl r5
+	  >
+	movb #40,(r1)		; presume non-bold char
+	tstb @(sp)		; hueristic for bold line
+	if mi,<			; if first character in line is bold
+	  movb #240,(r1)	; insert characters shall be bold
+	  mov (sp),r1		; restore pointer to line
+	  bis #%wminv,gl.lwm-gl.chr(r1) ; turn on inverse for whole line
+	  >
+	mov (sp),r1		; restore pointer to line, other path
+	jsr pc,grplin		; output line
+	bic #%wminv,gl.lwm-gl.chr(r1)
+1$:	tst (sp)+		; clean up stack
+	rts pc
+
+
+grcr:	clr r4			; CR - 0 col
+	rts pc			; don't auto-NL
+
+grhom:	clr r3			; clr Y
+	clr r4			; clr X
+	br grrst
+
+grcan:	clr gs.bld(r2)		; clear bold flag
+	bic #%wminv,gs.lwm(r2)	; and clear inverse write mode
+	clr gs.rol(r2)		; clear roll mode
+grrst:	clr gs.idl(r2)		; clear insert/delete mode
+	rts pc
+
+grbel:	; gee what do we do for a bell?
+	rts pc
+
+gri.d:	mov pc,gs.idl(r2)	; set insert delete mode
+	rts pc
+
+greol:	cmp r4,#chrlin		; are we beyond end of line?
+	bhis 1$			; if so, don't do anything
+	mov r2,r1		; base of grinnell screen structre
+.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+	add r3,r1		; index into GS.LIN
+	mov (r1),r1		; get ptr to a line
+	jsr pc,glnxcl		; make sure we can modify line
+	mov gllas(r3),gl.lla-gl.chr(r1) ; make sure the LLA command is accurat
+	push r1			; save it
+	mov #20040,r5		; preload blanks outside of loop
+	tstb gs.bld(r2)		; bold?
+	if ne,<
+	  mov #120240,r5
+	  >
+	mov r4,-(sp)		; copy column addr for munging
+	add r4,r1		; offset to current char
+	bit #1,r4		; odd address?
+	if ne,<			; yes,
+	  movb r5,(r1)+		; bring address to an even boundary
+	  inc (sp)
+	  >
+	add (sp)+,pc
+	.rept chrlin/2
+	  mov r5,(r1)+
+	.endr
+	.lif ne chrlin&1	; odd number of bytes per line?
+	movb r5,(r1)+		; clear out last byte
+	; remember r1 (line pointer) is still on stack
+	pop r1
+	; now don't actually output line..
+	mov g.pbuf(gp),r5	; pointer to buffer
+	jsr pc,gbfxcl		; make sure we can modify buffer
+	mov gs.lwm(r2),(r5)	; inverted and rectangle modes
+	mov #%wminv,r1		; to clear something we reverse the current
+	xor r1,(r5)		; write mode
+	bic #%wmvec,(r5)+	; rectangle bit
+	asl r4
+	mov glles(r4),-(sp)	; get X pos in rasters
+	asr r4
+	mov (sp),(r5)+		; position horizontally (to one after)
+	mov gllas(r3),(r5)+	; position vertically
+	mov #gi.llb+13,(r5)+	; draw a rectangle 13 high?
+	bic #177000,(sp)	; clear the LEA instr
+	sub #777,(sp)		; subtract max X pos to get -# rasters left
+	neg (sp)		; gets number of rasters till right edge
+	add #gi.leb+%lrfgw,(sp)	; make it an LEB instr, with the "go" bit set
+	mov (sp)+,(r5)+		; width of rectangle
+	mov gs.lwm(r2),(r5)+	; restore write modes
+	mov #gi.leb+6,(r5)+	; restore Eb register to 6
+	mov #gi.llb,(r5)+	; restore Lb register to 0
+	jsr pc,grsend		; send it
+1$:	rts pc
+	jmp grplin		; tail recurse
+;	jsr pc,grplin		; output line
+;	rts pc
+
+; Waits seem to think that EOS and MR should be equivelant
+greos:	jmp grmr
+;	rts pc
+
+grstab: ; not implemented yet
+	rts pc
+
+grctab:	; not implemented yet
+	rts pc
+
+grtab:	bic #7,r4
+	add #10,r4
+	cmp r4,#chrlin
+	if his,<
+	  mov #chrlin-1,r4
+	  >
+	rts pc
+	
+gradr:	call getchw		; get row address
+	mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	bic #177600,r1
+	cmp r1,#40		; another command in the middle of an abs pos?
+	if lo,<			; yes,
+	  pop *,*		; punt our return address
+	  mov g.pbuf(gp),r5	; set up GBUF
+	  jmp grdspt
+	  >
+	mov r1,-(sp)		; map incoming values 140-177 to   0- 37
+	mov #140,r1		;                     100-137 to  40- 77
+	xor r1,(sp)		;                      40- 77 to 100-137
+	mov (sp)+,r1
+	rts pc
+
+grabs:	jsr pc,gradr		; get Hpos (col) X
+	cmp r1,#chrlin		; range check
+	bhis 1$			; X Pos greater than chars per line..
+	mov r1,r5		; holding bin, don't smash until we get both
+	jsr pc,gradr		; get Line # (row) Y
+	cmp r1,#linscr		; range check
+	bhis 1$			; Y Pos greater than lines per screen
+	mov r1,r3
+	add r3,r3		; Line # is always times two
+	mov r5,r4		; Hpos
+1$:	rts pc
+
+grron:	mov pc,gs.rol(r2)
+	rts pc
+
+grmr:	jsr pc,grini		; reinitialize everything
+	call getchw		; Check for either 2 Master resets in a row
+	mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	cmp r1,#36		; or an MR followed by a Clear EOS.
+	beq 1$			; Sending the command twice is apparently
+	cmp r1,#37		; a standard way of padding the function
+	beq 1$			; on DMs.
+	tst (sp)+		; throw away our return addr
+	jmp grdspt		; and proceed immediately to dispatch
+1$:	rts pc
+
+; set blink or bold or whatever
+grbln:	rts pc			; patched out
+	mov #200,gs.bld(r2)	; set bold flag
+	bis #%wminv,gs.lwm(r2)	; and set inverse write mode
+	rts pc
+
+gresc:	call getchw
+	mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	bic #177600,r1
+	jsr pc,grordy		; put it directly out
+	jsr pc,grsend		; better send it, R5 won't survive any longer
+	rts pc
+
+grjunk:	rts pc
+
+	.sbttl Graphics
+
+grgraf:	push r3,r4		; R1 and R5 are smashable anyway
+grg1:	call gfxget		; get a char
+	cmp r1,#11		; check for range of graphics commands
+	if hi,<			; flush if out of range
+	  pop r4,r3
+	  rts pc
+	  >
+	asl r1			; make word offset
+	jmp @gfxdsp(r1)		; vector
+gfxdsp:	gfxnop		; graphics no-op
+	gfxabs		; graphics absolute move
+	gfxrli		; graphics relative move, invisible
+	gfxrlv		; graphics relative move, visible
+	gfxhzs		; graphics horizontal string
+	gfxvts		; graphics vertical string
+	gfxnop		; graphics "channel select"
+	gfxscs		; graphics set character size
+	gfxclr		; graphics clear screen
+	gfxfast		; graphics high efficiency relative move mode
+
+; GFXNOP - process graphic noop command.  Also most other commands branch
+; here to return to Grinnell main loop.
+gfxnop:	pop r4,r3
+	rts pc
+
+; GFXABS - Absolute position command
+gfxabs:	call gfxpos		; get a position
+	mov r3,gs.xgp(r2)	; store it in X graphics position
+	mov r4,gs.ygp(r2)	; and Y graphics position
+	br gfxnop
+
+; GFXRLI - Invisible relative vector command
+gfxrli:	call gfxpos		; get a position
+	add r3,gs.xgp(r2)	; Update X graphics position
+	add r4,gs.ygp(r2)	; update Y graphics position
+	br gfxnop
+
+
+; GFXFAST -high speed incremental graphics mode. Eats all subsequent
+; characters in the range 40>=chr>140.  6 bits of data are then taken as
+; 3 bits signed X offset in high order and 3 bits signed Y offset in
+; low order
+gfxfast:
+	call getchw		; get a character
+	mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	bic #177600,r1
+	sub #40,r1		; map it down
+	if lt,<			; exit mode at first char not in range
+	  cmp r1,#24-40
+	  beq grg1
+	  br gfxnop
+	  >
+	cmp r1,#100
+	bge gfxnop
+	mov r1,r4		; get Y difference
+	bic #177770,r4
+	ash #13.,r4		; extend sign
+	ash #-13.,r4
+	mov r1,r3		; get X difference
+	bic #177707,r3
+	ash #10.,r3		; extend sign
+	ash #-13.,r3
+	jsr pc,grelit
+	br gfxfas
+
+; GFXRLV - Visible Relative Vector Command
+gfxrlv:	call gfxpos		; get a position
+	jsr pc,grelit		; do the Rel ptr
+	br gfxnop
+
+; GRELIT - Process a relative vector command, call by JSR PC,
+; R3 -> Signed value to be added to X coordinate
+; R4 -> Signed value to be added to Y coordinate
+grelit:	jsr pc,gbfxcl		; make sure buffer is available
+	mov g.pbuf(gp),r5	; get pointer to buffer
+	mov #gi.lwm+%wmvec,(r5)+ ; set positive video and vector modes
+
+	mov gs.ygp(r2),r1	; Current Y position
+	bic #177000,r1		; load La with Y pos
+	add #gi.lla,r1
+	mov r1,(r5)+
+	mov gs.xgp(r2),r1	; Current X position
+	bic #177000,r1		; load Ea with X Pos
+	add #gi.lea,r1
+	mov r1,(r5)+
+	add r3,gs.xgp(r2)	; update saved X and Y pos to new values
+	add r4,gs.ygp(r2)
+	bic #177000,r3		; load Lb with relative X Pos
+	add #gi.leb,r3
+	mov r3,(r5)+
+	bic #177000,r4		; and Eb with relative Y Pos
+	add #gi.llb+%lrfgw,r4	; and turn on the bit to actually execute
+	mov r4,(r5)+		; the graphic write from La,Ea to Lb,Eb
+	mov #gi.leb+6,(r5)+	; restore the character stepping in Eb
+	mov #gi.llb,(r5)+	; and keep Lb zeroed
+	push g.pldc(gp)		; get pointer to Grinnell commands
+	sub (sp),r5		; compute length
+	asr r5
+	neg r5
+	push r5
+	jsr pc,grput1		; output to Grinnell
+	rts pc
+
+; GFXHZS - Horizontal string mode
+gfxhzs:	jsr pc,gbfxcl		; make sure buffer is available
+	call getchw		; get count
+	mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	bic #177600,r1
+	sub #40,r1
+	ble gfxnop
+	mov r1,r3		; count in r3
+	mov g.pbuf(gp),r5	; pointer to buffer
+	mov #gi.lum+2,(r5)+	; set update mode for horizontal
+	mov #gi.lwm+%wmvec+%wmor,(r5)+	; inclusive or
+	mov gs.ygp(r2),r1	; position Y
+	bic #177000,r1
+	add #gi.lla,r1
+	mov r1,(r5)+
+	mov gs.xgp(r2),r1	; position X
+	bic #177000,r1
+	add #gi.lea,r1
+	mov r1,(r5)+
+	mov #gi.leb+6,(r5)+	;  Eb of 6
+loop <	  call getchw		; read the chars
+	  mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	  cmp r5,g.ebuf(gp)	; have we run out of buffer space
+	  if his,<
+	    bic #177600,r1
+	    add #6,gs.xgp(r2)	; update permanent X position
+	    add #gi.wac,r1	; make into a Load Alphanumeric char instr
+	    mov r1,(r5)+
+	    >
+	  sorl r3
+	  >
+	mov #gi.lwm+%wmvec,(r5)+ ; clear all the modes
+	push g.pldc(gp)		; pointer to Grinnel commands we just built
+	sub (sp),r5		; figure out how much we put in buffer
+	asr r5			; word count
+	neg r5			; twos complement
+	push r5
+	jsr pc,grput1		; output to Grinnell
+gfxnp1:	jmp gfxnop
+
+; GFXVTS - Vertical String Mode
+gfxvts:	jsr pc,gbfxcl
+	call getchw		; get count
+	mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	bic #177600,r1
+	sub #40,r1
+	ble gfxnp1
+	mov r1,r3		; count in r3
+	mov g.pbuf(gp),r5	; get pointer to buffer
+	mov #gi.lum+10,(r5)+	; set update mode for horizontal
+	mov #gi.lwm+%wmvec+%wmor,(r5)+	; inclusive or
+	mov gs.ygp(r2),r1	; position Y
+	bic #177000,r1
+	add #gi.lla,r1
+	mov r1,(r5)+
+	mov gs.xgp(r2),r1	; position Y
+	bic #177000,r1
+	add #gi.lea,r1
+	mov r1,(r5)+
+	mov #gi.llb+<777&-12.>,(r5)+	;  Lb of -12.
+loop <	  call getchw		; read the chars
+	  mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	  cmp r5,g.ebuf(gp)	; have we run out of buffer space
+	  if his,<
+	    bic #177600,r1
+	    sub #12.,gs.ygp(r2)	; update permanent Y position
+	    add #gi.wac,r1	; make into a Load Alphanumeric char instr
+	    mov r1,(r5)+
+	    >
+	  sorl r3
+	  >
+	mov #gi.lwm+%wmvec,(r5)+	; clear all the modes
+	mov #gi.lum+2,(r5)+	; back to normal
+	mov #gi.llb,(r5)+
+	push g.pldc(gp)		; pointer to grinnell commands we just built
+	sub (sp),r5		; figure out how much we put in buffer
+	asr r5			; word count
+	neg r5			; twos complement
+	push r5
+	jsr pc,grput1		; output to Grinnell
+	jmp gfxnop
+
+gfxscs:	call getchw
+	mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	br gfxnp1
+
+gfxclr:	jsr pc,gbfxcl		; make sure buffer is available
+	mov g.pbuf(gp),r5	; pointer to buffer
+	mov #gi.lwm+%wmvec,(r5)+
+	mov #gi.ers,(r5)+
+	push g.pldc(gp)
+	sub (sp),r5
+	neg r5
+	asr r5
+	push r5
+	jsr pc,grput1		; output erase command
+	br gfxnp1
+
+; GFXGET - read in a character, drop it by 40 and reject control chars
+gfxget:	call getchw		; get Graphic op code
+	mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+	bic #177600,r1		; mask down to 7 bits
+	sub #40,r1		; ignore chars less than 40 for stupid systems
+	blt gfxget		; that insert CRLF's and the like
+	return
+
+; GFXPOS - reads in 4 chars and puts Xh,Xl in R3 and Yh,Yl in R4
+gfxpos:	call gfxget		; get Xh
+	ash #10.,r1		; over by 10.
+	ash #-4,r1		; and back by 4 to accomplish sign extension
+	mov r1,r3
+	call gfxget		; get Xl
+	bis r1,r3
+	call gfxget		; Yh
+	ash #10.,r1		; over by 10.
+	ash #-4,r1		; and back by 4 to accomplsih sign extension
+	mov r1,r4
+	call gfxget		; Yl
+	bis r1,r4
+	return
+
+
+
+

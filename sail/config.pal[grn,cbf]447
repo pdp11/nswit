@@ -1,0 +1,114 @@
+.sbttl Configuration
+
+setf ^"Configuration (1=Service, 2=Simulator)?",choice
+
+.ifz choice-2           ; Simulator
+ilct:
+; device   device    interrupt   unit   input  output  parameter
+;  type    address    vector    number  speed   speed    word
+   dl,     177560,     60,      0,      9600,   9600,	 0
+   0
+itct:
+;  Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q
+;   PC        PC     Link    Link    Size    Size    Size   Size
+   c1in,    c1out,   1,      1,	     40,     40,     40,    40
+   0
+.endc
+
+.ifz choice-1                   ; grinnell config
+ilct:   ; Initial Line Configuration Table
+; device   device    interrupt   unit   input  output  parameter
+;  type    address    vector    number  speed   speed    word
+
+   ; console device, used only for stopping program
+   dl,	   177560,     60,      0,         0,      0,    0	  ; 1
+   ; dzv's used for talking to switch
+   dzv,    170200,    400,      0,      9600,   9600,    17030	  ; 2
+   dzv,    170200,    400,      1,      9600,   9600,    17031	  ; 3
+   dzv,    170200,    400,      2,      9600,   9600,    17032    ; 4
+   dzv,    170200,    400,      3,      9600,   9600,    17033    ; 5
+   dzv,    170210,    410,	0,	9600,	9600,	 17030	  ; 6
+   dzv,    170210,    410,	1,	9600,	9600,	 17031	  ; 7
+   dzv,	   170210,    410,	2,	9600,	9600,	 17032	  ; 8
+   dzv,	   170210,    410,	3,	9600,	9600,	 17033	  ; 9
+   dzv,    170220,    430,	0,	9600,	9600,	 17030	  ; 10
+   dzv,    170220,    430,	1,	9600,	9600,	 17031	  ; 11
+   dzv,	   170220,    430,	2,	9600,	9600,	 17032	  ; 12
+   dzv,	   170220,    430,	3,	9600,	9600,	 17033	  ; 13
+   ; keyboards, Quadrasyncs for current loop, or DLV11-J's for EIA
+   dl,	   176500,    300,	0,	1200,	1200,	 0	  ; 14 EAK 101
+   dl,	   176520,    320,	0,	1200,	1200,	 0	  ; 15 OTA 102
+   dl,	   176510,    310,	0,	1200,	1200,	 0	  ; 16 CBF 103
+   dl,	   170070,    170,	0,	1200,	1200,	 0	  ; 17 HWC 104
+   dl,     170100,    200,	0,	1200,	1200,    0 	  ; 18 TM  117
+   dl,     170110,    210,	0,	1200,	1200,    0	  ; 19 JMB 107
+   dl,     170120,    220,	0,	1200,	1200,    0	  ; 20 WRB 118
+;   dl,	   170130,    230,	0,	1200,	1200,	 0	broken
+   dl,	   170010,    120,	0,	1200,	1200,	 0	  ; 21 SJC 126
+   dl,	   170140,    240,	0,	1200,	1200,	 0	  ; 22 LCW 120
+   dl,	   170150,    250,	0,	1200,	1200,	 0	  ; 23 JBR 122
+   dl,	   170160,    260,	0,	1200,	1200,    0	  ; 24 PMF 124
+   dl,	   170040,    140,	0,	1200,	1200,	 0	  ; 25 LLW 113
+;   dl,	   170170,    270,	0,	1200,	1200,	 0	broken
+;   dl,	   170050,    150,	0,	1200,	1200,	 0	  ;    OTA 102
+;   dl,	   170060,    160,	0,	1200,	1200,	 0	  ;    CBF 103
+   ; Grinnell screens
+   grn,    172410,    124,      0,         0,      0,   14.       ; 26
+   grn,	   172410,    124,	0,	   0,	   0,	15.	  ; 27
+   grn,	   172410,    124,	0,	   0,	   0,	16.	  ; 28
+   grn,	   172410,    124,	0,	   0,	   0,	17.	  ; 29
+   grn,	   172410,    124,	0,	   0,	   0,	18.	  ; 30
+   grn,	   172410,    124,	0,	   0,	   0,	19.	  ; 31
+   grn,	   172410,    124,	0,	   0,	   0,	20.	  ; 32
+   grn,	   172410,    124,	0,	   0,	   0,	21.	  ; 33
+   grn,	   172410,    124,	0,	   0,	   0,	22.	  ; 34
+   grn,	   172410,    124,	0,	   0,	   0,	23.	  ; 35
+   grn,	   172410,    124,	0,	   0,	   0,	24.	  ; 36
+   grn,	   172410,    124,	0,	   0,	   0,	25.	  ; 37
+   0  ; end Line Configuration Table
+
+itct:   ; Initial Terminal Configuration Table
+;Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q ; # per
+; PC        PC     Link    Link    Size    Size    Size   Size  ;   son
+ ttyin,  ttyout,   1.,     1.,      40,    40,     40,    40    ; 1
+ normin, normou,   2.,    26.,     300,    40,     40,    40    ; 2 EAK 101
+ normin, normou,   3.,    27.,     300,    40,     40,    40    ; 3 OTA 102
+ normin, normou,   4.,    28.,     300,    40,     40,    40    ; 4 CBF 103
+ normin, normou,   5.,    29.,     300,    40,     40,    40	; 5 HWC 104
+ normin, normou,   6.,    30.,     300,    40,     40,    40    ; 6 TM  117
+ normin, normou,   7.,    31.,     300,    40,     40,    40    ; 7 JMB 107
+ normin, normou,   8.,    32.,     300,    40,     40,    40    ; 8 WRB 118
+ normin, normou,   9.,    33.,     300,    40,     40,    40    ; 9 SJC 126
+ normin, normou,  10.,	  34.,	   300,	   40,	   40,	  40	; 10LCW 120
+ normin, normou,  11.,	  35.,	   300,	   40,	   40,	  40	; 11JBR 122
+ normin, normou,  12.,	  36.,	   300,	   40,	   40,	  40	; 12PMF 124
+ normin, normou,  13.,	  37.,	   300,	   40,	   40,	  40	; 13LLW 113
+ mitkbd, s1kbdo,  26.,     2.,      40,    40,     40,    40    ; 14	101
+ mitkbd, s1kbdo,  27.,     3.,      40,    40,     40,    40    ; 15	102
+ mitkbd, s1kbdo,  28.,     4.,      40,    40,     40,    40    ; 16	103
+ s1kbd,  s1kbdo,  29.,     5.,      40,    40,     40,    40    ; 17	104
+ s1kbd,  s1kbdo,  30.,     6.,      40,    40,     40,    40    ; 18	117
+ s1kbd,  s1kbdo,  31.,     7.,      40,    40,     40,    40    ; 19	107
+ s1kbd,  s1kbdo,  32.,     8.,      40,    40,     40,    40    ; 20	118
+ s1kbd,  s1kbdo,  37.,     9.,      40,    40,     40,    40    ; 21	126
+ s1kbd,	 s1kbdo,  34.,	  10.,	    40,	   40,	   40,	  40	; 22	120
+ s1kbd,	 s1kbdo,  35.,	  11.,	    40,	   40,	   40,	  40	; 23	122
+ s1kbd,	 s1kbdo,  36.,	  12.,	    40,	   40,	   40,	  40	; 24	124
+ s1kbd,	 s1kbdo,  33.,	  13.,	    40,	   40,	   40,	  40	; 25	113
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 26 J14
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 27 J15
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 28 J16
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 29 J17
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 30 J18
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 31 J19
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 32 J20
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 33 J21
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 34 J22
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 35 J23
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 36 J24
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 37 J25
+ 0
+
+.insrt mitkbd
+
+.endc

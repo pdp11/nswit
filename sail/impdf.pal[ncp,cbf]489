@@ -1,0 +1,51 @@
+;;; -*-midas-*-
+.if1
+	.print /Defining IMP machine Chaos Network configuration
+/
+.endc
+	.insrt	macs
+;;; The Network Configuration and Definition for the ARPA-11 CHAOS Net
+
+asmmap===1			;use /23 mapping
+inhst == 1			;the host number of this machine
+innet == 20			;the host net number
+mxcilv == 7			;maximum interrupt level of all the interfaces
+
+	makcif 20,1,tty,176560,360	; 1 19.2 to ARPA machine
+;	makcif 20,1,tty,176550,350	; 1 9600 to ARPA machine
+	makcif 11,1,arp			; 2 Arpanet
+
+route <	11,2			;Net 1 9th floor Tech Square
+	,11,2			;Subnet 2 AI 9th floor eathernet
+	,11,2			;Subnet 3 MC IO 11 Pseudo net
+	,11,2			;Subnet 4 AI CHAOS 11 pseudo net
+	,11,2			;Subnet 5 XX Network 11 pseudo net
+	,11,2			;Subnet 6 unassigned
+	,11,2			;Subnet 7 unassigned
+	,11,2			;Subnet 10 LCSnet
+	,0,2			;Subnet 11 Arpanet pseudo net
+	,11,2			;Subnet 12
+	,11,2			;Subnet 13
+	,11,2			;Subnet 14
+	,11,2			;Subnet 15
+	,11,2			;Subnet 16
+	,11,2			;Subnet 17
+	,0,1			;Subnet 20 Arpa-11 Imp-11 TTY net
+	,20,2			;Subnet 21 NM-crock net
+	,20,2			;Subnet 22
+	,20,2			;Subnet 23
+	,20,2			;Subnet 24
+	,20,2			;Subnet 25
+	,20,2			;Subnet 26
+	,20,2			;Subnet 27
+	,20,2			;Subnet 30
+	,20,2			;Subnet 31
+	,20,2			;Subnet 32
+	,20,2			;Subnet 33
+	,11,2			;Subnet 34
+	,11,2			;Subnet 35
+	>
+
+	rcvxmt <trncvr,arpcvr>
+
+

@@ -1,0 +1,122 @@
+;;; IMP/HOST leader
+;	.block	ipl,il
+dsect <
+il.FMT:: .blkb 1		;format flag, should usually be 17
+il.DSN:: .blkb 1		;Destination network, usually zero
+il.FLG:: .blkb 1		;Leader flags, usually zero
+il.TYP:: .blkb 1		;Message type
+il.HDL:: .blkb 1		;Handling type
+il.FHS:: .blkb 1		;Host number
+il.FIP:: .blkw 1		;IMP number
+il.LNK:: .blkb 1		;Link (8 bits) , or first 8 bits of msg ID
+il.STP:: .blkb 1		; [last 4 bits of msg ID], 4 bits subtype
+il.MSL:: .blkw 1		;Message length in bits
+	>,ipl.ln
+
+;;; Message types
+i.host==0		;type 0 is for all regular host-to-host communication
+i.ldre==1		;leader error
+i.ipdn==2		;imp going down
+i.nop==4			;nop: for initialization
+i.rfnm==5		;Ready For Next Message (ack)
+i.dhts==6		;dead host status
+i.hstd==7		;Destination host or IMP dead or unknown
+i.err==8.		;error in data
+i.inct==9.		;incomplete transmition
+i.rst==10.		;interface reset
+
+; HOST/HOST leader
+;	.block	hsl,hl
+dsect <
+hl.PD1:: .blkb 1		;Field M1, must be zero
+hl.BSZ:: .blkb 1		;Field S, size of connection bytes in bits
+hl.NBY:: .blkw 1		;Field C, number of bytes of size S in text
+hl.PD2:: .blkb 1		;Field M2, must be zero
+hl.TXT:: .blkb 0		;Text field
+	>,hsl.ln
+
+; Host Table Entry
+;	.block	hte,he
+dsect <
+he.cnt:: .blkb 1		;count of connections to host
+he.hst:: .blkb 1		;host number
+he.imp:: .blkw 1		;imp number
+he.snd:: .blkw 1		;send queue
+he.lms:: .blkw 1		;last msg on control link to this host
+he.nqm:: .blkw 1		;count of number of queued msgs (advisory)
+he.fqm:: .blkw 1		;first queued message
+he.lqm:: .blkw 1		;last queued messages
+he.sts:: .blkb 1		;host status
+he.nst:: .blkb 1		;host's network status (rfnm waiting or not)
+he.rst:: .blkw 1		;time a host reset message is sent
+he.rft:: .blkw 1		;time last put into rfnm waiting state
+he.are:: .blkw 1		;area pointer for the host table
+	>,hte.ln
+
+h.up == 0		;host up and winning
+h.dead == 1		;host status dead (in some way)
+h.rsnt == 2		;waiting for reset reply from host
+
+n.rfnm == 1		;waiting for rfnm on control link to this host
+n.sdal == 2		;send allocate to this socket
+
+; Socket/link table
+;	.block	skt,sk
+dsect <
+sk.hst:: .blkw 1		;ptr to host entry table
+sk.mys:: .blkw 1		;my socket number (is really 32 bits)
+sk.ysh:: .blkw 1		;your socket number, hi half
+sk.ysl:: .blkw 1		;lo half
+sk.siz:: .blkb 1		;byte size for connection
+sk.lnk:: .blkb 1		;link number
+sk.own:: .blkw 1		;process id of owner of this connection
+sk.sts:: .blkb 1		;status of connection
+sk.nst:: .blkb 1		;net stat: wait for rfnm
+sk.nqm:: .blkw 1		;number of msgs queued but outtsk.
+sk.fqm:: .blkw 1		;first queued message
+sk.lqm:: .blkw 1		;last queued message
+sk.lms:: .blkw 1		;last message sent on this link
+sk.nms:: .blkw 1		;number of messages allocated
+sk.bsh:: .blkw 1		;number of bits allocated, hi half
+sk.bsl:: .blkw 1		;lo half
+sk.mma:: .blkw 1		;Minimum Message Allocation
+sk.mba:: .blkw 1		;minimum bit allocation
+sk.inc:: .blkw 1		;count of INRs or INSs received
+sk.ctm:: .blkw 1		;closing time out
+sk.rft:: .blkw 1		;rfnm time out
+sk.are:: .blkw 1		;are pointer for the skts messages
+sk.err:: .blkw 1		;error code expalining reason for closure.
+	>,skt.ln
+
+s.free == 0	;This indicates that the socket is not in use.
+s.wait == 1	;Some process is waiting for connection on this socket.
+s.open == 2	;socket is open and ready.
+s.opng == 3	;We have send RFc and are awaiting matching RFC.
+s.clsg == 4	;we have sent a CLS and are waiting for confirmation.
+s.clsd == 5	;socket closed.
+s.used == 6	;This socket is spoken for and should not be GCed or reused.
+
+;;; Interprocess Message Header
+;	.block	msg,ms
+dsect <
+ms.nxt:: .blkw 1		;ptr to next message in this guys queue
+ms.len:: .blkw 1		;length of message w/o header
+ms.hst:: .blkw 1		;ptr to host table entry: source or dest
+ms.skp:: .blkw 1		;ptr to socket table: connection.
+ms.nby:: .blkw 1		;this is the number of byte in this msg
+ms.hdr:: .blkw 1		;ptr to the imp leader
+ms.hsb:: .blkw 1		;ptr to where the header will be.
+ms.txt:: .blkw 0		;this is where the message starts.
+	>,msg.ln
+
+;;; ECC packet input block descriptor
+;	.block	ibk,ib
+;	ibk	bkn,1
+;	ibk	rdy,1			;bit to specify block to be processed
+;	ibk	bgn,2			;ptr to base of input buffer
+;	ibk	end,2			;ptr to end of input buffer
+;	ibk	srt,2			;ptr to first data byte (ib.bgn+1)
+;	ibk	cur,2			;ptr after useful data in buffer
+;	ibk	cks,2			;accumulate the check sum here
+;	ibk	mln,2			;count of msg bytes received
+

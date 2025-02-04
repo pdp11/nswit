@@ -1,0 +1,183 @@
+
+.sbttl S1 Keyboard
+
+s1kbdo:	call getchr
+	call outchr
+	br s1kbdo
+
+; r3 holds the current shift modes in effect, right hand keys in low
+; byte, left hand keys in high byte, encoded as follows:
+; Mask 
+;  1   is SHIFT
+;  2   is TOP
+;  4   is Control
+; 10   is Meta
+; 20   is CAPS lock, this appears on left hand only
+; 40   is ASCII lock, this makes the kbd look ASCII
+
+rtshf==1
+lfshf==1_8.
+rttop==2
+lftop==2_8.
+rtctl==4
+lfctl==4_8.
+rtmta==10
+lfmta==10_8.
+caps==20
+asc==40
+$rtshf==1
+$lfshf==1+200
+$rttop==2
+$lftop==2+200
+$rtctl==4
+$lfctl==4+200
+$rtmta==10
+$lfmta==10+200
+$caps==20
+$asc==40
+
+s1kbd:	clr r3				; start off all unshifted
+s1kbd1:	call inchr
+	mov r1,r2
+	bic #177600,r1
+	movb s1mtb(r1),r5		; is this character a shift char?
+	if ne,<				; yes
+	  if mi,<			; left or right hand?
+	    bic #177600,r5		;  delete carry propogation
+	    swab r5			;  swab if left hand
+	    >
+	  tstb r2			; which transition?
+	  if pl,<			; depressed (DOWN)
+	    bis r5,r3			; turn the shift mode on
+	    >
+	  else <			; released (UP)
+	    bic r5,r3			; turn the shift mode off
+	    >
+	  >
+	else <
+	  tstb r2			; is this an UP transition?
+	  bmi s1kbd1			; if so then ignore.
+	  bit #lfctl+rtctl,r3		; sometimes control modifies actual
+	  if ne,<			; char values
+	    cmpb #17,r1			; Control-Break means hold screen
+	    if eq,<
+	      mov #37,r1
+	      br s1kput
+	      >
+	    cmpb #42,r1
+	    if eq,<
+	      mov #37,r1
+	      br s1kput
+	      >
+	    >
+	  bit #lftop+rttop,r3		; top?
+	  if ne,<
+	    movb toptb(r1),r1
+	    >
+	  else <
+	    bit #lfshf+rtshf+caps,r3	; shift or CAPS lock?
+	    if ne,<
+	      movb shiftb(r1),r1
+	      >
+	    else <
+	      movb ordtab(r1),r1
+	      >
+	    >
+	  cmpb r1,#200		; null character?
+	  beq s1kbd1		; ignore
+	  if hi,<		; quoted char hack
+	    mov r1,r2		; save the char
+	    clr r1		; we must preceed by Null
+	    call putchr
+	    mov r2,r1
+	    bic #177600,r1	; mask off garbage and flag bit
+	    >
+	  bit #lfmta+rtmta,r3	; Meta, must send a 200 followed by
+	  if ne,<		; the character
+	    mov r1,r2
+	    mov #200,r1
+	    call putchr
+	    mov r2,r1
+	    >
+	  bit #lfctl+rtctl,r3	; Control - Turn on the 200 bit
+	  if ne,<
+	    bit #asc,r3		; In ASCII mode?
+	    if eq,<
+	      bis #200,r1	; No, simulate EDIT key.
+	      >
+	    else <
+	      bic #140,r1	; Yes, create ASCII controlified character.
+	      >
+	    >
+s1kput:	  call putchr
+	  >
+	br s1kbd1
+	  
+s1mtb:	.byte    0,     0,    0,    0,    0,    0,    0,    0	    ;   0-  7
+	.byte	 0,	0,    0,    0,	  0,	0,  $asc,   0	    ;  10- 17
+	.byte	 0,	0,    0,    0,	  0,	0,    0,    0	    ;  20- 27
+	.byte	 0,	0,    0,    0,	  0,	0,    0,    0	    ;  30- 37
+	.byte	 0,	0,    0,    0,	  0,	0,    0,    0	    ;  40- 47
+	.byte	 0,	0,    0,    0,	  0,	0,    0,    0	    ;  50- 57
+	.byte    0,	0,    0,    0,	  0,	0,    0,    0	    ;  60- 67
+	.byte	 0,	0,    0,    0,	  0,	0,    0,    0	    ;  70- 77
+	.byte    0,	0,    0,    0,	  0,	0,    0,    0	    ; 100-107
+	.byte	 0, $lfshf, $lftop, 0,	  0,	0,    0,    0	    ; 110-117
+	.byte    0,	0,    0,    0, $rttop, $rtshf,  0,  0	    ; 120-127
+	.byte    0,    0, $caps, $lfmta, $lfctl, 0, $rtctl, $rtmta  ; 130-137
+	.byte    0,	0,    0,    0,	  0,	0,    0,    0	    ; 140-147
+	.byte    0,	0,    0,    0,	  0,	0,    0,    0	    ; 150-157
+	.byte    0,	0,    0,    0,	  0,	0,    0,    0	    ; 160-167
+	.byte    0,	0,    0,    0,	  0,	0,    0,    0	    ; 170-177
+
+
+ordtab:	.byte   200, 200, 200, 200, 200, 200, 200, 200  ;   0-  7
+	.byte   200, 200, 200, 200, 200, 200, 200, 255  ;  10- 17
+	.byte     0,  '1,  '2,  '3,  '4,  '5,  '6,  '7  ;  20- 27
+	.byte    '8,  '9,  '0,  '+,  '-,  '*,   3, 200	;  30- 37
+	.byte   200, 200,  36,  33,  11,  'q,  'w,  'e  ;  40- 47
+	.byte    'r,  't,  'y,  'u,  'i,  'o,  'p,  '(  ;  50- 57
+	.byte    '),  '/, 134, 200, 200, 200,  14,  13  ;  60- 67
+	.byte   177,  'a,  's,  'd,  'f,  'g,  'h,  'j	;  70- 77
+	.byte    'k,  'l,  73,  72,  15,  12, 200, 200  ; 100-107
+  	.byte   200, 200, 200,  'z,  'x,  'c,  'v,  'b	; 110-117
+	.byte    'n,  'm,  54,  56, 200, 200,  33, 200  ; 120-127
+	.byte   200,  37, 200, 200, 200,  40, 200, 200	; 130-137
+	.byte   200, 200, 200, 200, 200, 200, 200, 200  ; 140-147
+	.byte   200, 200, 200, 200, 200, 200, 200, 200  ; 150-157
+	.byte   200, 200, 200, 200, 200, 200, 200, 200  ; 160-167
+	.byte   200, 200, 200, 200, 200, 200, 200, 200	; 170-177
+
+shiftb:	.byte   200, 200, 200, 200, 200, 200, 200, 200  ;   0-  7
+	.byte   200, 200, 200, 200, 200, 200, 200, 255  ;  10- 17
+	.byte     0,  '1,  '2,  '3,  '4,  '5,  '6,  '7  ;  20- 27
+	.byte    '8,  '9,  '0,  '+,  '-,  '*,   3, 200	;  30- 37
+	.BYTE   200, 200,  36,  33,  11,  'Q,  'W,  'E  ;  40- 47
+	.BYTE    'R,  'T,  'Y,  'U,  'I,  'O,  'P,  '(  ;  50- 57
+	.BYTE    '),  '/, 134, 200, 200, 200,  14,  13  ;  60- 67
+	.BYTE   177,  'A,  'S,  'D,  'F,  'G,  'H,  'J	;  70- 77
+	.BYTE    'K,  'L,  73,  72,  15,  12, 200, 200  ; 100-107
+	.BYTE   200, 200, 200,  'Z,  'X,  'C,  'V,  'B	; 110-117
+	.BYTE    'N,  'M,  54,  56, 200, 200,  33, 200  ; 120-127
+	.byte   200,  37, 200, 200, 200,  40, 200, 200	; 130-137
+	.byte   200, 200, 200, 200, 200, 200, 200, 200  ; 140-147
+	.byte   200, 200, 200, 200, 200, 200, 200, 200  ; 150-157
+	.byte   200, 200, 200, 200, 200, 200, 200, 200  ; 160-167
+	.byte   200, 200, 200, 200, 200, 200, 200, 200	; 170-177
+
+toptb:	.byte   200, 200, 200, 200, 200, 200, 200, 200  ;   0-  7
+	.byte   200, 200, 200, 200, 200, 200, 200, 255  ;  10- 17
+	.byte     0, 236,  22,  23,  20,  21,  '$,  '%  ;  20- 27
+	.byte   176,  30, 200, 174,   5,  26,   3, 200	;  30- 37
+	.BYTE   200, 200,  36,  33,  11,   4, 237,  '@  ;  40- 47
+	.BYTE    43,  46,  42, 140,  47, 173, 175, 133  ;  50- 57
+	.BYTE   135,  17,  16, 200, 200, 200,  14,  13  ;  60- 67
+	.BYTE   177,  34,  35,  74,  76, 233,  '=, 137	;  70- 77
+	.BYTE    31,  27, 136,   1,  15,  12, 200, 200  ; 100-107
+	.BYTE   200, 200, 200,   2, 203,   6,  10,   7	; 110-117
+	.BYTE    24,  25,  41,  77, 200, 200,  33, 200  ; 120-127
+	.byte   200,  37, 200, 200, 200,  40, 200, 200	; 130-137
+	.byte   200, 200, 200, 200, 200, 200, 200, 200  ; 140-147
+	.byte   200, 200, 200, 200, 200, 200, 200, 200  ; 150-157
+	.byte   200, 200, 200, 200, 200, 200, 200, 200  ; 160-167
+	.byte   200, 200, 200, 200, 200, 200, 200, 200	; 170-177

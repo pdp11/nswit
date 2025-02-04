@@ -1,0 +1,863 @@
+; -*- midas -*-
+.sbttl	Builtin configurations
+
+;;; Ask what hardware we're assembling for.
+
+.insrt setf
+
+none===0
+
+west===0
+east===1
+
+.insrt hostab
+
+setf ^"Builtin configuration?",config
+
+.if eq config-aswit
+
+pdp11===23			; LSI11/23
+asmmap===1			; use memory mapping
+
+
+.macro	%sname
+	.ascii "ASWIT"
+.endm
+icmdchr=='\			; the command character
+.macro	%greet
+	.asciz 'Type "\" for service.
+'
+.endm
+
+;;; Hardware configuration table.
+.macro	.hports
+	dl  60,177560,32.,^"rt11 loading line",kbd	; Port  0 (console)
+
+;;; TM 8S #1
+;;; 9600 bps.
+	dl 300,176500,16.,^"unused"			; Port  1
+	dl 310,176510,16.,^"unused"			; Port  2
+	dl 320,176520,16.,^"unused"			; Port  3
+	dl 330,176530,16.,^"unused"			; Port  4
+;;; EIA keyboards.  1200 bps.
+	dl 340,176540,16.,^"TAW's keyboard"		; Port  5
+	dl 350,176550,16.,^"OTA's keyboard"		; Port  6
+	dl 360,176560,16.,^"JMB's keyboard"		; Port  7
+	dl 370,176570,16.,^"HWC's keyboard"		; Port  8
+
+;;; TM 8S #2
+	dl 400,176600,16.,^"WRB's keyboard"		; Port  9
+	dl 410,176610,16.,^"CEG's keyboard"		; Port 10
+	dl 420,176620,16.,^"TM's keyboard"		; Port 11
+	dl 430,176630,16.,^"JPK/LP's keyboard"		; Port 12
+	dl 440,176640,16.,^"xxx's keyboard"		; Port 13
+	dl 450,176650,16.,^"JBR's keyboard"		; Port 14
+	dl 460,176660,16.,^"JBR2's keyboard"		; Port 15
+	dl 470,176670,16.,^"PMF's keyboard"		; Port 16
+
+	grinnell 124,172410
+	  grinl  5.,mitkbd,14.,^"130 TAW i47",kbd	; Port 17
+	  grinl  6.,mitkbd,15.,^"102 OTA i48",kbd	; Port 18
+	  grinl  7.,mitkbd,16.,^"107 JMB i28",kbd	; Port 19
+	  grinl  8.,mitkbd,17.,^"104 HWC i37",kbd	; Port 20
+	  grinl  9.,sailkb,18.,^"117 WRB i27",kbd	; Port 21
+	  grinl 10.,mitkbd,19.,^"116 CEG i54",kbd	; Port 22
+	  grinl 11.,sailkb,22.,^"120 TM i39",kbd	; Port 23
+	  grinl 12.,sailkb,21.,^"131 JPK/LP i70/59",kbd	; Port 24
+	  grinl 13.,sailkb,20.,^"118 xxx i29",kbd	; Port 25
+	  grinl 14.,sailkb,23.,^"122 JBR i41",kbd	; Port 26
+	  grinl 15.,sailkb,24.,^"122 JBR2 i41",kbd	; Port 27
+	  grinl 16.,sailkb,25.,^"124 PMF i42",kbd	; Port 28
+
+	maksvr timser,^"TIME"
+	maksvr uptser,^"UPTIME"
+	maksvr echser,^"ECHO"
+	maksvr snkser,^"SINK"
+	maksvr sndser,^"SEND"
+	maksvr opnser,^"OPEN"
+	maksvr conser,^"CONNECT"
+	maksvr telser,^"TELNET"
+.endm
+
+.macro	.pnames
+	netkey ^"arpa11",cswit
+	conkey ^"aswit",aswit
+	conkey ^"bswit",bswit
+	conkey ^"cswit",cswit
+	conkey ^"dswit",dswit
+	netkey ^"foonly",dswit
+	netkey ^"foonly0",dswit
+	netkey ^"foonly1",dswit
+	netkey ^"foonly10",dswit
+	netkey ^"foonly11",dswit
+	netkey ^"foonly12",dswit
+	netkey ^"foonly2",dswit
+	netkey ^"foonly3",dswit
+	netkey ^"foonly4",dswit
+	netkey ^"foonly5",dswit
+	netkey ^"foonly6",dswit
+	netkey ^"foonly7",dswit
+	netkey ^"gdp11",cswit
+	netkey ^"iop",cswit
+	conkey ^"lswit",lswit
+	netkey ^"mark1",cswit
+	conkey ^"oswit",oswit
+	telkey ^"oz",s1vax
+	netkey ^"rt11",cswit
+	netkey ^"vax",cswit
+	netkey ^"vax0",cswit
+	netkey ^"vax1",cswit
+	netkey ^"vax2",cswit
+	netkey ^"vax3",cswit
+	netkey ^"vax4",cswit
+	netkey ^"vax5",cswit
+	netkey ^"vax6",cswit
+	netkey ^"vax7",cswit
+	netkey ^"vax8",cswit
+	netkey ^"vax9",cswit
+	netkey ^"vaxa",cswit
+	netkey ^"vaxb",cswit
+	netkey ^"vaxc",cswit
+	netkey ^"vaxd",cswit
+	netkey ^"vaxe",cswit
+	netkey ^"vaxf",cswit
+	conkey ^"xswit",xswit
+.endm
+
+chaos===1
+mxcilv==7			;maximum interrupt level of all the interfaces
+inhst==1
+innet==ethnet
+
+.insrt chmacs
+
+makcif ethnet,inhst,eth,164000,270
+
+.endc	; config-aswit
+
+.if eq config-bswit
+
+pdp11===23			; LSI11/23
+asmmap===1			; use memory mapping
+
+.macro	%sname
+	.ascii "BSWIT"
+.endm
+icmdchr==36			; the command character
+.macro	%greet
+	.asciz "Type NETWORK for service.
+"
+.endm
+
+;;; Hardware configuration table.
+.macro	.hports
+	dl  60,177560,32.,^"rt11 loading line",kbd
+
+;;; TM 8S #1.
+	dl 300,176500,16.,^"unused"
+	dl 310,176510,16.,^"EAK's keyboard"
+	dl 320,176520,16.,^"DJM's keyboard"
+	dl 330,176530,16.,^"HLD's keyboard"
+	dl 340,176540,16.,^"EJG's keyboard"
+	dl 350,176550,16.,^"JIS's keyboard"
+	dl 360,176560,16.,^"DGS's keyboard"
+	dl 370,176570,16.,^"WCW's keyboard"
+;;; TM 8S #2.
+	dl 400,176600,16.,^"LWR's keyboard"
+	dl 410,176610,16.,^"JRZ's keyboard"
+	dl 420,176620,16.,^"TM2's keyboard"
+	dl 430,176630,16.,^"JDB's keyboard"
+	dl 440,176640,16.,^"unused keyboard"
+	dl 450,176650,16.,^"unused keyboard"
+	dl 460,176660,16.,^"unused keyboard"
+	dl 470,176670,16.,^"unused keyboard"
+
+	grinnell 124,172410
+	  grinl  2.,mitkbd,10.,^"101 EAK i45",kbd
+	  grinl  3.,mitkbd,11.,^"103 DJM i43",kbd
+	  grinl  4.,mitkbd,12.,^"105 HLD i38",kbd
+	  grinl  5.,sailkb,13.,^"106 EJG i46",kbd
+	  grinl  6.,mitkbd,14.,^"109 JIS i60",kbd
+	  grinl  7.,mitkbd,15.,^"111 DGS i11",kbd
+	  grinl  8.,sailkb,16.,^"113 WCW i26",kbd
+	  grinl  9.,sailkb,17.,^"132 LWR i50",kbd
+	  grinl 10.,mitkbd,18.,^"xxx JRZ i68",kbd
+	  grinl 11.,sailkb,19.,^"120 TM2 i39",kbd
+	  grinl 12.,mitkbd,20.,^"115 JDB i31",kbd
+	  grinl 13.,mitkbd,21.,^"unused",kbd
+;	  grinl 14.,mitkbd,22.,^"unused",kbd
+;	  grinl 15.,mitkbd,23.,^"unused",kbd
+;	  grinl 16.,mitkbd,24.,^"unused",kbd
+
+	maksvr timser,^"TIME"
+	maksvr uptser,^"UPTIME"
+	maksvr echser,^"ECHO"
+	maksvr sndser,^"SEND"
+	maksvr opnser,^"OPEN"
+	maksvr conser,^"CONNECT"
+	maksvr telser,^"TELNET"
+.endm
+
+.macro	.pnames
+	netkey ^"arpa11",cswit
+	conkey ^"aswit",aswit
+	conkey ^"bswit",bswit
+	conkey ^"cswit",cswit
+	conkey ^"dswit",dswit
+	netkey ^"foonly",dswit
+	netkey ^"foonly0",dswit
+	netkey ^"foonly1",dswit
+	netkey ^"foonly10",dswit
+	netkey ^"foonly11",dswit
+	netkey ^"foonly12",dswit
+	netkey ^"foonly2",dswit
+	netkey ^"foonly3",dswit
+	netkey ^"foonly4",dswit
+	netkey ^"foonly5",dswit
+	netkey ^"foonly6",dswit
+	netkey ^"foonly7",dswit
+	netkey ^"gdp11",cswit
+	netkey ^"iop",cswit
+	conkey ^"lswit",lswit
+	netkey ^"mark1",cswit
+	conkey ^"oswit",oswit
+	telkey ^"oz",s1vax
+	netkey ^"rt11",cswit
+	netkey ^"vax",cswit
+	netkey ^"vax0",cswit
+	netkey ^"vax1",cswit
+	netkey ^"vax2",cswit
+	netkey ^"vax3",cswit
+	netkey ^"vax4",cswit
+	netkey ^"vax5",cswit
+	netkey ^"vax6",cswit
+	netkey ^"vax7",cswit
+	netkey ^"vax8",cswit
+	netkey ^"vax9",cswit
+	netkey ^"vaxa",cswit
+	netkey ^"vaxb",cswit
+	netkey ^"vaxc",cswit
+	netkey ^"vaxd",cswit
+	netkey ^"vaxe",cswit
+	netkey ^"vaxf",cswit
+	conkey ^"xswit",xswit
+.endm
+
+
+.iif ndf chaos, chaos===1	; chaosnet code
+.if ne chaos
+
+.insrt chmacs
+;;; The Network Configuration and Definition for the CHAOS Net
+
+inhst==2			;the host number of this machine
+innet==ethnet			;the host net number
+mxcilv==7			;maximum interrupt level of all the interfaces
+
+makcif ethnet,2,eth,164000,270
+
+.endc	; ne chaos
+
+.endc	; config-bswit
+
+.if eq config-cswit
+
+pdp11===23			; LSI11
+chaos===1			; don't even ask anymore
+asmmap===1			; chaos better imply mapping
+
+.macro	%sname
+	.ascii "CSWIT"
+.endm
+icmdchr=='\			; command char
+.macro	%greet
+	.asciz |Type "\" for service.
+|
+.endm
+
+;;; Hardware configuration table.
+.macro	.hports
+	dl 60,177560,64.,^"1826 Ann Arbor #1",kbd	; Port  0
+
+	dl 300,176500,16.,^"RT-11"			; Port  1
+	dl 310,176510,16.,^"Mark I"			; Port  2
+	dl 320,176520,64.,^"GDP 11",kbd			; Port  3
+	dl 330,176530,16.,^"ARPANET 11"			; Port  4
+	dl 340,176540,16.,^"Mark IIA IOP"		; Port  5
+	dl 350,176550,16.,^"unused"			; Port  6
+	dl 360,176560,16.,^"unused"			; Port  7
+; 8th line is console
+;	dl 370,176570,16.,^"unused"
+
+	dl 400,176600,64.,^"1826 DM2500",kbd		; Port  8
+	dl 410,176610,64.,^"1826 Ann Arbor #2",kbd	; Port  9
+	dl 420,176620,64.,^"109 PJB i60",kbd		; Port 10
+	dl 430,176630,64.,^"115 JDB i31",kbd		; Port 11
+	dl 440,176640,64.,^"105 HLD i38",kbd		; Port 12
+dwl===nhport
+	dl 450,176650,16.,^"DWL 11"			; Port 13
+	dl 460,176660,16.,^"B182 console",kbd		; Port 14
+	dl 470,176670,16.,^"unused"			; Port 15
+
+.if ne 1
+	dz 200,171000
+vadic1===nhport
+	  dzl 13430,512.,^"Vadic 3415 (422-3898)",kbd	; Port 16
+	  dzl 17031,64.,^"MJH molehill",kbd		; Port 17
+	  dzl 17432,64.,^"101 EAK i45",kbd		; Port 18
+	  dzl 17433,64.,^"126 SJC i65",kbd		; Port 19
+.iff
+	dz 200,171000
+	  dzl 17030,16.,^"unused"			; Port 16
+	  dzl 17031,64.,^"MJH molehill",kbd		; Port 17
+	  dzl 17432,64.,^"101 EAK2 i45",kbd		; Port 18
+	  dzl 17433,64.,^"126 SJC i65",kbd		; Port 19
+	dz 210,171010
+	  dzl 13430,16.,^"unused"			; Port 20
+vadic1===nhport
+	  dzl 13431,256.,^"Vadic 3415 (422-3898)",kbd	; Port 21
+vadic2===nhport
+	  dzl 13432,256.,^"Vadic 3415 (422-3899)",kbd	; Port 22
+vadicd===nhport
+	  dzl 13433,16.,^"Vadic autodialer"		; Port 23
+.endc
+
+vax0===nhport
+vaxlo===nhport
+	dl 500,176700,32.,^"VAX tty00"
+	dl 510,176710,32.,^"VAX tty01"
+	dl 520,176720,32.,^"VAX tty02"
+	dl 530,176730,32.,^"VAX tty03"
+	dl 540,176740,32.,^"VAX tty04"
+	dl 550,176750,32.,^"VAX ttyh5"
+	dl 560,176760,32.,^"VAX ttyh6"
+vaxhi===nhport
+	dl 570,176770,32.,^"VAX ttyh7"
+
+	dl 600,177000,32.,^"VAX ttyh8"
+	dl 610,177010,32.,^"VAX ttyh9"
+	dl 620,177020,32.,^"VAX ttyha"
+	dl 630,177030,32.,^"VAX ttyhb"
+	dl 640,177040,32.,^"VAX ttyhc"
+	dl 650,177050,32.,^"VAX ttyhd"
+	dl 660,177060,32.,^"VAX ttyhe"
+	dl 670,177070,32.,^"VAX ttyhf"
+
+	maksvr timser,^"TIME"
+	maksvr uptser,^"UPTIME"
+	maksvr echser,^"ECHO"
+	maksvr sndser,^"SEND"
+	maksvr opnser,^"OPEN"
+	maksvr conser,^"CONNECT"
+	maksvr telser,^"TELNET"
+.endm
+
+.macro	.pnames
+	key ^"arpa11",4
+	conkey ^"aswit",aswit
+.iif df vadicd,	key ^"autodialer",vadicd
+	conkey ^"bswit",bswit
+	conkey ^"cswit",cswit
+	conkey ^"dswit",dswit
+	key ^"dwl",dwl
+	netkey ^"foonly",dswit
+	netkey ^"foonly0",dswit
+	netkey ^"foonly1",dswit
+	netkey ^"foonly10",dswit
+	netkey ^"foonly11",dswit
+	netkey ^"foonly12",dswit
+	netkey ^"foonly2",dswit
+	netkey ^"foonly3",dswit
+	netkey ^"foonly4",dswit
+	netkey ^"foonly5",dswit
+	netkey ^"foonly6",dswit
+	netkey ^"foonly7",dswit
+	key ^"gdp11",3
+	key ^"iop",5
+	conkey ^"lswit",lswit
+	key ^"mark1",2
+.iif df vadic1,	key ^"modem1",vadic1
+.iif df vadic2,	key ^"modem2",vadic2
+	conkey ^"oswit",oswit
+	telkey ^"oz",s1vax
+	key ^"rt11",1
+	key ^"vax",vaxrot
+	key ^"vax0",vax0+0
+	key ^"vax1",vax0+1
+	key ^"vax2",vax0+2
+	key ^"vax3",vax0+3
+	key ^"vax4",vax0+4
+	key ^"vax5",vax0+5
+	key ^"vax6",vax0+6
+	key ^"vax7",vax0+7
+	key ^"vax8",vax0+8
+	key ^"vax9",vax0+9
+	key ^"vaxa",vax0+10.
+	key ^"vaxb",vax0+11.
+	key ^"vaxc",vax0+12.
+	key ^"vaxd",vax0+13.
+	key ^"vaxe",vax0+14.
+	key ^"vaxf",vax0+15.
+	conkey ^"xswit",xswit
+	.word 0
+vaxrot:	.word "RO,vaxlo,vaxlo,vaxhi
+.endm
+
+
+.if ne  chaos
+
+.insrt chmacs
+;;; The Network Configuration and Definition for the CHAOS Net
+
+inhst==3			;the host number of this machine
+innet==ethnet			;the host net number
+mxcilv==7			;maximum interrupt level of all the interfaces
+
+makcif ethnet,3,eth,164000,270
+
+.endc	; ne chaos
+
+.endc	; config-cswit
+
+.if eq config-dswit
+
+pdp11===23			; LSI11
+chaos===1
+asmmap===1
+
+.macro	%sname
+	.ascii "DSWIT"
+.endm
+icmdchr==36			; command char
+.macro	%greet
+	.asciz |Type Control-^ for service.
+|
+.endm
+
+;;; Hardware configuration table.
+.macro	.hports
+	dl 60,177560,64.,^"console",kbd
+foo0===nhport
+	dl 300,176500,32.,^"Foonly tty0"
+	dl 310,176510,32.,^"Foonly tty1"
+	dl 320,176520,32.,^"Foonly tty2"
+	dl 330,176530,32.,^"Foonly tty3"
+	dl 340,176540,32.,^"Foonly tty4"
+	dl 350,176550,32.,^"Foonly tty5"
+	dl 360,176560,32.,^"Foonly tty6"
+	dl 370,176570,32.,^"Foonly tty7"
+
+	dl 400,176600,16.,^"Foonly tty10"
+	dl 410,176610,16.,^"Foonly tty11"
+	dl 420,176620,16.,^"Foonly tty12"
+	dl 430,176630,16.,^"unused"
+	dl 440,176640,16.,^"unused"
+	dl 450,176650,16.,^"unused"
+	dl 460,176660,16.,^"unused"
+	;; 470,176670 is console
+
+	maksvr timser,^"TIME"
+	maksvr uptser,^"UPTIME"
+	maksvr echser,^"ECHO"
+	maksvr sndser,^"SEND"
+	maksvr opnser,^"OPEN"
+	maksvr conser,^"CONNECT"
+	maksvr telser,^"TELNET"
+.endm
+
+.macro	.pnames
+	netkey ^"arpa11",cswit
+	conkey ^"aswit",aswit
+	conkey ^"bswit",bswit
+	conkey ^"cswit",cswit
+	conkey ^"dswit",dswit
+	key ^"foonly",foorot
+	key ^"foonly0",foo0+0
+	key ^"foonly1",foo0+1
+	key ^"foonly10",foo0+10
+	key ^"foonly11",foo0+11
+	key ^"foonly12",foo0+12
+	key ^"foonly2",foo0+2
+	key ^"foonly3",foo0+3
+	key ^"foonly4",foo0+4
+	key ^"foonly5",foo0+5
+	key ^"foonly6",foo0+6
+	key ^"foonly7",foo0+7
+	netkey ^"gdp11",cswit
+	netkey ^"iop",cswit
+	conkey ^"lswit",lswit
+	netkey ^"mark1",cswit
+	conkey ^"oswit",oswit
+	telkey ^"oz",s1vax
+	netkey ^"rt11",cswit
+	netkey ^"vax",cswit
+	netkey ^"vax0",cswit
+	netkey ^"vax1",cswit
+	netkey ^"vax2",cswit
+	netkey ^"vax3",cswit
+	netkey ^"vax4",cswit
+	netkey ^"vax5",cswit
+	netkey ^"vax6",cswit
+	netkey ^"vax7",cswit
+	netkey ^"vax8",cswit
+	netkey ^"vax9",cswit
+	netkey ^"vaxa",cswit
+	netkey ^"vaxb",cswit
+	netkey ^"vaxc",cswit
+	netkey ^"vaxd",cswit
+	netkey ^"vaxe",cswit
+	netkey ^"vaxf",cswit
+	conkey ^"xswit",xswit
+	.word 0
+foorot:	.word "RO,foo0,foo0,foo0+12
+.endm
+
+
+.if ne  chaos
+
+.insrt chmacs
+
+inhst==4			;the host number of this machine
+innet==ethnet			;the host net number
+mxcilv==7			;maximum interrupt level of all the interfaces
+
+makcif innet,inhst,eth,164000,270
+
+.endc	; ne chaos
+
+.endc	; config-dswit
+
+.if eq config-oswit
+
+pdp11===23			; LSI11/23
+asmmap===1			; use memory mapping
+
+.macro	%sname
+	.ascii "OSWIT"
+.endm
+icmdchr==36			; the command character
+.macro	%greet
+	.asciz "Type NETWORK for service.
+"
+.endm
+
+;;; Hardware configuration table.
+.macro	.hports
+	dl  60,177560,32.,^"rt11 loading line",kbd
+
+;;; TM 8S #1.
+	dl 300,176500,16.,^"LLW's kbd"
+	dl 310,176510,16.,^"GAP's kbd"
+	dl 320,176520,16.,^"JRS's kbd"
+	dl 330,176530,16.,^"BAW's kbd"
+	dl 340,176540,16.,^"RAH's kbd"
+	dl 350,176550,16.,^"unused kbd"
+	dl 360,176560,16.,^"BMM's kbd"
+	dl 370,176570,16.,^"SEW's kbd"
+;;; TM 8S #2.
+	dl 400,176600,16.,^"PLH's kbd"
+	dl 410,176610,16.,^"TW/BF's kbd"
+	dl 420,176620,16.,^"AHW's kbd"
+	dl 430,176630,16.,^"LCW's kbd"
+	dl 440,176640,16.,^"JIS's kbd"
+	dl 450,176650,16.,^"unused kbd"
+	dl 460,176660,16.,^"SEW #2",kbd
+
+	grinnell 124,172410
+	  grinl  1.,sailkb,10.,^"LLW 415-422-7886",kbd
+	  grinl  2.,mitkbd,11.,^"GAP 415-422-7281",kbd
+	  grinl  3.,sailkb,12.,^"JRS 415-423-4176",kbd
+	  grinl  4.,mitkbd,13.,^"BAW 415-422-4145",kbd
+	  grinl  5.,mitkbd,14.,^"RAH 415-422-7289",kbd
+;	  grinl  6.,mitkbd,15.,^"broken",kbd
+	  grinl  7.,mitkbd,16.,^"BMM 415-422-xxxx",kbd
+	  grinl  8.,mitkbd,17.,^"SEW",kbd
+	  grinl  9.,mitkbd,18.,^"PLH",kbd
+	  grinl 10.,mitkbd,19.,^"TW/BF",kbd
+	  grinl 11.,mitkbd,20.,^"AHW",kbd
+	  grinl 12.,mitkbd,21.,^"LCW",kbd
+	  grinl 13.,mitkbd,22.,^"JIS",kbd
+	  grinl 14.,mitkbd,23.,^"unused",kbd
+
+.if ne chaos
+	maksvr timser,^"TIME"
+	maksvr uptser,^"UPTIME"
+	maksvr echser,^"ECHO"
+	maksvr sndser,^"SEND"
+	maksvr opnser,^"OPEN"
+	maksvr conser,^"CONNECT"
+	maksvr telser,^"TELNET"
+.endc
+.endm
+
+.macro	.pnames
+	netkey ^"arpa11",cswit
+	conkey ^"aswit",aswit
+	conkey ^"bswit",bswit
+	conkey ^"cswit",cswit
+	conkey ^"dswit",dswit
+	netkey ^"foonly",dswit
+	netkey ^"foonly0",dswit
+	netkey ^"foonly1",dswit
+	netkey ^"foonly10",dswit
+	netkey ^"foonly11",dswit
+	netkey ^"foonly12",dswit
+	netkey ^"foonly2",dswit
+	netkey ^"foonly3",dswit
+	netkey ^"foonly4",dswit
+	netkey ^"foonly5",dswit
+	netkey ^"foonly6",dswit
+	netkey ^"foonly7",dswit
+	netkey ^"gdp11",cswit
+	netkey ^"iop",cswit
+	conkey ^"lswit",lswit
+	netkey ^"mark1",cswit
+	conkey ^"oswit",oswit
+	telkey ^"oz",s1vax
+	netkey ^"rt11",cswit
+	netkey ^"vax",cswit
+	netkey ^"vax0",cswit
+	netkey ^"vax1",cswit
+	netkey ^"vax2",cswit
+	netkey ^"vax3",cswit
+	netkey ^"vax4",cswit
+	netkey ^"vax5",cswit
+	netkey ^"vax6",cswit
+	netkey ^"vax7",cswit
+	netkey ^"vax8",cswit
+	netkey ^"vax9",cswit
+	netkey ^"vaxa",cswit
+	netkey ^"vaxb",cswit
+	netkey ^"vaxc",cswit
+	netkey ^"vaxd",cswit
+	netkey ^"vaxe",cswit
+	netkey ^"vaxf",cswit
+	conkey ^"xswit",xswit
+.endm
+
+
+.iif ndf chaos, chaos===1	; chaosnet code
+.iif ne chaos,	.insrt oswdef
+
+.endc	; config-oswit
+
+.if eq config-rswit
+
+pdp11===23			; LSI11/23
+asmrt11===1			; assemble under RT11
+clkadr==160770			; address of calendar clock card
+
+.macro	%sname
+	.ascii "RSWIT"
+.endm
+icmdchr==36			; the command character
+.macro	%greet
+	.asciz "Type Control-Uparrow (^^) for service.
+"
+.endm
+
+;;; Hardware configuration table.
+.macro	.hports
+	dl  60,177560,64.,^"console",kbd	; Port  0 (console)
+	dl 300,176500,64.,^"Arpa-11"		; Port  1
+	dl 310,176510,64.,^"ASWIT"		; Port  2
+	dl 320,176520,64.,^"BSWIT"		; Port  3
+	dl 330,176530,64.,^"CSWIT"		; Port  4
+	dl 340,176540,64.,^"DSWIT"		; Port  5
+	dl 350,176550,64.,^"LSWIT"		; Port  6
+	dl 360,176560,64.,^"XSWIT"		; Port  7
+	;; 370,176570 is console
+	dl 400,176600,64.,^"Foonly tty16"	; Port  8
+	dl 410,176610,64.,^"unused"		; Port  9
+	dl 420,176620,64.,^"unused"		; Port 10
+	dl 430,176630,64.,^"unused"		; Port 11
+	dl 440,176640,64.,^"unused"		; Port 12
+	dl 450,176650,64.,^"unused"		; Port 13
+	dl 460,176660,64.,^"unused"		; Port 14
+	dl 470,176670,64.,^"unused"		; Port 15
+
+	maksvr timser,^"TIME"
+	maksvr uptser,^"UPTIME"
+	maksvr echser,^"ECHO"
+	maksvr sndser,^"SEND"
+	maksvr opnser,^"OPEN"
+	maksvr conser,^"CONNECT"
+	maksvr telser,^"TELNET"
+.endm
+
+.macro	.pnames
+	key ^"arpanet-gateway",1
+	key ^"aswit",2
+	key ^"bswit",3
+	key ^"cswit",4
+	key ^"dswit",5
+	key ^"foonly16",9
+	key ^"lswit",6
+	key ^"xswit",7
+.endm
+
+.iif ndf chaos, chaos===1	; chaosnet code
+.iif ne chaos, .insrt rtdef
+
+.endc	; config-rswit
+
+.if eq config-lswit
+
+pdp11===23			; LSI11/23
+asmmap===1			; mapping
+
+
+.macro	%sname
+	.ascii "LSWIT"
+.endm
+icmdchr==36			; the command character
+.macro	%greet
+	.asciz "Type Control-Uparrow (^^) for service.
+"
+.endm
+
+;;; Hardware configuration table.
+.macro	.hports
+	dl 60,177560,64.,^"console",kbd		; Port  0 (console)
+	dl 250,176610,64.,^"loading line"	; Port  1
+	dz 420,170220
+	  dzl 17430,64.,^"CANON"		; Port  2 (19200 baud)
+	  dzl 17031,64.,^"nowhere"		; Port  3
+	  dzl 17032,64.,^"LA120"		; Port  4
+	  dzl 17033,64.,^"nowhere"		; Port  5
+	lpt 2,0,1		; Canon LPTSER
+	lpt 4,4,0		; LA120 LPTSER
+	maksvr timser,^"TIME"
+	maksvr uptser,^"UPTIME"
+	maksvr echser,^"ECHO"
+	maksvr sndser,^"SEND"
+	maksvr opnser,^"OPEN"
+	maksvr conser,^"CONNECT"
+	maksvr telser,^"TELNET"
+.endm
+
+.macro	.pnames
+	key ^"canon",2
+	key ^"la120",4
+	key ^"rt11",1
+.endm
+
+.iif ndf chaos, chaos==1	; chaosnet code
+.if ne chaos
+
+nmaddr==177200
+nmpar==30.*200
+
+.insrt chmacs
+;;; The Network Configuration and Definition for the CHAOS Net
+
+inhst==7			;the host number of this machine
+innet==nmnet			;the host net number
+mxcilv==7			;maximum interrupt level of all the interfaces
+
+makcif nmnet,7,nmc
+makcif pronet,2,pro,175200,170
+
+.endc	; ne chaos
+
+.endc	; config-lswit
+
+.if eq config-xswit
+
+pdp11===23
+asmmap===1			; use mapping
+;asmxon===1			; XON/XOFF flow control code
+
+.macro	%sname
+	.ascii "XSWIT"
+.endm
+icmdchr==36			; the command character
+.macro	%greet
+	.asciz "Type Control-Uparrow (^^) for service.
+"
+.endm
+
+;;; Hardware configuration table.
+.macro	.hports
+	dl 60,177560,64.,^"console",kbd		; Port  0 (console)
+	dl 300,176500,64.,^"loading line",kbd	; Port  1
+	dl 310,176510,64.,^"unused"		; Port  2
+	dl 320,176520,64.,^"unused",kbd		; Port  3
+;	peritek 174140,174000,2,^"Peritek screen",kbd	; Port 4
+	maksvr timser,^"TIME"
+	maksvr uptser,^"UPTIME"
+	maksvr echser,^"ECHO"
+	maksvr sndser,^"SEND"
+	maksvr opnser,^"OPEN"
+	maksvr conser,^"CONNECT"
+	maksvr telser,^"TELNET"
+.endm
+
+.macro	.pnames
+	conkey ^"aswit",aswit
+	conkey ^"bswit",bswit
+	conkey ^"cswit",cswit
+	netkey ^"foonly",dswit
+	key ^"rt11",1
+	telkey ^"vax",s1vax
+	.word 0
+.endm
+
+
+.insrt xswdef
+
+.endc	; config-xswit
+
+.if eq config-sswit		; SIPB switch
+
+.insrt sswdef
+
+.endc	; config-sswit
+
+;;; coast and host table hacking
+.iif ndf coast, coast===west
+
+;;; default arpanet flag
+.iif ndf asmarp, .iif eq coast-west, asmarp===1
+.iif ndf asmarp, .iif eq coast-east, asmarp===0
+.iif ndf asmarp, asmarp===1
+
+.if eq coast-west
+
+.macro hostab
+chosts:
+	key ^"arpa-gateway",arpa
+arphst==.-2
+	key ^"aswit",aswit
+	key ^"bswit",bswit
+	key ^"cswit",cswit
+	key ^"dswit",dswit
+	key ^"lswit",lswit
+	key ^"mark1",mark1
+	key ^"oswit",oswit
+	key ^"rswit",rswit
+	key ^"vax",s1vax
+	key ^"xswit",xswit
+	.word 0
+.endm
+
+.iff	;; if east coast
+
+.macro hostab
+chosts:
+       key ^"arcmac",arcmac
+       key ^"ccc",mitccc
+       key ^"eddie",eddie
+       key ^"eecs",eecs
+       key ^"lcs vax",lcsvax
+       key ^"math",math
+       key ^"mc",mc
+       key ^"ml",ml
+       key ^"multics",multics
+       key ^"oz",oz
+       key ^"scrc tenex",scrcte
+       key ^"speech",speech
+       key ^"xx",mitxx
+       .word 0
+.endm
+.endc

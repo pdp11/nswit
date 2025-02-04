@@ -1,0 +1,259 @@
+;;; -*-PALX-*-
+
+.title	TIMDAT - Set RT11 time from chaosnet
+
+.insrt setf
+
+.insrt rtconf
+
+.insrt defs
+.insrt dcls
+.insrt rt11m
+
+
+stack==1000
+
+.=1300
+timdat:	mov #stack,sp
+	mov #1,initp		; set flag during initialization
+
+	save <100,104>
+
+	pcall clkini
+	pcall timini
+
+	push #darea,#last,#75000	; FSINIT args: area, bottom and top of
+					; free area
+	pcall fsinit		; initialize heap in memory up to a RUG110
+
+	pcall tgo		; task management initialization
+
+	pcall chinit		; chaosnet initialization
+
+	savlst
+
+	call crtask,<#0,#0,#0,#0,#0,#0,#timtsk>,r0
+
+	clr initp		; done initialization
+	jmp taskm1		; begin task multiplexing
+
+defvar <
+initp:	.blkw 1
+>
+
+.insrt nxmcat
+
+$$dmul===1
+$$ddiv===1
+.insrt stuff
+
+$$sleep===1			; use sleep code features
+.insrt taskm
+
+west===1
+.iif ndf coast, coast===west
+
+.insrt clock
+.insrt time
+
+;;; For old MIT Math department sources.
+
+.macro	crash message
+	bpt
+.endm
+
+
+;;; ALLOCW - allocate storage with waiting.  Stack argument is size in
+;;; bytes.  Pointer is returned on top of stack.
+
+allocw:	push #darea		; ALLOC arg: area
+	mov 4(sp),-(sp)		; ALLOC arg: size in words
+	inc (sp)		; ...
+	asr (sp)		; ...
+	pcall alloc		; try allocation
+				; ALLOC results: pointer, code
+	tst 2(sp)		; test code, did it succeed?
+	if ne,<			; no,
+	  tst initp		; initialization?
+	  if ne,<		; yes
+	    crash ^"No memory at initialization."
+	    >
+	  cmp (sp)+,(sp)+	; punt the return parameters
+	  jsr pc,resced		; busy wait
+	  br allocw
+	  >
+	pop 2+2(sp),*		; return pointer, toss error code away
+	preturn
+
+
+%enacr==1			; error code for FSM
+.insrt fsm
+.insrt chsall
+
+defvar <
+pkarea::
+darea:	.blkb larea
+>
+
+;;; Task to get time from a chaosnet host.
+
+timtsk:	mov #timlst,r2
+loop <	  mov (r2)+,r1
+	  beq 1$
+	  cmp r1,myhost
+	  rptl eq
+	  pcall nettim
+	  rptl cs
+	  >
+
+	pcall cvbtd		; break up into bite size pieces
+	mov 12(sp),r1		; year
+	sub #1900.,r1
+	mov #year,r2
+	pcall dec2
+	mov 10(sp),r1		; month
+	mul #3,r1
+	movb monchr+0-3(r1),month+0
+	movb monchr+1-3(r1),month+1
+	movb monchr+2-3(r1),month+2
+	mov 6(sp),r1		; day of month
+	mov #day,r2
+	pcall dec2
+	mov 4(sp),r1		; hour
+	mov #hour,r2
+	pcall dec2
+	mov 2(sp),r1		; minute
+	mov #minute,r2
+	pcall dec2
+	mov (sp),r1		; second
+	mov #second,r2
+	pcall dec2
+	add #16,sp		; remove time from stack
+
+	mov #510,r0
+	mov #cmd,r1
+	mov #<lcmd+1>/2,r2
+loop <	  mov (r1)+,(r0)+
+	  sorl r2
+	  >
+	bis #4000,@#44		; set bit in JSW saying command list exists
+1$:	reslst
+.if df nmaddr
+	clr @#nm.enb
+.endc
+	clr r0
+	.exit
+
+;;; List of chaosnet hosts to ask time.
+timlst:	.word arpa
+	.word aswit
+	.word bswit
+	.word cswit
+	.word oswit
+	.word 0			; end of list
+	.blkw 2			; patch space
+
+
+dec2:	clr r0
+	div #10.,r0
+	add #'0,r0
+	add #'0,r1
+	movb r0,(r2)+
+	movb r1,(r2)+
+	preturn
+
+
+.string ^"TIME",timest
+
+nettim:	push r1,#1,#2*60.,#timest	; CHOPEN args: host, window size,
+					; timeout, contact name
+	call chopen		; ask host for the time
+	pop r1			; CHOPEN result: connection or error packet
+	if cc,<			; OPN received?
+				; yes, that's not supposed to happen
+	  push r1,#0		; CHCLS args: connection, reason
+	  call chcls		; close connection in anger
+	  br 1$
+	  >
+	tst r1			; ANS received?
+	if ne,<			; maybe
+	  cmpb pkop(r1),#%coans
+	  if eq,<		; yes
+	    push (sp),(sp)	; make room for result
+	    mov pkdat+0(r1),2(sp)
+	    mov pkdat+2(r1),4(sp)
+	    push r1		; FREPK arg: pointer
+	    pcall frepk		; free packet
+	    clc
+	    preturn
+	    >
+	  push r1		; FREPK arg: pointer
+	  pcall frepk		; free packet
+	  >
+1$:	sec
+	preturn
+
+
+monchr:	.ascii "JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC"
+	.even
+
+cmd:	.word lcmd
+	.ascii "TIME "
+hour:	.ascii "00:"
+minute:	.ascii "00:"
+second:	.asciz "00"
+	.ascii "DATE "
+day:	.ascii "00-"
+month:	.ascii "XXX-"
+year:	.asciz "00"
+	.asciz "DATE"
+	.asciz "TIME"
+lcmd==.-cmd
+	.even
+
+;;; Chaosnet NCP.
+
+uprat==4.*60.
+rfctim==1*60.
+
+.insrt cncp
+
+outc===0
+fdpaus===0
+.insrt ioa
+
+
+; CRTASK - creates a new task
+; ARGS: r0, r1, r2, r3, r4, r5, initial pc
+; VALS: return TCB (for debugging purposes only)
+
+crtask:	proc 7,1,<r0,r1>
+
+	push #darea,#ltcb/2	; ALLOC args: area, n words
+	pcall alloc		; allocate TCB
+	pop r0,*		; pop off ptr to allocated, error code
+	if ne,<			; couldn't make allocation, return failure
+	  rtnerr
+	  >
+	mov r0,out1(fp)		; return value: ptr to TCB
+	push r0,arg7(fp),#30.*2	; TINIT args: TCB, initial PC, stack size
+	pcall tinit		; initialize task
+	;; set registers
+	mov tsp(r0),r1
+.irp x,<arg1,arg2,arg3,arg4,arg5,arg6>
+	mov x(fp),(r1)+		; store all the regs
+.endr
+	return
+
+const:	constants
+
+	variables		; put down the variables.
+
+	putlst
+
+patch:	pat:			; reserve space for patching
+	.blkw 64.
+
+last:				; runtime allocation starts here
+
+.end timdat

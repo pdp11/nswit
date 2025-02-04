@@ -1,0 +1,228 @@
+;;; -*-MIDAS-*-
+
+.sbttl	Time
+
+.iif ndf $$cvtd, $$cvtd===1	; time conversion routines
+
+
+timini:	clr timsts		; clear flag saying we know the time
+	clr timst+0		; set time system came up to zero
+	clr timst+2		; ...
+	return
+
+
+; TIME returns the current time, measured in seconds since midnight
+; January 1, 1900 (GMT).
+
+time:	push (sp),(sp)		; create room for two return values
+	jsr r5,save6		; save regs
+	call uptime		; get system up time
+	pop r1,r0		; UPTIME vals: time hi, time lo
+	jsr pc,ddiv60		; divide system up time by 60 to get seconds
+	add timst+0,r1		; add time system came up
+	adc r0			; ...
+	add timst+2,r0		; ...
+	mov r1,16(sp)		; return current time
+	mov r0,20(sp)		; ...
+	jsr r5,rest6		; restore regs
+	return
+
+
+; TIMSET sets the current time from two binary words on the stack.
+; This is accomplished by changing the time the system came up to
+; the desired time minus the system up time (which remains unchanged).
+
+timset:	jsr r5,save6		; save regs
+	call uptime		; get 60ths system has run
+	pop r1,r0		; vals: time hi, time lo
+	jsr pc,ddiv60		; divide by 60 to get seconds system has run
+	sub r1,16(sp)		; subtract time system has run from desired
+	sbc 20(sp)		; time to get time system came up
+	sub r0,20(sp)		; ...
+	mov 16(sp),timst+0	; change time system came up
+	mov 20(sp),timst+2	; ...
+	mov #1,timsts		; set flag saying time is set
+	jsr r5,rest6		; restore regs
+	pop (sp),(sp)		; remove arguments from stack
+	return
+
+
+timsts:	.blkw 1			; flag to indicate time is set
+timst:	.blkw 2			; time system up in seconds since Jan 1, 1900
+
+.if ne  $$cvtd
+.sbttl	Time conversion
+
+; CVBTD converts time as measured in seconds since midnight January 1, 1900
+; (GMT) to year, month, day, etc. values.
+
+;	ARGS:				VALS:
+; SP ->	time lo			 SP ->	seconds
+;	time hi				minutes
+;					hour
+;					day
+;					month
+;					year
+;					day of week
+
+cvbtd:	sub #12,sp		; make room for 5 more return vals
+	mov 12(sp),(sp)		; ...
+	jsr r5,save6		; save regs
+	mov 30(sp),r1		; get time lo
+	mov 32(sp),r0		; get time hi
+	sub tgmt+0,r1		; convert from GMT to local time
+	sbc r0			; ...
+	sub tgmt+2,r0		; ...
+	jsr pc,ddiv60		; divide r0,r1 by 60, quotient (in r0,r1) is
+				; minutes since 1900, remainder (in r2) is
+				; seconds
+	mov r2,16(sp)		; return seconds
+	jsr pc,ddiv60		; divide r0,r1 by 60, quotient (in r0,r1) is
+				; hours since 1900, remainder (in r2) is
+				; minutes
+	mov r2,20(sp)		; return minutes
+	jsr pc,ddiv24		; divide r0,r1 by 24, quotient (in r0,r1) is
+				; days since 1900, remainder (in r2) is hours
+	mov r2,22(sp)		; return hours
+	mov r1,r3		; copy days since 1900
+	inc r3			; fudge so January 1, 1900 comes out as Monday
+	clr r2			; for DIV
+	div #7,r2		; divide by 7 to get day of week
+	mov r3,32(sp)		; return day of week
+	cmp r1,#31.+28.		; after Febuary 28, 1900?
+	if his,<		; yes
+	  inc r1		; add one to days so 1900 looks like leap year
+	  >
+	div #365.*4+1,r0	; divide days since 1900 by the no. of days in
+				; four years
+	ash #2,r0		; multiply by four to get year
+	add #1900.,r0		; add 1900 to year
+	mov r0,30(sp)		; return year (possibly add to this later)
+	cmp r1,#31.+29.		; January of February of a leap year?
+	if lo,<			; yes
+	  mov #1,26(sp)		; January
+	  cmp r1,#31.		; right?
+	  blo 1$		; yes
+	  inc 26(sp)		; no, February
+	  sub #31.,r1		; adjust day of month
+	  br 1$
+	  >
+	dec r1			; forget about February 29
+	clr r0			; divide by 365 to get years since leap year
+	div #365.,r0		; in r0, days since beginning of year in r1
+	add r0,30(sp)		; add to year
+	mov pc,r0		; ptr to TIMMOT
+	add #timmot-.,r0	; ...
+	clr 26(sp)		; init month return value
+loop <	  inc 26(sp)		; increment month return value
+	  sub (r0)+,r1		; subtract no. of days in that month
+	  rptl his		; gone too far?
+	  >
+	add -(r0),r1		; went too far, back off
+1$:	inc r1			; day of month is one based, not zero based
+	mov r1,24(sp)		; return day of month
+	jsr r5,rest6		; restore regs
+	return
+
+; Table of days in months.
+timmot:	.word 31.,28.,31.,30.,31.,30.
+	.word 31.,31.,30.,31.,30.,31.
+
+; CVDTB converts date and time values to time measured in seconds since
+; midnight January 1, 1900 (GMT).
+
+;	ARGS:				VALS:
+; SP ->	seconds			 SP ->	time hi
+;	minutes				time lo
+;	hour
+;	day
+;	month
+;	year
+;	day of week
+
+cvdtb:	push r0,r1,r2		; save regs
+	mov 22(sp),r1		; get year
+	sub #1900.,r1		; make 1900 year zero
+	clr r0			; divide year by 4, quotient is leap year
+	div #4,r0		; group, remainder is year within group
+	mul #365.,r1		; convert year within group to days
+	mov r1,r2		; save
+	mov r0,r1		; convert leap year group to days
+	mul #365.*4+1,r1	; ...
+	mov 20(sp),r0		; get month
+	asl r0			; times two for indexing
+	add pc,r0		; for PICness
+	add tindmt-2-.(r0),r2	; convert month to no. of days and add in
+	cmp r2,#31.+28.		; past January or February of the leap year?
+	if his,<
+	  inc r2		; yes, add one to account for February 29
+	  >
+	add 16(sp),r2		; add in day of month
+	dec r2			; but decrement since its one origin
+	add r2,r1
+	cmp r1,#31.+29.		; past January or February of 1900?
+	if his,<
+	  dec r1		; yes, adjust for 1900 not being a leap year
+	  >
+	clr r0			; clear high order for multiplying
+	mov #24.,r2		; DMUL arg: multiplier
+	call dmul		; convert no. of days to no. of hours
+	add 14(sp),r1		; add hour of the day
+	adc r0			; ...
+	mov #60.,r2		; DMUL arg: multiplier
+	call dmul		; convert no. of hours to no. of minutes
+	add 12(sp),r1		; add minutes
+	adc r0			; ...
+	mov #60.,r2		; DMUL arg: multiplier
+	call dmul		; multiply R0,R1 by 60 to get seconds
+	add 10(sp),r1		; add seconds
+	adc r0			; ...
+	add tgmt+0,r1		; convert from local time to GMT
+	adc r0			; ...
+	add tgmt+2,r0		; ...
+	mov r1,22(sp)		; return lo order time
+	mov r0,24(sp)		; return hi order time
+	pop r2,r1,r0		; restore regs
+	mov (sp),12(sp)		; move up return r5
+	add #12,sp		; remove args from stack
+	return
+
+tgmt:	.word 7*60.*60.,0	; difference between GMT and local time
+				; 8 hours normally, 7 daylight savings
+zone:	.asciz "PDT"
+	.even
+ 
+; Table of days preceeding current month in current year.
+tindmt:	.word 0.,31.,59.,90.,120.,151.,181.,212.,243.,273.,304.,334.
+.endc
+
+.if df  clkadr
+
+;;; Return calendar clock time in seconds since January 1, 1900.
+
+clktim:	call nxmcat		; make sure there is a hardware clock
+	  1$
+	tst @#clkadr+0
+	call nxmclr
+	push (sp),(sp)		; make room for two return values
+	jsr r5,save6		; save registers
+	;; read time without timing screw
+loop <	  movb @#clkadr+4,r0	; R0: seconds
+	  movb @#clkadr+2,r1	; R1: minutes
+	  movb @#clkadr+3,r2	; R2: hours
+	  movb @#clkadr+0,r3	; R3: day
+	  movb @#clkadr+1,r4	; R4: month
+	  cmpb r0,@#clkadr+4	; seconds incremented while we were reading
+				; other registers?
+	  rptl ne		; yes, go try it again
+	  >
+	push #0,#1900.+%year,r4,r3,r2,r1,r0	; CVDTB args: day of week, year,
+	call cvdtb		; month, day, hours, minutes, seconds
+	pop 16+2(sp),20(sp)	; set return values (time hi and time lo)
+	jsr r5,rest6		; restore registers
+	clc
+	return
+1$:	sec
+	return
+
+.endc

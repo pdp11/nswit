@@ -1,0 +1,19 @@
+	.=1000
+	.insrt defs
+
+.macro key name,value
+	.string ^name
+	.word value
+.endm
+
+	key ^"a",20
+	key ^"foobar",300
+
+	%year
+	%day
+	%decim %year
+	.asciz " "
+	.word 1
+
+	constants
+	.end

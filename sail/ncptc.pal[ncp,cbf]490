@@ -1,0 +1,167 @@
+;;; -*-midas-*-
+	.sbttl Traffic Controller
+
+;;; To start time sharing among existing tasks branch to "manlop".
+;;; The macro "deftcb" is used to define all the initial tasks
+;;; used by the system.  This defines "initcb" which reinitializes
+;;; all the TCB that were defined by the deftcb macro.  Deftcb also
+;;; defines "alctcb" which should be invoked where the storage
+;;; for the default TCBs is to be created.
+
+;;; Task Control Block
+stksiz == 128.
+dsect <
+tb.sr0:: .blkw 1		;saved register 0
+tb.sr1:: .blkw 1
+tb.sr2:: .blkw 1
+tb.sr3:: .blkw 1
+tb.sr4:: .blkw 1
+tb.sr5:: .blkw 1
+tb.ssp:: .blkw 1		;saved stack pointer
+tb.spc:: .blkw 1		;the PC of the task
+tb.stk:: .blkb stksiz		;the stack is actually right here!
+tb.fqm:: .blkw 1		;ptr to first message in the queue
+tb.lqm:: .blkw 1		;ptr to last message in the queue
+tb.are:: .blkw 1		;area pointer for the TCB messages
+tb.nxt:: .blkw 1		;pointer to the next task
+	>,tcb.ln
+
+.macro	deftcb tcblst
+	numelm ntasks,tcblst
+
+.macro	initcb <tcblst>		;Generate the code to initialize all the
+				;default TCBs.
+	clr tcbfls		;free the tcb list to start with
+	mov #tcbabg,r0
+loop	< mov tcbfls,(r0)	;thread this onto the free list
+	  mov r0,tcbfls
+	  add #tcb.ln,r0
+	  cmp r0,#tcbaen
+	  rptl lo
+	  >
+
+	mov #tcbtbl,r0
+	mov #ntasks,r1
+itlbl:
+	clr tb.fqm(r0)
+	clr tb.lqm(r0)
+	clr tb.are(r0)		;no area initially assigned to the TCB
+	add #tcb.ln,r0
+	sob r1,itlbl
+	mov #tcbtbl,r0
+	.irp saddr,<tcblst>
+	mov #tcb'saddr+tb.stk+stksiz,tb.ssp(r0)	;Get task a stack to use.
+	mov #saddr,tb.spc(r0)	;set the tasks starting addr
+	mov #tcb'saddr+tcb.ln,tb.nxt(r0)	;Link the TCBs together
+	add #tcb.ln,r0
+	.endr
+
+	mov #tcbtbl,-tcb.ln+tb.nxt(r0)	;make tcb list circular
+
+	mov #tcbtbl,plist	;first task to run
+	clr swgs
+	mov #ntasks,tskcnt	;number of tasks
+.endm
+
+.macro	alctcb <tcblst>		;allocate storage for the default TCBs.
+				;Define the ptr to the first tcb and a
+				;label of the form "tcb" || <first three
+				;letters of the start address> at the
+				;start of each tcb.
+tcbtbl:
+	.irp saddr,<tcblst>
+tcb'saddr:
+	.blkb tcb.ln
+	.endr
+.endm
+
+.endm
+
+;;; Procedure to create a new task
+crtask:	proc 7,1,<r0,r1>
+	mov tcbfls,r1		;get first tcb in free list
+	beq 2$			;we lose, return an error
+	 mov (r1),tcbfls	;unthread first free one.
+	 mov r1,out1(fp)	;save the new tcb for the user
+	 mov #tcb.ln,r0		;clear out the storage for the tcb
+1$:	 clrb (r1)+		;clear it out
+	 sob r0,1$
+	 mov out1(fp),r1	;get new tcb back in r1
+	 mov arg1(fp),tb.sr0(r1)	;load initial regs
+	 mov arg2(fp),tb.sr1(r1)	;load initial regs
+	 mov arg3(fp),tb.sr2(r1)	;load initial regs
+	 mov arg4(fp),tb.sr3(r1)	;load initial regs
+	 mov arg5(fp),tb.sr4(r1)	;load initial regs
+	 mov arg6(fp),tb.sr5(r1)	;load initial regs
+	 mov arg7(fp),tb.spc(r1)	;set the initial PC
+	 mov r1,r0		;get copy of pointer in r0
+	 add #tb.stk+stksiz,r0	;the machine needs move pointer
+	 mov r0,tb.ssp(r1)	;set the inial stack pointer
+	 mov #tcbtbl,r0		;first task in the static TCB table
+	 mov tb.nxt(r0),tb.nxt(r1)	;thread in the new tcb
+	 mov r1,tb.nxt(r0)	;we are now instantiated
+	 return
+
+2$:	clr out1(fp)		;just making sure
+	rtnerr			;return the error
+
+;;; LOGOUT: This is called when a process wants to delete itself.  I
+;;; takes not arguments and does not return.
+logout:	proc 0,0
+
+	mov curtsk,r0		;get the current task
+	mov r0,r1
+1$:	mov tb.nxt(r1),r1	;set around the loop
+	cmp tb.nxt(r1),r0	;have we gotten around yet?
+	bne 1$			;nope
+	mov tb.nxt(r0),tb.nxt(r1)	;unthread the current task
+	cmp r0,#tcbabg		;are we in the area?
+	blo 2$
+	cmp r0,#tcbaen		;check against the end too
+	bhis 2$
+	mov tcbfls,(r0)		;thread tcb onto free list
+	mov r0,tcbfls
+2$:	br manlop		;now go run the next guy, in plist
+
+;;; Now the code to actually do scheduling.
+
+manlop:
+	inc swgs		;remember how often we came here
+	mov plist,r0
+	mov tb.nxt(r0),plist
+
+	mov r0,curtsk
+	tst (r0)+		;save r0 for last
+	mov (r0)+,r1
+	mov (r0)+,r2
+	mov (r0)+,r3
+	mov (r0)+,r4
+	mov (r0)+,r5
+	mov (r0)+,sp
+	mov (r0)+,savepc
+	mov @curtsk,r0
+	jmp @savepc		;Run the process...
+resced:	 			;He comes here to let others run...
+	mov r0,@curtsk		;this assumes that r0 is first in TCB
+	mov curtsk,r0
+	pop tb.spc(r0)		;he pushed the pc he wanted saved.
+	tst (r0)+
+	mov r1,(r0)+
+	mov r2,(r0)+
+	mov r3,(r0)+
+	mov r4,(r0)+
+	mov r5,(r0)+
+	mov sp,(r0)+
+	br manlop
+
+curtsk:	.word 0
+savepc:	.word 0
+
+tskcnt: .word   ntasks
+plist:  .word   tcbtbl
+swgs:	.word 0
+tcbfls:	.word
+
+tcbabg:	.blkb 7*tcb.ln
+tcbaen::
+

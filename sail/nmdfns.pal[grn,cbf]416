@@ -1,0 +1,42 @@
+;;; HARDWARE definitions for the NM
+;;; Array of sixteen mailboxes, which send to processor N on write and
+;;; read from processor N on read.
+	nm.mbx = 177400
+;;; Mailbox transmit status; bit N means I wrote and he has not read.
+	nm.mbt = 177462
+;;; Mailbox receive status; bit N means he wrote and I have not read.
+	nm.mbr = 177464
+;;; Mailbox interrupt enable mask; one bit per processor
+	nm.mbm = 177444
+;;; The KFRZ word for reseting interrupts
+	nm.kfr = 177446
+;;; Mapping registers (four bytes)
+	nm.map = 177440
+;;; Enable mapping by setting bit 0 of this word, bit 1 is parity enable.
+	nm.enb = 177450
+;;; Complement of our processor ID.
+	nm.pid = 177454
+;;; NM IDs of some interesting processors
+	nmid.g == 0		; Grinell 11
+	nmid.s == 2		; Switch 11
+	nmid.a == 4		; Arpa 11
+	nmid.c == 5		; Chaos 11
+;;; NM interrupt vectors: an array of 16., and they are 4 bytes each.
+	nm.vec = 1200		;1200-1276
+;;; The vectors for some sample machines follow.
+	nmvc.g = 1200
+	nmvc.s = 1210
+	nmvc.a = 1220
+	nmvc.c = 1224
+;;; The mailbox addresses for some machines:
+	nmbx.g = 177400
+	nmbx.s = 177404
+	nmbx.a = 177410
+	nmbx.c = 177412
+;;; The definitions of the newman windows.
+	winsiz == 10000
+	win0=120000
+	win1=130000
+	win2=140000
+	win3=150000
+

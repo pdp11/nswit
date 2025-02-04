@@ -1,0 +1,812 @@
+	.title	Error Correction Package
+	.sbttl	Constants and State Variables
+;	.globl	eccint,sndblk,getblk,ackblk,ttyclk
+
+;	.block	obk,ob
+dsect <
+ob.bkn:: .blkb 1			;block number of this message
+ob.sts:: .blkb 1			;status of this block
+ob.nxt:: .blkw 1			;ptr to next block to output
+ob.ctl:: .blkw 1			;control command if non-zero
+ob.bgn:: .blkw 1			;ptr to the beginning of the data
+ob.ptr:: .blkw 1			;ptr to data to send
+ob.epr:: .blkw 1			;ptr to end of data (for stopping)
+ob.cks:: .blkw 1			;accumulating check sum
+ob.mln:: .blkw 1			;number of characters in the msg
+ob.tim:: .blkw 1			;time when block was sent
+	>,obk.ln
+
+;ob.sts=0 -> block is free
+;ob.sts=1 -> block is ready to be sent
+;ob.sts=2 -> block is being sent
+;ob.sts=3 -> block is waiting for ack
+;if ob.ptr and ob.epr are equal then the packet is null this is useful
+;for sending acks when there is no data to send.  If ob.ctl is non-zero
+;then no data will be sent and ob.ptr should be zero.  Acks are still
+;transmitted on control packets.
+
+;	.block	ibk,ib
+dsect <
+ib.bkn:: .blkb 1
+ib.rdy:: .blkb 1			;bit to specify block to be processed
+ib.bgn:: .blkw 1			;ptr to base of input buffer
+ib.end:: .blkw 1			;ptr to end of input buffer
+ib.srt:: .blkw 1			;ptr to first data byte (ib.bgn+1)
+ib.cur:: .blkw 1			;ptr after useful data in buffer
+ib.cks:: .blkw 1			;accumulate the check sum here
+ib.mln:: .blkw 1			;count of msg bytes received
+	>,ibk.ln
+; ib.rdy=0 implies that the block is free or being transfered into.  The
+; interrupt side sets this to one when the final DLE ETX arrives.
+
+; The format of the control byte which must immediately follow the DLE STX
+; sequence in all packets is as follows:
+; bit 0: control bit.  This means that the packet contains control
+;	information not data.  A control packet contains only one
+;	byte of data which is a control opcode and a check sum.
+; bit 1: acknak bit.  If this bit is set then this packet is carrying
+;	an ack.  If it is cleared then a nack is being carried.
+; bit 2-4: ack block number.  This is the block number to be acked or
+;	nacked depending on the state of bit 1.  The block number just
+;	preceding the specified one may also be affected if no previous
+;	ack or nack for it was received.  If this is greater than three
+;	then no ack is being carried by this packet.
+; bit 5-7: packet block number.  This specifies the block number of this
+;	packet for flow control purposes.
+
+dle==223
+stx==2
+etx==3
+syn==146
+
+.if	nz imp11
+insts=176560
+inchr=176562
+invec=360
+outsts=176564
+outchr=176566
+outvec=364
+speed==9600.
+.endc
+
+.if	nz arpa11
+insts=176510
+inchr=176512
+invec=310
+outsts=176514
+outchr=176516
+outvec=314
+speed==9600.
+.endc
+
+eclock:	.word	0
+rdbkn:	.word	0
+firstb:	.word	0			;Queued block list; initially empty
+lastbk:	.word	0
+outblk:	.word	0
+quebkn:	.word	0			;blk num last queued for sending
+nxtchr:	.word	-1
+newnxt:	.word	-1
+
+tyobk1:	.byte	0,0			;make sure ob.sts=0 -> free
+	.blkb	obk.ln-2
+tyobk2:	.byte	0,0
+	.blkb	obk.ln-2
+
+sakblk:	.byte	0,0
+	.blkb	obk.ln-2
+
+dreset:	.word	1			;send a reset first thing after start
+rstsnt:	.word	0			;if =2 then reset was sent
+rstrcv:	.word	0			;>0 if reset was received.
+rsttim:	.word	0
+sync:	.word	0
+
+ibtuse:	.word	0
+inblk:	.word	tyibk1
+inbkn:	.word	0
+
+tyibk1:	.word	0			;block is initially free
+	.word	tyibg1
+	.word	tyied1
+	.blkb	ibk.ln-6
+tyibk2:	.word	0			;block is initially free
+	.word	tyibg2
+	.word	tyied2
+	.blkb	ibk.ln-6
+
+srakbk:	.word	400			;block is for special acks only
+	.word	tyibgs
+	.word	tyieds
+	.blkb	ibk.ln-6
+
+acknak:	.word	0			;this word is 0 for nak and 2 or ack
+tobeak:	.word	-1			;specifies the blk num to ack
+ackpkg:	.word	0		;tells output to send a "ack" packet.
+
+ncpunt:	.word	0
+bnrdy:	.word	0
+nreset:	.word	0
+tolong:	.word	0
+badcks:	.word	0
+badbkn:	.word	0
+badnak:	.word	0
+bkrsnt:	.word	0
+
+rstto:	.word	0
+blkto:	.word	0
+
+;;; This is 1100-chars-per-biggest-msg/chars-per-sec*4-msgs*60-tics-per-sec
+timout:	.word	11000./<speed/100.>*12./5.	;to hack losing 15 bit precision
+outcnt:	.word	0
+incnt:	.word	0
+sakcnt:	.word	0
+stpcnt:	.word	0
+obkcnt:	.word	0
+ibkcnt:	.word	0
+rnkcnt:	.word	0
+tnkcnt:	.word	0
+rakcnt:	.word	0
+takcnt:	.word	0
+opscnt:	.word	0
+opfcnt:	.word	0
+ipscnt:	.word	0
+ipfcnt:	.word	0
+intlos:	.word	0
+dlelse:	.word	0
+ovrflo:	.word	0
+
+	.sbttl	User Interface Subroutines
+;;; eccint is called to initialize the various things that need initializing
+;;; and should be called near the beginning of any program that uses it.
+;;; It bashes the clock vector so this may need to be changed.
+eccint:	mov	#clkint,@#100
+	mov	#340,@#102
+	mov	#ichint,@#invec
+	mov	#340,@#invec+2
+	bis	#100,@#insts			;enable interrupts
+	mov	#ochint,@#outvec
+	mov	#340,@#outvec+2
+	bis	#100,@#outsts
+	rts	pc
+
+;;; sndblk is called with r0 pointing to the beginning of a buffer to send
+;;; and r1 pointing to to the end of that buffer.  The maximum length of the
+;;; buffer is 1000. bytes.  If r0 is zero then r1 is a control command to
+;;; be sent in lieu of data.  The carry bit is set to indicate failure.  If
+;;; the bit is clear then the block has been successfully queued for
+;;; transmission.
+	gitto	100
+sndblk:	push	r2
+	mov	r1,r2			;make sure blk is not too big
+	sub	r0,r2
+	cmp	r2,#1000.		;must be smaller than 1000 bytes
+	ble	1$
+	bpt				;we were called wrong
+1$:	bit	#200,@#insts		;interrupt lostp?
+	beq	4$
+	bit	#200,@#insts		;just being careful
+	beq	4$
+	inc	intlos
+	movb	@#inchr,r2
+4$:	mov	#tyobk1,r2		;first find a free buffer
+	tstb	ob.sts(r2)		;is this empty?
+	beq	sendit
+	mov	#tyobk2,r2		;try the next
+	tstb	ob.sts(r2)
+	beq	sendit
+	pop	r2
+	sec				;set carry: no room in the inn
+	rts	pc
+
+sendit:
+	push	r3
+	push	r4
+	mfps	r4			;save old PS
+	mtps	#340			;lock the data base.
+	mov	quebkn,r3		;get blk num to queue next
+	movb	r3,ob.bkn(r2)
+	inc	r3
+	bic	#177774,r3
+	mov	r3,quebkn
+	mov	lastbk,r3
+	beq	2$
+	mov	r2,ob.nxt(r3)
+	br	3$
+2$:	mov	r2,firstb		;if no last then is is also first blk
+3$:	mov	r2,lastbk
+	clr	ob.nxt(r2)		;we are the last block
+	clr	ob.ctl(r2)
+	tst	r0			;if r0 is zero then r1 is ctl cmd
+	bne	1$
+	mov	r1,ob.ctl(r2)
+1$:	mov	r0,ob.bgn(r2)
+	mov	r1,ob.epr(r2)
+	movb	#1,ob.sts(r2)
+	mtps	r4			;we are done.
+	bis	#100,@#outsts		;wakeup the interrupt side if idle
+	pop	r4
+	pop	r3
+	pop	r2
+	clc				;success
+	rts	pc
+
+;;; This is the stuff that must be called periodically to process incomming
+;;; packets.  The carry bit is set indicating no buffers are available.
+;;; If it is clear r0 points to the block read.
+	gitto	100
+getblk:	push	r2
+	bit	#200,@#insts		;interrupt lostp?
+	beq	4$
+	bit	#200,@#insts		;just being careful
+	beq	4$
+	inc	intlos
+	movb	@#inchr,r2
+4$:	mtps	#340			;lock the data bases.
+	mov	rdbkn,r2		;get the block to read next.
+	mov	#tyibk1,r0
+	tstb	ib.rdy(r0)
+	beq	1$			;this one not ready
+	cmpb	r2,ib.bkn(r0)
+	beq	3$
+1$:	mov	#tyibk2,r0		;try the next block
+	tstb	ib.rdy(r0)
+	beq	2$
+	cmpb	r2,ib.bkn(r0)
+	beq	3$
+2$:	pop	r2			;we lose, no buffers ready
+	mtps	#0
+	sec
+	rts	pc
+3$:	inc	r2			;read next block next time
+	bic	#177774,r2
+	mov	r2,rdbkn
+	mov	ib.cur(r0),r1		;get the beginning and ending ptrs
+	mov	ib.srt(r0),r0		;for him to use.
+	pop	r2			;we win
+	mtps	#0
+	clc
+	rts	pc
+
+
+;;; This is called when you are done using a buffer and the buffer can
+;;; be reused.  When called, r0 should be the value returned by iget.
+ackblk:	push	r3
+	push	r1
+	mov	#tyibk1,r1		;get the block that starts at r0
+	cmp	r0,ib.srt(r1)
+	beq	1$
+	mov	#tyibk2,r1
+	cmp	r0,ib.srt(r1)
+	beq	1$
+	bpt
+1$:	movb	ib.bkn(r1),r3
+	jsr	pc,sndack		;send an ack for this block number
+	clrb	ib.rdy(r1)		;mark the block as ready to reuse
+	pop	r1
+	pop	r3
+	rts	pc
+
+	.sbttl	Output Interrupt Handler
+	gitto	100
+ochint:	push	r0
+	push	r1
+	push	r2
+	inc	outcnt
+	tst	dreset			;are we supposed to send a reset?
+	beq	fndchr
+	movb	#dle,@#outchr		;send the reset sequence
+	mov	#syn,nxtchr
+	mov	#-1,newnxt
+	mov	#ofirst,nxtout		;don't do anything else
+	inc	rstsnt			;reset queued
+	clr	dreset			;don't let this happen again
+	clr	sync			;we are not winning yet
+oidone:	pop	r2
+	pop	r1
+	pop	r0
+	rti
+
+fndchr:	mov	nxtchr,r0
+	blt	2$			;We are out of work! Find next blk
+	movb	r0,@#outchr		;send it.
+	mov	newnxt,nxtchr		;get next char
+	blt	1$			;no character to get
+	mov	#-1,newnxt		;clear out that char.
+	br	oidone			;we are ahead of the game
+
+1$:	mov	outblk,r0		;get ptr to blk to process
+	jmp	@nxtout			;get location of next thing to do
+
+2$:	tst	rstsnt			;Are we processing a reset?
+	beq	6$			;no
+	tst	rstrcv			;did the input side get a reset?
+	beq	7$			;no, stop till we get a reply
+	clr	rstsnt			;the input side hanlded things
+	clr	rstrcv
+	inc	sync			;we can in phase again
+	br	6$			;we are ready to roll
+7$:	mov	eclock,rsttim
+	bic	#100,@#outsts		;stop everything
+	jmp	oidone
+
+6$:	tst	ackpkg			;are we supposed to send just and ack?
+	beq	5$
+	inc	sakcnt
+	mov	#sakblk,r0
+	movb	#4,ob.bkn(r0)		;illegal block number.
+	clr	ob.bgn(r0)		;no data just ack info
+	clr	ob.epr(r0)
+	clr	ob.ctl(r0)		;no control hair
+	br	8$
+
+5$:	mov	firstb,r0		;look through the queue for something
+	beq	3$
+4$:	cmpb	ob.sts(r0),#2		;to do
+	blt	8$			;#1: this is ready to go
+	bgt	9$			;#3: this is waiting for ack
+	bpt				;this is being sent!? error!
+9$:	mov	ob.nxt(r0),r0
+	bne	4$
+3$:	bic	#100,@#outsts		;get ready for interrupt
+	inc	stpcnt
+	clr	outblk
+	jmp	oidone			;Punt, nothing ready yet.
+8$:	inc	obkcnt
+	movb	#2,ob.sts(r0)		;we are sending this one now
+	mov	ob.bgn(r0),ob.ptr(r0)	;set up the place to start.
+	clr	ob.cks(r0)		;initialize the check sum
+	clr	ob.mln(r0)		;and the msg length
+	mov	eclock,ob.tim(r0)	;time stamp it.
+	mov	r0,outblk		;this is the blk we are hacking now
+	movb	#dle,@#outchr		;send the first character
+	mov	#stx,nxtchr		;send this next
+	mov	#osecnd,nxtout		;First thing is done, do second
+	jmp	oidone
+
+nxtout:	.word	ofirst
+
+ofirst:	jmp	oidone
+
+;;; After sending the DLE STX a control byte is sent identifying the blk
+;;; number of this packet and ack/nak information.
+	gitto	100
+osecnd:	inc	opscnt			;output starts
+	clr	r1			;This will be the ctl word
+	movb	ob.bkn(r0),r2		;get block number of this packet
+	ash	#5,r2			;blk num is leftmost 3 bits of byte
+	bis	r2,r1
+	mov	tobeak,r2		;get acks or naks
+	bge	1$
+	mov	#4,r2			;No ack or nack to send
+	br	5$
+1$:	tst	acknak
+	beq	6$
+	inc	takcnt
+	br	5$
+6$:	inc	tnkcnt
+5$:	mov	#-1,tobeak		;we have taken care of it.
+	ash	#2,r2
+	bis	r2,r1			;or in the ack/nack blk num
+	bis	acknak,r1		;specify ackness or nackness
+	tst	ob.ctl(r0)		;is this to be a ctl msg?
+	beq	2$			;no, is data or null packet
+	bis	#1,r1			;turn on the ctl bit
+	mov	#oathrd,nxtout		;send ctl cmd next
+	br	3$
+2$:	mov	#othird,nxtout		;send out the data next
+3$:	mov	r1,nxtchr
+	add	r1,ob.cks(r0)		;accumulate the check sum
+	inc	ob.mln(r0)
+	cmp	r1,#dle
+	bne	4$
+	mov	r1,newnxt
+4$:	jmp	oidone
+
+;;; If this is a control packet then the third stage is to send out the
+;;; control code.
+	gitto	100
+oathrd:	mov	ob.ctl(r0),nxtchr	;this is a control packet
+	add	ob.ctl(r0),ob.cks(r0)
+	inc	ob.mln(r0)
+	cmp	nxtchr,#dle
+	bne	1$
+	mov	#dle,newnxt
+1$:	mov	#oforth,nxtout
+	jmp	oidone
+
+;;; If this is a data packet the third step is to send the actual data.
+othird:	mov	ob.ptr(r0),r1		;get ptr to next char
+	cmp	r1,ob.epr(r0)		;are we all done
+	bhis	oforth			;send out the cksum
+	movb	(r1)+,r2		;get the next char
+	bic	#177400,r2
+	mov	r1,ob.ptr(r0)
+	mov	r2,nxtchr		;send character
+	add	r2,ob.cks(r0)
+	inc	ob.mln(r0)
+	cmp	r2,#dle			;if escape char then double it
+	bne	1$
+	mov	r2,newnxt
+1$:	jmp	oidone
+
+	gitto	100
+oforth:	clr	nxtchr
+	movb	ob.cks(r0),nxtchr	;send the first byte of the check sum
+	cmp	nxtchr,#dle
+	bne	1$
+	mov	#dle,newnxt
+1$:	mov	#ofifth,nxtout
+	jmp	oidone
+
+ofifth:	clr	nxtchr
+	movb	ob.cks+1(r0),nxtchr	;send the second byte
+	cmp	nxtchr,#dle
+	bne	1$
+	mov	#dle,newnxt
+1$:	mov	#osixth,nxtout
+	jmp	oidone
+
+osixth:	clr	nxtchr
+	movb	ob.mln(r0),nxtchr	;send the lsb of the count
+	cmp	nxtchr,#dle
+	bne	1$
+	mov	#dle,newnxt
+1$:	mov	#osvnth,nxtout
+	jmp	oidone
+
+osvnth:	inc	opfcnt			;output finished
+	mov	#dle,nxtchr
+	mov	#etx,newnxt
+	mov	#ofirst,nxtout		;wait till out of data then pick next
+	tst	ackpkg
+	beq	1$
+	clr	ackpkg			;no ack on these things
+	jmp	oidone
+
+1$:	movb	#3,ob.sts(r0)		;now we wait for the ack
+	jmp	oidone
+
+	.sbttl	Input Interrupt Handler
+	gitto	100
+ichint:	push	r0
+	push	r1
+	push	r2
+	push	r3
+	push	r4
+	push	r5
+	inc	incnt
+	movb	@#inchr,r0		;get character that has arrived
+	bitb	#100,@#inchr+1		;check for overrun
+	beq	1$
+	inc	ovrflo
+1$:	bic	#177400,r0
+	mov	inblk,r1
+	jmp	@nxtin
+
+nxtin:	.word	ifirst
+
+ifirst:	cmp	r0,#dle			;start of framing sequence
+	beq	gotdle
+	inc	ncpunt
+iidone:	pop	r5
+	pop	r4
+	pop	r3
+	pop	r2
+	pop	r1
+	pop	r0
+	rti				;We are just getting noise
+gotdle:	mov	#isecnd,nxtin		;wait for stx now
+	br	iidone
+
+isecnd:	cmp	r0,#syn			;was this a reset?
+	bne	2$
+	jmp	ireset			;reset everything
+2$:	tst	sync			;we are not winning yet
+	beq	iidone
+	cmp	r0,#stx
+	bne	ifirst			;not winning try starting over?
+	inc	ipscnt			;count input starts
+	inc	ibkcnt
+5$:	tstb	ib.rdy(r1)		;Make sure the buffer is really ready
+	bne	1$			;we will have to punt!
+3$:	mov	ib.bgn(r1),ib.cur(r1)	;set up the input buffer
+	mov	ib.bgn(r1),ib.srt(r1)	;set up to to data
+	inc	ib.srt(r1)
+	clr	ib.cks(r1)		;initialize the check sum
+	clr	ib.mln(r1)		;and the count
+	mov	#ithird,nxtin		;now collect the data
+	br	iidone
+1$:	cmp	r1,#srakbk		;is this a special block?
+	bne	4$			;no? then use the special block
+	mov	ibtuse,r1		;go back and try the regular input blk
+	mov	r1,inblk
+	br	5$			;try again with this one
+4$:	inc	bnrdy			;count these lossages
+	mov	r1,ibtuse		;save the input buffer to use
+	mov	#srakbk,r1
+	mov	r1,inblk		;use this one from now on.
+	br	3$
+
+ithird:	cmp	r0,#dle			;are we escaping?
+	bne	stuffc			;wait for next
+	mov	#iforth,nxtin		;handle escaped character
+	br	iidone
+stuffc:	mov	ib.cur(r1),r2
+	cmp	r2,ib.end(r1)		;is the input buffer full?
+	blo	1$
+	inc	tolong
+	mov	#ifirst,nxtin		;Error: we must have lost the DLE ETX
+	br	iidone			;wait for resync
+1$:	movb	r0,(r2)+
+	add	r0,ib.cks(r1)
+	inc	ib.mln(r1)
+	mov	r2,ib.cur(r1)
+	br	iidone
+
+	gitto	100
+iforth:	cmp	r0,#syn			;reset?
+	bne	5$
+	jmp	ireset
+5$:	cmp	r0,#etx			;is this the end?
+	beq	4$
+	mov	#ithird,nxtin		;read a regular character next.
+	cmp	r0,#dle
+	beq	stuffc			;insert the DLE
+	inc	dlelse			;DLE quoting something besides DLE.
+	mov	inbkn,r3		;Nak this packet since it is garbage
+	jsr	pc,sndnak
+	mov	#ifirst,nxtin		;starting over
+	jmp	iidone
+4$:	inc	ipfcnt			;count input finished
+	mov	#ifirst,nxtin		;start over next time
+	mov	ib.cur(r1),r2		;get the ptr to the end of the data
+	movb	-(r2),r5		;get the length
+	bic	#177400,r5
+	sub	r5,ib.cks(r1)
+	movb	-(r2),r3		;get the MSB of the check sum
+	movb	-(r2),r4		;lsb
+	bic	#177400,r3
+	bic	#177400,r4
+	sub	r3,ib.cks(r1)		;un count the check sum in itself
+	sub	r4,ib.cks(r1)
+	swab	r3
+	bis	r4,r3			;create 16-bit check sum
+	sub	#3,ib.mln(r1)		;patch up the length too.
+	mov	r2,ib.cur(r1)
+	cmp	r3,ib.cks(r1)		;do we have the right check sum?
+	bne	10$			;we are losing
+	cmpb	r5,ib.mln(r1)		;cksum OK, check the length
+	beq	1$
+10$:	inc	badcks
+;	movb	#176,@#177566		;***DEBUG***
+	mov	inbkn,r3		;get the block num we were expecting
+	jsr	pc,sndnak		;nak this blk num
+	jmp	iidone
+1$:	movb	@ib.bgn(r1),r2		;get the control byte for this packet
+	mov	r2,r3
+	ash	#-5,r3
+	bic	#177770,r3		;get the blk num of this packet
+	movb	r3,ib.bkn(r1)		;fill in block number
+	cmp	r3,#4			;larger than max blk num?
+	bge	8$			;no.  Just do ack/nak stuff
+
+	cmp	r3,inbkn		;does it agree?
+	beq	2$
+	inc	badbkn
+;	movb	#41,@#177566		;***DEBUG***
+	mov	inbkn,r4		;test to see if we have inbkn+1 since
+	inc	r4			;it is premature and should be nak'ed
+	bic	#177774,r4
+	cmp	r4,r3
+	bne	7$			;it must be a retransmission so ack it
+	jsr	pc,sndnak		;nka his prematurely sent blk
+	jmp	iidone
+
+7$:	inc	bkrsnt			;a block was recieved twice
+	jsr	pc,sndack
+	jmp	iidone
+2$:	inc	r3			;everything is kool so go to next blk
+	bic	#177774,r3		;this blk will be acked at MP level
+	mov	r3,inbkn		;when the user is done with it.
+	movb	#1,ib.rdy(r1)		;ready to be read out
+	mov	#tyibk1,r3		;switch to other input buffer
+	cmp	inblk,r3
+	bne	6$
+	mov	#tyibk2,r3
+6$:	mov	r3,inblk
+
+8$:	mov	r2,r3
+	ash	#-2,r3
+	bic	#177770,r3		;get the blk num to ack or nack
+	cmp	r3,#4
+	blt	3$
+	jmp	iidone			;No ack so we are done
+3$:	bit	#2,r2			;is it ack or nak?
+	bne	9$			;ack
+	inc	rnkcnt
+;	movb	#52,@#177566		;***DEBUG***
+	jsr	pc,nakbkn
+	jmp	iidone
+9$:	inc	rakcnt
+	jsr	pc,ackbkn
+	jmp	iidone
+
+nakbkn:	mov	firstb,r5
+	beq	2$
+1$:	cmpb	ob.bkn(r5),r3		;is this the blk num we are looking for
+	beq	3$
+	mov	ob.nxt(r5),r5
+	bne	1$
+2$:	inc	badnak			;we got a nak for non-existant block!
+	rts	pc
+
+3$:	jsr	pc,rsalbk		;resend blocks
+	rts	pc
+
+;;; ReSend ALl BlocKs is a routine which resets the status of all blocks
+;;; on the output queue to "ready for transmission".  It is called by the
+;;; reset and time-out code in addition to the NAK code.
+rsalbk:	push	r0
+	mov	firstb,r0
+	beq	2$
+1$:	movb	#1,ob.sts(r0)
+	mov	ob.nxt(r0),r0
+	bne	1$
+	bis	#100,@#outsts
+2$:	pop	r0
+	rts	pc
+
+;;; This routine is called with a block number in r3 and it removes all
+;;; blocks with that block number or less from the output queue.
+ackbkn:	push	r4
+	mov	firstb,r5
+	beq	2$
+1$:	cmpb	ob.bkn(r5),r3		;do we have the right bkn?
+	beq	3$
+	mov	ob.nxt(r5),r5		;not yet, go on to next block
+	bne	1$
+2$:	pop	r4
+	rts	pc
+
+3$:	mov	ob.nxt(r5),r4		;stop here.
+	mov	firstb,r5
+4$:	cmpb	ob.sts(r5),#3		;find first blk waiting for ack
+	bne	5$
+	clrb	ob.sts(r5)		;free the block for reuse
+	mov	ob.nxt(r5),r5
+	beq	6$
+	cmp	r4,r5
+	bne	4$
+5$:	mov	r5,firstb		;flush all the previous blks
+	br	2$
+6$:	clr	firstb
+	clr	lastbk
+	br	2$
+
+;;; Sndack is called with a block number in r3 and it causes an ack to be
+;;; queued for that block number.
+sndack:	tst	tobeak			;is something already queued
+	blt	1$			;no, just do the regular thing.
+	tst	acknak			;is it an ack or a nak?
+	beq	2$			;nak, so don't do anything
+1$:	mov	#2,acknak		;send an ack.
+	mov	r3,tobeak
+2$:	rts	pc
+
+;;; sndnak takes a block number in r3 and send a nak for that blknum
+sndnak:	clr	acknak
+	mov	r3,tobeak
+	rts	pc
+
+	.sbttl	Reset Reinitialization Code
+
+;;; This first thing to do is renumber all pending blocks since that is
+;;; the purpose of the reset.  The trick is to preserve their order.
+;;; If a block is waiting for an ack it is immediately requeued.
+;;; The other thing is to get the output side to send the reset response
+;;; or if we originated the reset to tell the output side to begin
+;;; sending data.
+	gitto	100
+ireset:	inc	nreset
+	jsr	pc,rsalbk		;queue all blocks for resending
+	mov	#-1,nxtchr
+	mov	#-1,newnxt
+	clr	r1			;calculate what quebkn should be
+	mov	firstb,r0
+	beq	2$
+1$:	movb	r1,ob.bkn(r0)		;re number all the blocks
+	inc	r1
+	bic	#177774,r1
+	mov	ob.nxt(r0),r0
+	bne	1$
+2$:	mov	r1,quebkn
+
+	mov	#ifirst,nxtin		;reset input side.
+	clr	inbkn			;expect block number zero next
+	clr	rdbkn			;also clear bkn num to read out next
+	clrb	ib.rdy+tyibk1		;throw away all received blocks
+	clrb	ib.rdy+tyibk2
+
+	tst	rstsnt
+	beq	4$			;this reset is unsolicited
+	inc	sync			;we started this so now we are done
+	clr	rstsnt
+	bis	#100,@#outsts		;let the output side start up again
+	jmp	iidone
+
+4$:	clr	sync			;stop everything
+	inc	dreset			;send a reset reply
+	inc	rstrcv			;so output side understands
+	bis	#100,@#outsts		;wake it up if necessary
+	jmp	iidone
+
+	.odd
+tyibg1:	.blkb	1050.
+tyied1:
+	.odd
+tyibg2:	.blkb	1050.
+tyied2:
+	.odd
+tyibgs:	.blkb	4			;special buffer for ack only pkgs
+tyieds:
+	.even
+
+	.sbttl	Clock Handler and Time-out Code
+
+clkint:	jsr	pc,ttyclk
+	rti
+
+;;; This is a subroutine called every time the clock ticks.  It checks
+;;; to see if a reset was sent but no response was received and resends
+;;; the reset.  It also checks
+;;; all the pending buffers to see if they have been waiting too long
+;;; for an ack.  Any such buffers are rescheduled.  Also if the output side
+;;; of the tty code is idle and there are acks or nacks to be sent
+;;; null blocks will be queued so the acks get sent.
+	gitto	100
+ttyclk:	inc	eclock
+	push	r0
+	push	r1
+	push	r2
+	push	r3
+	tst	rstsnt			;was a reset sent but not acked?
+	beq	8$			;no
+	mov	eclock,r0
+	sub	rsttim,r0		;how long has it been?
+	cmp	r0,timout		;too long?
+	blt	8$			;no
+	inc	dreset			;try sending the reset again.
+	bis	#100,@#outsts		;wake up output side if necessary.
+	inc	rstto			;count these lossages
+
+8$:	mov	firstb,r0
+	beq	6$			;no blocks to time out
+1$:	cmpb	ob.sts(r0),#3		;is it waiting?
+	bne	6$			;no, neither is anything further on
+	mov	eclock,r1		;see if it has timed out.
+	sub	ob.tim(r0),r1
+	cmp	r1,timout
+	bge	2$			;yes, resend it and others if any
+	mov	ob.nxt(r0),r0
+	bne	1$
+	br	6$
+
+2$:	inc	blkto
+	jsr	pc,rsalbk		;re send all blocks (slight overkill)
+
+; That takes care of the time out stuff.  Now check for idleness.
+6$:	bit	#100,@#outsts		;are interrupts expected?
+	bne	7$			;output side is active
+	tst	tobeak			;anything to ack?
+	blt	7$			;no
+	inc	ackpkg			;tell output side do start sending ack
+	bis	#100,@#outsts		;wake it up
+7$:	pop	r3
+	pop	r2
+	pop	r1
+	pop	r0
+	rts	pc
+
+	gitto	1000
+

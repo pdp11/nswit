@@ -1,0 +1,256 @@
+;;; DOD Internet Protocol				-*-PALX-*-
+
+ipvers==4			; version number
+
+;;; Internet packet header.
+dsect <
+	 .blkw 1		; pointer to next packet in list
+ip.dat:: .blkw 1		; pointer to data
+ip.beg::
+ip.ver:: .blkb 1		; high 4 bits are version
+ip.ihl==ip.ver			; low 4 bits are header length
+ip.tos:: .blkb 1		; type of service
+ip.len:: .blkw 1		; total length
+ip.id::	 .blkw 1		; identification for reassembly
+ip.fra:: .blkw 1		; fragmentation flags and offset
+ip.ttl:: .blkb 1		; time to live
+ip.pro:: .blkb 1		; protocol
+ip.cks:: .blkw 1		; checksum
+ip.src:: .blkb 4		; source address
+ip.dst:: .blkb 4		; destination address
+ip.opt::
+	>,iph.ln
+ipminh==5*4			; min IP header length
+ipmaxh==15.*4			; max IP header length
+ipmaxl==576.			; must support packets at least this big
+				; according to protocol
+
+dsect <
+	 .blkw 1		; link
+iq.beg::
+iq.src:: .blkb 4
+iq.dst:: .blkb 4
+iq.pad:: .blkb 1
+iq.pro:: .blkb 1
+iq.len:: .blkw 1
+	>,iqh.ln
+
+;;; Compute IP packet header checksum.
+	
+ipcksm:	mov r0,r1		; R1: pointer to received header
+	add #ip.beg,r1		; ...
+	movb ip.ihl(r0),r2	; R2: number of 16 bit words in header
+	bic #177760,r2		; ...
+	asl r2			; ...
+;	bcall cksm1
+
+
+;;; Compute 1's complement checksum given pointer and length.  Arguments: R1/
+;;; pointer, R2/ length.  Result: R3/ checksum.
+
+cksm1:	clr r3			; R3: sum of header as 16 bit words
+loop <	  mov (r1)+,r4
+	  swab r4
+	  add r4,r3		; add to sum
+	  adc r3		; use end around carry to simulate 1's
+				; complement
+	  sorl r2
+	  >
+	preturn
+
+;;; Transmit packet.  R0/ data.
+
+ipxmtp:	jsr r5,save6		; save registers
+	mov r0,r1		; R1: data
+	push #iph.ln		; IPALLO arg: size in bytes
+	call ipallo		; allocate internet header
+	pop r0
+	bcs 1$			; oh well
+	mov r1,ip.dat(r0)	; pointer to data
+	movb #ipvers_4+<ipminh/4>,ip.ihl(r0)	; set version and header
+						; length
+	mov iq.src+0(r1),ip.src+0(r0)	; set source
+	mov iq.src+2(r1),ip.src+2(r0)	; ...
+	mov iq.dst+0(r1),ip.dst+0(r0)	; set destination
+	mov iq.dst+2(r1),ip.dst+2(r0)	; ...
+	movb iq.pro(r1),ip.pro(r0)	; set protocol
+	mov iq.len(r1),r2	; compute total length from data length
+	swab r2			; IP is backward
+	add #ipminh,r2		; plus header length
+	swab r2			; IP is backward
+	mov r2,ip.len(r0)	; store in header
+	movb #64.,ip.ttl(r0)	; use small time to live
+	call ipcksm		; compute checksum
+	com r3			; 1's complement negate it
+	swab r3			; IP is backward
+	mov r3,ip.cks(r0)	; store in header
+	call iprout		; route packet to its destination
+1$:	jsr r5,rest6		; restore registers
+	preturn
+
+
+;;; Process received packet.  R0/ packet.
+
+iprcvp:	call ipcksm		; compute header checksum
+;	swab r3			; IP is backward
+	com r3			; zero?
+	if ne,<			; no
+	  bcall ipdisc		; discard
+	  >
+	;; fall through to routing
+
+
+;;; Route an IP packet on its way.  R0/ packet.
+
+iprout:	;; route to its destination
+	mov #ir.tbl,r2		; R2: entry of route table
+loop <    mov r0,r1		; R1: pointer to destination address
+	  add #ip.dst,r1	; ...
+	  mov r2,r3		; R3: pointer to route table entry address
+	  mov (r3)+,r4		; R4: length of route table entry address
+  loop <    cmpb (r1)+,(r3)+	; compare destination and route
+	    bne 1$		; no match, try next route
+	    sorl r4
+	    >
+	  ;; will need to parse options at this point
+	  jcall @ir.xmt(r2)	; match, call transmit routine
+1$:	  add #ir.len,r2	; R2: next table entry
+	  cmp r2,#ir.ten	; end of table?
+	  rptl lo		; no, keep going
+	  >
+	bcall ipdisc
+
+
+dsect <
+ir.nby:: .blkw 1		; number of bytes to compare in address
+ir.add:: .blkb 4		; address
+ir.xmt:: .blkw 1		; transmitter routine
+	>,ir.len
+
+ir.tbl:	.word 4
+myaddr:	.byte 10.,0.,0.,95.	; our ARPANET address
+	.word iplocl
+
+	.word 4
+	.byte 42.,0.,0.,7.	; our S1-NET address
+	.word iplocl
+
+	.word 1
+	.byte 10.,0,0,0		; ARPANET
+	.word impxmt
+
+
+;	.word 1
+;	.byte 42.,0,0,0		; S1-NET
+;	.word ethxmt
+ir.ten::
+
+;;; Packet for this address.
+
+iplocl:	mov ip.fra(r0),r2	; R2: fragmentation field
+	swab r2			; IP bytes are backward
+	bic #140000,r2		; clear unused flag bit and don't fragment bit
+	;; check for reassembly of this packet
+	mov #ipfral,r1		; R1: next packet under assembly
+loop <    mov r1,r3		; R3: previous fragment
+	  mov (r1),r1		; next packet
+	  exitl eq
+	  cmp ip.id(r0),ip.id(r1)
+	  rptl ne
+	  cmp ip.src+0(r0),ip.src+0(r1)
+	  rptl ne
+	  cmp ip.src+2(r0),ip.src+2(r1)
+	  rptl ne
+; This test not needed unless we support multiple addresses for ourself.
+;	  cmp ip.dst+0(r0),ip.dst+0(r1)
+;	  rptl ne
+;	  cmp ip.dst+2(r0),ip.dst+2(r1)
+;	  rptl ne
+	  cmpb ip.pro(r0),ip.pro(r1)
+	  rptl ne
+
+	  ;; a fragment of this packet has been previously received
+	  tst r2		; more fragments = 0 and fragment offset = 0?
+	  if eq,<		; yes, this is a whole packet
+	    mov (r1),(r3)	; splice reassembly packet out of list
+	    push r0
+	    mov r1,r0
+	    call ipdisc		; free reassembly packet
+	    pop r0
+	    br ipdelv		; deliver received packet
+	    >
+	  bic #20000,r2		; clear more fragments bit
+	  bcall ipdisc		; for now, discard
+	  >
+	;; no previous fragments of this packet, is reassembly necessary?
+	tst r2			; more fragments = 0 and fragment offset = 0?
+	beq ipdelv		; yes, whole packet, deliver it
+	;; add to reassembly list
+	push #ipmaxl-ipmaxh
+	call ipallo
+	pop xxx
+	mov ipfral,(r0)		; add to head of fragment list
+	mov r0,ipfral		; ...
+	preturn
+
+
+;;; Complete packet for this address.
+
+ipdelv:	mov ip.dat(r0),r1	; R1: received data
+	mov ip.src+0(r0),iq.src+0(r1)	; store source, destination, protocol
+	mov ip.src+2(r0),iq.src+2(r1)	; and data length in data header
+	mov ip.dst+0(r0),iq.dst+0(r1)	; ...
+	mov ip.dst+2(r0),iq.dst+2(r1)	; ...
+	movb ip.pro(r0),iq.pro(r1)	; ...
+.if ne 0
+	movb ip.ihl(r0),r2
+	bic #177760,r2
+	asl r2
+	asl r2
+	neg r2
+	add ip.len(r0),r2	; wrong!! need to swab first
+	mov r2,iq.len(r1)
+.endc
+	call ipfree		; free IP header
+	mov r1,r0		; R0: received data
+
+	;; for now, we only support one higher level protocol: TCP.  if
+	;; necessary, this can be changed to use the protocol as a table
+	;; index.
+	cmpb iq.pro(r0),#tcppro	; TCP?
+	if eq,<			; yes
+	  jcall tprcvp		; hand to TCP
+	  >
+	bcall ipfree		; discard data
+
+
+defvar <
+ipfral:	.blkw 1
+>
+
+.iif p2, iparea==pkarea
+
+;;; Discard an IP packet.
+
+ipdisc:	push #iparea,ip.dat(r0)	; FREE args: area, pointer
+	call free		; free the data
+;	bcall ipfree		; free the header
+
+
+;;; Free block allocated in IP area.  R0/ pointer.
+
+ipfree:	push #iparea,r0		; FREE args: area, pointer
+	call free
+	preturn
+
+
+;;; Allocate block in IP area.
+
+ipallo:	push #iparea,2+2(sp)	; ALLOC args: area, size in bytes
+	call alloc		; allocate requested block
+	pop 2+2(sp)		; result1: pointer
+	tst (sp)+		; result2: test error code and clear carry
+	if ne,<			; error
+	  sec			; set carry
+	  >
+	preturn

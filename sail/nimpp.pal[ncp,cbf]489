@@ -1,0 +1,356 @@
+;;; -*-MIDAS-*-
+.TITLE	IMP Machine Program
+
+
+.insrt dcls
+.insrt defns
+.insrt strucs
+.insrt impdf
+
+setf ^"IMP interface address (0 = 176200)",impcsr
+.iif eq impcsr, impcsr==176200
+;setf ^"IMP interface vector (0 = 140)",impvec
+;.iif eq impvec, impvec==140
+
+.=100				;put down an initial clock vector
+	.word 102		;so we can easily start the program
+	rti
+
+.=1300
+.insrt ncptc
+.insrt cncp
+
+.insrt allint
+.insrt nutils
+
+;;; define some symbols describing the imp interface
+
+;impiin=impvec+0
+;impoin=impvec+4
+impist=impcsr+0
+impwai=impcsr+4
+impwci=impcsr+6
+impost=impcsr+10
+impwao=impcsr+14
+impwco=impcsr+16
+
+hstrly==4
+irdy==200
+istoen==10
+ieom==20000
+inrst==2
+igo==hstrly+istoen+1
+ordy==200
+oweom==4
+outrst==2
+ogo==1
+
+	deftcb <getimp,putimp,stptsk>
+
+clock:	0,0
+clkint:	adc clock
+	adc clock+2
+	rti
+
+start:	mtps #340		;no interruptions now
+	mov #1000,sp
+	mov #6,@#4
+	clr @#6
+	mov #12,@#10
+	clr @#12
+	mov #22,r0
+1$:	mov r0,-2(r0)
+	mov #3,(r0)+		;bpt on spurious interrupt
+	tst (r0)+
+	cmp r0,#400
+	blo 1$
+
+	mov #1202,r0
+2$:	mov r0,-2(r0)
+	mov #2,(r0)+		;ignore spurious newman interrupts
+	tst (r0)+
+	cmp r0,#1300
+	blo 2$
+
+	initcb			;set up the initial tcb's
+	clr clock		;init the clock
+	clr clock+2
+	clr arpol		;init this list
+	mov #arpol,arpole
+	mov #clkint,@#100	;init clock interrupts
+	mov #341,@#102
+	mov chheap,r1		;init the heap
+	mov #hpsize,r0
+	jsr pc,makear
+	clr conect
+	call chinit		;init the chaos net
+	mtps #0
+	jmp manlop		;start scheduling
+
+getimp:	proc 0,0,<>,<rfimpl,rfimpe,rfimps>
+
+imprc1:	mov conect,r1		;see if the connection exists
+	bne 1$			;ok, process any incoming packets
+	 call chlsn,<#impctn,#0>,<r0,r1>	;wait for a connection
+	 bcc 2$			;ok keep going
+	  cocall
+	  br imprc1		;better luck next time?
+2$:	 call chrply,<r0,r1,#3>	;open the chaos net connection now
+
+	 mov #inrst,@#impist	;reset the imp
+	 mov #outrst,@#impost
+	 mov #10000.,r0		;wait for imp to notice
+	 sob r0,.
+	 bis #hstrly,@#impist	;tell the imp we are up
+	 mov #10000.,r0		;wait for relay to settle
+	 sob r0,.
+
+	 mov r1,conect		;announce success to xmtr
+
+
+1$:	kcall alc256		;get the first packet
+	bcc 10$			;success
+	 cocall
+	 br imprc1
+10$:	clr rfimpl(fp)
+	mov fp,r2
+	add #rfimpl,r2
+	mov r2,rfimpe(fp)	;make an empty list
+	clr rfimps(fp)		;no size yet
+	jmp 9$			;start transfer into this packet
+
+3$:	bit #irdy,@#impist	;is the imp ready yet?
+	bne 4$			;yes, its ready
+	 cocall
+	 tst conect		;are we still up?
+	 bne 3$			;yep so just wait
+	 clr @#impwci		;punt imp transfer
+	 kcall frepck		;free the packet we had
+	 mov rfimpl(fp),r2	;as well as any on the list
+	 beq imprc1		;and open a new chaos connection
+	 kcall frelst
+	 br imprc1
+
+4$:	mov #pkmdsz/2,r4	;how big is the last packet?
+	add @#impwci,r4		;get size of this packet in words
+	asl r4			;convert to bytes
+	mov r4,pklen(r0)	;ok, remember it
+	add r4,rfimps(fp)	;add to the total data size
+	clr (r0)		;clear the link field
+	movb #200,pkop(r0)	;set the opcode
+	mov r0,@rfimpe(fp)	;add to list of packets
+	mov r0,rfimpe(fp)	;set end pointer for next time
+	bit #ieom,@#impist	;is thhis the last packet in a message?
+	bne 18$			;keep accumulating data
+	jmp 5$
+18$:	 bisb #100,pkop(r0)	;ok, set the packet opcode for last packet
+	 mov rfimps(fp),r4	;get the total size
+	 add #31.,r4		;round up to 16. word block
+	 ash #-5,r4		;convert into count of 16 word units
+	 mov rfimpl(fp),r0	;get the first packet
+	 cmpb pkdat+il.lnk(r0),#227	;is this is for link 227 (octal)
+					;then we must specially process
+					;this packet and insert into Chaos net
+	 bne 11$
+	  tstb pkdat+il.typ(r0)	;is this a type 0 message
+	  beq 14$		;ok process
+	   mov rfimpl(fp),r2	;free the list
+	   kcall frelst		;punt the packets
+	   jmp 1$		;resume processing
+14$:	  mov r0,r2		;copy of packet pointer in r2
+	  mov r0,r3		;we need a second copy
+	  add #pkbeg,r2		;point to start of packet header
+	  add #pkdat+ipl.ln,r3	;point to after the imp leader
+	  mov pklen(r0),r4	;get size of data area
+	  sub #ipl.ln,r4	;subtract off the imp leader
+	  asr r4		;convert to words (ipl.ln+pklen mod 2 =0
+				;since the imp only transfers whole words
+12$:	  mov (r3)+,(r2)+	;copy in data
+	  sob r4,12$
+	  mov (r0),r0		;get next packet in chain
+	  beq 13$		;no more packets
+	  mov r0,r3		;put pointer into r3
+	  add #pkdat,r3		;point to data area
+	  mov #pkmasz-pkbeg,r4	;get size of packet(not including local header)
+	  add rfimpl(fp),r4	;point to end of packet
+	  sub r2,r4		;calculate remaining size
+	  asr r4		; but we're going to move in terms of words
+	  bgt 12$
+13$:	  mov @rfimpl(fp),r2	;free the list starting with the 2nd packet
+	  kcall frelst
+	  mov rfimpl(fp),r0
+	  clr (r0)		;clear the link field
+	  swab pktyp(r0)	;swap the packet header
+	  swab pklen(r0)
+	  swab pkdhst(r0)
+	  swab pkdidx(r0)
+	  swab pkshst(r0)
+	  swab pksidx(r0)
+	  swab pkpkn(r0)
+	  swab pkakn(r0)
+	  cmpb pkop(r0),#%coopn	;see if we have to swab the packet
+	  beq 16$
+	  cmpb pkop(r0),#%corut	;see if we have to swab the packet
+	  beq 16$
+	  cmpb pkop(r0),#%costs	;see if we have to swab the packet
+	  beq 16$
+	  cmpb pkop(r0),#300	;see if we have to swab the packet
+	  blo 17$		;no, give it to the user
+16$:	  mov pklen(r0),r2	;get packet size in r2
+	  bic #pkfcnt,r2	;clear forwarding count
+	  inc r2		;round up to nearest word
+	  asr r2		;divide by two
+	  beq 17$		;nothing to swap
+	  mov r0,r3		;point to packet data area
+	  add #pkdat,r3
+15$:	  swab (r3)+		;swap the data
+	  sob r2,15$		;loop
+17$:	  lock mxcilv		;add packet to rcvpkl
+	  mov r0,@rcvpke	;thread onto end of list
+	  mov r0,rcvpke		;last packet on list
+	  unlock		;all done with critical code
+	  jmp 1$		;continue normally
+11$:	 bisb r4,pkop(r0)	;add in to opcode
+6$:	 mov (r0),r2		;save the next ptr
+	 call chdato,<r0,r1>	;send the packet out
+	 bcc 7$			;ok, process next
+	  cmpb #%csopn,cnstat(r1)	;is the connection still open
+	  beq 8$		;wait
+	   clr conect		;horrors, the connection has closed
+	   mov r0,r2		;free the packet list
+	   kcall frelst
+	   call chcls,<r1,#0>	;close the connection
+	   jmp imprc1		;start over
+8$:	  cocall		;wait
+	  br 6$			;try to send the packet
+7$:	 mov r2,r0		;pop off the list
+	 bne 6$			;send the next packet
+	 jmp imprc1			;start over
+
+5$:	kcall alc256		;get a subsequent packet
+	bcc 9$
+	 cocall
+	 br 5$
+9$:	mov r0,r2		;get a ptr to the data to receive
+	add #pkdat,r2
+	mov r2,@#impwai		;tell imp where the buffer is
+	mov #-pkmdsz/2,@#impwci	;give it negative count of word to send
+	mov #igo,@#impist	;tell it to go.
+	cocall
+	jmp 3$			;wait for the imp to get a message
+
+;;; putimp takes data from the Chaos net from both the Arpa machine
+;;; and forwarded packets and outputs to the IMP.  The Arpa machine
+;;; and the Chaos Arpa subnet alternate turns at outputting
+;;; messages to the IMP.  A single message from the Arpa  machine
+;;; does not fit into a single chaos packet and thus it is split into
+;;; multiple pieces.  The low order bit in the packet opcode is used to
+;;; indicate the last packet in the message.  Register R4 is used
+;;; to indicate the state of the program.  R4 = 0 means Ok to attempt
+;;; sending a forwarded Chaos packet.  R4 = 1 means ok to attempt sending
+;;; a multi-packet message from the Arpa machine.  R4 = 2 indicates
+;;; that we are in the process of sending a multi-packet message.
+
+putimp:	proc 0,0
+	clr r0			;no packet yet.
+	clr r4			;set flag to enable transmission on
+				;Arpanet Chaos subnet
+
+impxm1:	mov conect,r1		;do we still have a connection?
+	bne 1$
+	 mov arpol,r2		;free any stored up ARPA packets
+	 kcall frelst		;in case the net does not come up for a while
+	 clr arpol		;clear out the list
+	 mov #arpol,arpole	;init list end pointer
+	 cocall
+	 br impxm1
+
+1$:	bit #ordy,@#impost	;is the imp ready for a packet yet?
+	bne 5$
+	 cocall
+	 br 1$
+5$:	tst r0
+	beq 6$
+	 kcall frepck		;free the old packet
+	 clr r0
+6$:	tst r4			;what is the state of r4?
+	bne 7$			;not our turn yet
+	 mov arpol,r0		;is there a packet to forward?
+	 beq 7$
+	  mov #1,r4		;let the Arpa machine get a chance to send
+	  mov (r0),arpol	;point to next on the list
+	  bne 8$		;list not empty yet.
+	   mov #arpol,arpole	;set the end pointer of the list
+8$:	  mov <pklen-pkbeg>+cal.ln(r0),r2	;how much data?
+	  swab r2		;XX sucks
+	  bic #pkfcnt,r2	;clear out the forwarding count
+	  add #<pkdat-pkbeg>+ipl.ln+1,r2	;compute total byte count
+	  asr r2		;convert to word count for the imp
+	  neg r2		;imp interface likes negative counts
+	  mov r2,@#impwco	;set word count
+	  mov r0,r2		;compute start pointer
+	  add #al.ipl,r2	;skip over the link field
+	  mov r2,@#impwao	;tell the LH/DH-11
+	  mov #ogo+oweom,@#impost	;start data transfer
+	  clr (r0)		;clear link just to make sure
+	  br impxm1		;wait
+7$:	call chdati,r1,r0	;read a packet to send to the imp
+	bcc 2$
+	 cmp r4,#2		;have we started a message yet?
+	 beq 9$			;yes, leave state as is
+	  clr r4		;give Chaos forwarding a chance to send
+9$:	 cmpb #%csopn,cnstat(r1)	;is the connection still open?
+	 beq 3$
+	  clr conect
+	  call chcls,<r1,#0>	;close out the connection
+	  br impxm1
+3$:	 cocall
+	 br impxm1
+2$:	mov r0,r2		;fabricate a ptr to the packet's data
+	add #pkdat,r2
+	mov r2,@#impwao		;tell the interface
+	mov pklen(r0),r2
+	inc r2
+	bic #pkfcnt,r2
+	asr r2
+	neg r2			;tell the imp how many words
+	mov r2,@#impwco
+	mov #ogo,r2		;this is the normal go bits
+	mov #2,r4		;we might be in the middle of a message
+	bitb #1,pkop(r0)	;is this the last packet?
+	beq 4$			;nope
+	 clr r4			;we have just ended a message, give up IMP
+	 bis #oweom,r2		;if this is the last part...
+4$:	mov r2,@#impost		;start the transfer
+	cocall
+	br impxm1
+
+;;; This task just stops when an altmode is typed on the console
+
+stptsk:	cocall
+	cmpb #",@#177562
+	bne stptsk
+	mfps -(sp)
+	mtps #340
+	bpt
+	mtps (sp)+
+	br stptsk
+
+arpol:	.word 0			;list is initially empty
+arpole:	.word arpol		;init the list end pointer
+conect:	.word 0
+impctn:	.asciz "IMP"
+	.even
+
+	alctcb
+
+hpsize==20000
+chheap:	.word acthep
+tcheap==chheap
+acthep:	.blkb hpsize
+patch:
+
+.iif p2,	printn ^"Highest address is ",\.
+
+.end start
+

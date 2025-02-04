@@ -1,0 +1,234 @@
+	.sbttl	Utilities for Network Support
+
+	.sbttl Linked List and Queue handling routines
+
+;	.block que,qu		;format of chains
+dsect <
+qu.fwd:: .blkw 1		;forward ptr
+qu.bak:: .blkw 1		;backward ptr
+qu.hed:: .blkw 1		;ptr to queue header
+qu.ofq:: .blkw 1		;offset from que to real top of this block
+				; OR, in queue header, nbr of elements in it
+	>,que.ln
+				; The Queue header has the same format, with qu.hed -> que
+				;    First element is pointed to by qu.fwd
+				;    Last element is pointed to by qu.bak
+				;    The count (qu.ofq) is updated by these routines.
+				;    These are called by JSR PC,xxx with R1 and R2 holding args, R0 is bashed
+
+				; INSERT: r1 -> block to be inserted, r2 -> block to be BEFORE inserted block
+insq:	mov qu.fwd(r2),r0	;get ptr to following block
+	mov r1,qu.bak(r0)	;update BACK ptr of following block to be this
+	mov r1,qu.fwd(r2)	;update FWD ptr of previous block
+	mov r0,qu.fwd(r1)	;make FWD ptr of this block point to nxt blk
+	mov r2,qu.bak(r1)	;make BACK ptr of inserted block point back
+	mov qu.hed(r2),r0	;get queue header
+	mov r0,qu.hed(r1)	;say which queue it now sits in
+	inc qu.ofq(r0)		;increment count of elements in queue
+	rts pc
+
+				; DELETE:  r1 -> block to be removed
+delq:	mov qu.fwd(r1),r0	;ptr to next block
+	mov r0,@qu.bak(r1)	;make previous blk FWD ptr point to nxt blk
+				; ! Only works because qu.fwd = 0 !
+	mov qu.bak(r1),qu.bak(r0)	;make nxt blk BACK ptr point to prv blk
+	mov qu.hed(r1),r0	;get which queue it came from
+	dec qu.ofq(r0)		;decrement queue length
+	clr qu.hed(r1)		;say it is not attached to any queue
+	rts pc
+
+				; UP:  r1 -> current, returns with prv in r1, Carry is set is current is first
+upq:	mov qu.bak(r1),r1	;get BACK ptr
+	br chkqbk		;use common code for upq
+
+				; DOWN:  r1 -> current, returns with nxt in r1, Carry is set if current is last
+dwnq:	mov (r1),r1		;get nxt ptr (this assumes qu.fwd is offset 0)
+chkqbk:	cmp r1,qu.hed(r1)	;is this block its own queue header?
+	beq 1$			;yes, we have gotten off the end
+	clc			;for return status
+	rts pc
+1$:	sec			;set carry to indicate top of chain
+	rts pc			; UP is slower than DOWN !
+
+				; MAKE:  r1 -> place for queue header (4 words)
+makq:	mov r1,qu.fwd(r1)	;set head ptr
+	mov r1,qu.bak(r1)	;set tail ptr
+	mov r1,qu.hed(r1)	;it is its own queue header
+	clr qu.ofq(r1)		;there are no blocks yet
+	rts pc
+
+	.sbttl	Free storage manager
+
+				; Free storage is handled as a queue of free blocks within an area
+;	.block are,ah		;area header
+dsect <
+ah.arq:: .blkb que.ln		;queue header for chain of free blocks
+ah.siz:: .blkw 1		;total siz of area
+ah.end:: .blkw 1		;ptr to word after end of area
+ah.fre:: .blkw 1		;number of bytes in free chain
+ah.use:: .blkw 1		;number of bytes allocated
+ah.cnt:: .blkw 1		;count of blocks allocated
+ah.alc:: .blkw 1		;count of calls to alloc in this area
+ah.frc:: .blkw 1		;count of calls to free in this area
+ah.afc:: .blkw 1		;count of number of times an alloc failed
+	>,are.ln
+
+;;; addr(area)+ah.siz should give ah.end
+;;; fre + use should be siz - are.ln
+;;; minumum reasonable length for an area is 16. words
+
+;;; INIT:  r1 -> area, r0 -> siz of area in bytes
+makear:	jsr pc,makq		;initialize the queue
+	mov r0,ah.siz(r1)	;initialize the area header
+	mov r1,ah.end(r1)
+	add r0,ah.end(r1)
+	clr ah.use(r1)
+	clr ah.cnt(r1)
+	clr ah.alc(r1)
+	clr ah.frc(r1)
+	clr ah.afc(r1)
+	mov r2,-(sp)		;save temporary
+	mov r1,r2		;make copy of area ptr
+	add #are.ln,r1		;point to first available byte in free area
+	sub #are.ln,r0		;actual free area
+	mov r0,ah.fre(r2)	;bytes in free area
+	mov r0,qu.ofq(r1)	;available bytes in this block
+	sub #que.ln,qu.ofq(r1)	;must subtract header length
+	jsr pc,insq		;put this block into free chain
+	mov r2,r1		;restore area ptr
+	mov (sp)+,r2		;restore temp register
+	mov ah.siz(r1),r0	;restore length
+	rts pc			;return
+
+; ALLOC:  r0 has count of bytes requested, r1 -> free storage area
+;    If successful, r0 has count allocated, r1 has good word ptr to block
+;    and carry bit is OFF
+allocb:	push r2
+	inc r0			;round size up to nearest word.
+	bic #1,r0
+	push r0			;block size
+	mov r1,r2
+	cmp r1,qu.hed(r1)	;is this really a queue?
+	bne 4$			;go lose
+	add ah.siz(r1),r2	;check end
+	cmp ah.end(r1),r2	;is area size and area end consistent?
+	bne 4$			;no, go lose
+	inc ah.alc(r1)
+	mov r1,r2
+1$:	jsr pc,dwnq		;move down to free block
+	bcs 6$			;lose if no room in area
+	cmp (sp),qu.ofq(r1)	;is the request larger than this free block?
+	bhi 1$			;yes, go back to see if any more free blocks
+	mov qu.ofq(r1),r0	;get available size
+	sub (sp),r0		;see how much larger we are
+	cmp r0,#2*que.ln	;will there be much room left?
+	bhis 2$			;yes, go and just shorten free block
+	jsr pc,delq		;no, just unchain this and give the whole thing
+	mov qu.ofq(r1),r0	;get free stuff
+	add #que.ln,r0		;and its header length
+	sub r0,ah.fre(r2)	;decrease free count
+	add r0,ah.use(r2)	;increase used count
+	br 3$			;go and return
+2$:	mov (sp),r0		;get length to allocate
+	add #que.ln,r0		;add enough to account for block header
+	sub r0,qu.ofq(r1)	;subtract amount left in free block
+	sub r0,ah.fre(r2)	;subtract amount left in free chain
+	add r0,ah.use(r2)	;increase used count
+	add qu.ofq(r1),r1	;get ptr to end of block (minus header len)
+	add #que.ln,r1		; make to ptr to just past end (to new blk)
+	mov (sp),qu.ofq(r1)	;mark the length (of new block)
+	clr qu.hed(r1)
+3$:	add #que.ln,r1		;move ptr up to start of user accessible area
+	inc ah.cnt(r2)		;increment number of blocks out there
+	pop r0
+;	mov	allist,r2
+;	mov	r1,(r2)+
+;	mov	6(sp),(r2)+
+;	cmp	r2,#allend
+;	blo	5$
+;	 mov	#allist+2,r2
+;5$:	mov	r2,allist
+	pop r2			;restore temporary
+	clc			;clear carry bit for success indication
+	rts pc
+6$:	inc ah.afc(r1)		;count number of no room in area errors
+4$:	pop r0
+	pop r2
+	mov #-1,r1		;no block allocated!
+	sec
+	rts pc			;bad return
+
+; FREE:  r1 -> block to free;  r0 -> areaheader from whence it came
+freeb:	push r2,r0,r1
+	inc ah.frc(r0)
+	mov r0,r2		;move area head ptr to r2
+	add ah.siz(r2),r2	;check end
+	cmp r1,r0		;is block below the area beginning?
+	blo 6$			;yes
+	cmp r1,r2		;is it above the top of the area?
+	bhi 6$
+	cmp ah.end(r0),r2	;size and end consistent?
+	bne 6$
+	cmp qu.hed(r0),r0	;is this a queue?
+	bne 6$
+	mov r1,r2		;save block ptr
+	sub #que.ln,r2		;make ptr to block header
+	cmp r2,r0		;see if it is really where it is supposed to be
+	blos 6$			;bad
+	cmp r1,ah.end(r0)	;see if it starts before end of block
+	bhis 6$			;bad
+	add -2(r1),r1		;add length of this block to ptr to get end
+	cmp r1,(sp)		;keep checking (if it wrapped back, BAD)
+	blos 6$
+	cmp r1,ah.end(r0)
+	bhi 6$
+	mov r0,r1		;move area head ptr to r1 for queue handlers
+	jsr pc,dwnq		;move down to first free chain
+	bcs 3$			;if no blocks, go insert this
+1$:	cmp r2,r1		;see if we have passed earlier blocks yet
+	beq 6$			;this should never happen
+	blo 2$			; now we passed it, must go insert BEFORE r1 blk
+	jsr pc,dwnq		;still early, go down another step
+	bcc 1$			;if we got another one, see if it is passed us
+2$:	mov qu.bak(r1),r0	;ptr to block directly before ours
+	mov r0,r1
+	cmp r1,qu.hed(r1)	;was this previous block the chain header?
+	beq 3$			;yes, just go place into queue
+	add qu.ofq(r1),r0	;get length in this free block
+	add #que.ln,r0		;make ptr to just after this free block
+	cmp r0,r2		;does our block abut that previous free one?
+	bhi 6$			; this means inconsistent free chain and freeb
+	blo 3$			;no, it is not adjacent, go insert after
+	mov qu.ofq(r2),r0	;get the actual current length of our block
+	add #que.ln,r0		;make physical length of block
+	add r0,qu.ofq(r1)	;add its length onto previous free one
+	br 4$			;go clean up
+3$:	mov r2,r0		;to reverse R1 and R2
+	mov r1,r2
+	mov r0,r1
+	jsr pc,insq		;insert our block into free chain AFTER prv
+	mov qu.ofq(r1),r0	;get length of block
+	add #que.ln,r0		;make physical length
+4$:	mov qu.hed(r1),r2	;get back queue header
+	dec ah.cnt(r2)		;decrement number of blocks allocated from here
+	add r0,ah.fre(r2)	;increase number of free words
+	sub r0,ah.use(r2)	;decrease number of words allocated
+	mov r1,r0		;get block header
+	add qu.ofq(r1),r0	;get its length
+	add #que.ln,r0		;make physical length
+	cmp r0,qu.fwd(r1)	;does it abut next area?
+	bne 5$
+	mov r1,r2		;save the ptr
+	mov r0,r1		;get next ptr into position
+	jsr pc,delq		;delete it from free chain
+	add #que.ln,qu.ofq(r2)	;move the space into preceeding free blk
+	add qu.ofq(r1),qu.ofq(r2)
+5$:	pop r1,r0,r2
+	clr r1
+	clc
+	rts pc
+
+6$:	pop r1,r0,r2
+	sec
+	rts pc
+

@@ -1,0 +1,1101 @@
+;;; -*-PALX-*-
+
+.sbttl	CAFACE - The Chaos Net to Arpa Net Interface
+
+;;; This file contains the interface routines between the Chaos
+;;; Network and the Arpa Network.  It takes incoming packets
+;;; from Chaos Net connections and sends them out over an Arpanet
+;;; Connection.
+
+;;; Procedure CAINT is run upon the receipt of an RFC for the
+;;; contact name ARPA.  The pointer to the RFC packet is placed in
+;;; R0 at the time the task is created.  The format of the JCL
+;;; is as follows "ARPA <host name/number> <ICP socket> <sockets to reserve>"
+;;; where host name is the ASCII host name of an Arpanet host, host
+;;; number of the form ASCII "<Host on IMP>/<imp #>" in octal, the
+;;; ARPA ICP socket in ASCII and octal, and the number of sockets
+;;; to reserve for ARPA communication: 2 for Telnet and 4 for FTP.
+
+caint:	proc 0,0,<>,<caskts,caltf,caftl,caamsg,caamsl,carmns,capkin,caamsz,caicpc,caccon,cainrc,cainsc,altflg,ftpflg,casknm,caftpr,caftps,ftpfls,catrlr,cahst,caimp,caicp,capkt>
+
+	mov r1,caccon(fp)	;save the chaos connection for later
+	mov r0,capkt(fp)	;save a pointer to the packet
+	mov #cadisa,r4
+	tst alowca
+	beq 1$
+	mov #cajcle,r4		;this is for failing
+	mov r0,r2		;get pointer to the the RFC JCL
+	add #pkdat,r2
+	mov pklen(r0),r3	;get length of data
+	bic #pkfcnt,r3		;clear out the forwarding count
+	if eq,<
+1$:	  jmp calst
+	  >
+
+loop <	  dec r3
+	  beq 1$		;syntax error
+	  cmpb (r2)+,#40	;search for first space
+	  rptl ne
+	  >
+
+
+	mov #hstnam,r1
+	push r2,r3
+10$:	  mov 2(sp),r2
+	  mov (sp),r3
+	  mov (r1)+,r0
+	  beq 20$
+  loop <    cmpb (r0),(r2)
+	    if ne,<
+	      movb (r0),-(sp)
+	      sub #'a-'A,(sp)
+	      cmpb (sp)+,(r2)
+	      bne 10$
+	      >
+	    dec r3
+	    beq 10$
+	    inc r2
+	    cmpb (r0)+,#40
+	    rptl ne
+	    >
+	  mov hnhstn-hstnam-2(r1),cahst(fp)
+	  mov hnimpn-hstnam-2(r1),caimp(fp)
+	  cmp (sp)+,(sp)+
+	  br 30$
+20$:	pop r3,r2
+
+	movb #'/,r0		;"/" is the delimiter of this number
+	kcall rdnum		;read the host number
+	bcs 1$
+	mov r0,cahst(fp)	;save away the host number
+
+	movb #40,r0		;delimiter is a space
+	kcall rdnum
+	bcs 1$
+	mov r0,caimp(fp)	;store the imp number
+
+30$:	movb #40,r0		;read the socket number
+	kcall rdnum
+	bcs 1$
+	mov r0,caicp(fp)
+
+	tst r3			; any more arguments?
+	if eq,<			; no
+	  mov #2,caskts(fp)
+	  >
+	else <
+	  movb #40,r0		;how many sockets do we want?
+	  kcall rdnum
+	  bcs 1$
+	  add #2,r0		;account for ICP overhead
+	  mov r0,caskts(fp)	;save number of sockets
+	  >
+caopna:	call getsox,caskts(fp),r1	;get sockets
+	clr caltf(fp)		;clear out the connections
+	clr caftl(fp)		;" "
+	clr caicpc(fp)		;" "
+	clr caftpr(fp)		;clear out the FTP skt numbers
+	clr caftps(fp)
+	mov r1,r2
+	add #2,r2		;get socket to listen on
+	mov #calsne,r4		;move in loss message
+	call listen,<r2,#8>,caftl(fp)	;listen on the telnet sox
+	bcs 1$
+	inc r2
+	mov r2,casknm(fp)	;save this number
+	inc casknm(fp)		;these are the FTP sockets if any
+	call listen,<r2,#8>,caltf(fp)	;listen on the telnet sox
+	bcs 1$			;lose because the listen failed
+
+	mov #caicpe,r4		; something wrong in ICP, say "host down"
+	call orconn,<r1,caimp(fp),cahst(fp),#0,caicp(fp),#32.>,r1
+				;do the ICP processing
+	mov r1,caicpc(fp)	;save this
+	bcs 1$			;failed to open connection properly
+
+	mov clock,r3		;put time in r3
+	add #caictm,r3		;add in the timeout
+
+loop  <	cmpb (r1),#s.open	;wait for open
+	exitl eq		;ok, at last we are getting somewhere
+	cmpb (r1),#s.clsd	;did the connection close on us?
+	if eq,<			;yes,
+	  mov #carfus,r4	; then presume it refused us!
+	  br 1$			; clean things up
+	  >
+	cocall
+	cmp clock,r3		;time yet?
+	rptl mi			;if not then loop
+2$:	mov #caicpt,r4		;host timed out in ICP
+1$:	jmp caalst		;else we have timed out on ICP
+	>
+
+	mov clock,r3		;get current time and compute
+	add #caictm,r3		;the timeout time
+
+loop  <	call readms,r1,r2	;wait for socket number
+	bcs 1$			;connection must have closed before we
+				;received our message.  This is an error.
+	tst r2			;data arrived yet? R2 is zero if no data.
+	exitl ne		;if not zero we got out message
+	cocall
+	cmp clock,r3		;check timeout?
+	rptl mi			;keep looping if we have time left
+	br 2$			;every byte counts in this program!
+	>
+	
+	call fremap,r2		;free message
+
+	call close,caicpc(fp),r0	;close the connection for ICP
+	mov #0,caicpc(fp)	;clear this out to indicate we closed it
+				;use mov to avoid affecting the c bit
+	bcs 1$			;error during close
+
+	mov caccon(fp),r1
+	mov #1,r3
+	cmp caskts(fp),#2
+	if hi,<
+	  mov #3,r3
+	  >
+	call chrply,<capkt(fp),r1,r3>	;open the chaos net connection now
+	clr capkt(fp)		;chrply freed this, make sure not again
+
+	mov clock,r3		;determine timeout time for data connections
+	add #caictm,r3
+	mov #cadctm,r4		;error message pointer in r4
+
+loop  <	cmpb @caftl(fp),#s.open	;see if the connection has opened
+	if eq,<
+	  cmpb @caltf(fp),#s.open	;see if the connection is opened
+	  exitl eq		;if so, then both are open, we are done here
+	  >
+	cocall			;wait
+	cmp clock,r3		;time yet?
+	rptl mi			;ok keep it up
+	jmp caalst		;we lose
+	>
+
+	clr capkin(fp)		;initialize this flag
+	clr caamsg(fp)		;clear this so we have no packet pending
+	clr altflg(fp)		;flag for alternating between reg and FTP chan
+	clr ftpflg(fp)		;We are not using FTP channel right now.
+	clr ftpfls(fp)		;clear out the FTP send channel flag
+	clr cainsc(fp)		;clear out the INR/INS count
+	clr cainrc(fp)		; "    "
+	mov #dolgot,catrlr(fp)	;logout when done
+
+;;; Now, we have an open CHAOS and and two open ARPANET connections.
+;;; The task now checks to see if the ARPANET is ready to accept another
+;;; packet for output.  If so, then a packet is read from the CHAOS net
+;;; (if present) and then sent out over the ARPANET.  Next, the CHAOS
+;;; net connection is probed to determine if will accept another packet
+;;; in which case data from the ARPA net is read out and sent over the
+;;; CHAOS connection.  Note that it may take up to two CHAOS packets to
+;;; hold a single ARPA message.
+
+;;; In more detail:  The packet opcode for normal (telnet) channel
+;;; forwarding is 200.  Opcode 201(202) signifies that an INR(INS) should be
+;;; sent over the Arpanet if recieved from the user.  201(202) mean INR(INS)
+;;; received when sent to the user.
+
+;;;  An opcode of 204 from the user indicates
+;;; that we should listen on the FTP receive data socket (caaftl+2)
+;;; and 210 on the FTP send socket (caaltf+2).  Opcode 220 from the user
+;;; means transmit on the FTP send socket.  Data is discarded if that
+;;; socket is not open.  We send opcode 220 for data on the FTP receive socket
+;;; and opcode 204 means the FTP receive connection has closed. Finally
+;;; 240 from the user means close the send socket.
+
+caacvt:
+	tst caltf(fp)		;any connection local net to foreign net?
+	if eq,<			;check the other side
+1$:	  jmp caacv1		;no output side connection now but we continue
+				;to check for any remaining input
+				;before closing the chaos connection
+	  >
+	call arstat,caltf(fp)	;Will the ARPANET accept another packet?
+	bcs 1$			;ARPA net not ready yet.
+
+	call chdati,r1,r0	;get a CHAOS packet
+	if cs,<			;no input now, check connection state
+	  cmpb #%csopn,cnstat(r1)	;is CHAOS connection open?
+	  beq 1$		;connection still open, check foreign to local
+	  kcall frepck		;free the close packet if any
+	  jmp calst1		;chaos connection has closed!  Cleanup.
+	  >
+
+	cmpb #204,pkop(r0)	;is this a commnad to listen on FTP receive skt
+	if eq,<			;if so then do
+	  tst ftpflg(fp)	;are we already listening on this connection?
+	  if eq,<		;if not then do
+	    cmpb #6,caskts(fp)	;do we have 4 sockets reserved?
+	    if eq,<		;if so then do
+	      mov casknm(fp),r2	;get the getsox number we should use
+	      call listen,<r2,#8>,caftpr(fp)	;listen
+	      if cc,<		;if no error then
+		mov #1,ftpflg(fp)	;turn ftp receive flag
+					;so caacv1 checks it
+		>
+	      >
+	    >
+	  kcall frepck		;get rid of the packet
+	  br caacvt		;start over again.
+	  >
+
+	cmpb #210,pkop(r0)	;is this a listen on the FTP send socket
+	if eq,<
+	  tst ftpfls(fp)	;are we already listening on the receive skt
+	  if eq,<		;if not then do
+	    cmpb #6,caskts(fp)	;ok, see if we have the sockets reserved
+	    if eq,<		;if so then do
+	      mov casknm(fp),r2	;get the skt number of the receive side
+	      inc r2		;convert to send socket number by adding 1
+	      call listen,<r2,#8>,caftps(fp)	;wait for connection and
+						;skt number to channel index
+	      if cc,<		;if we succeed in listening then
+		mov #1,ftpfls(fp)	;turn ftp receive flag on
+		>
+	      >
+	    >
+	  kcall frepck		;free the packet
+	  br caacv1		;done
+	  >
+
+	cmpb #240,pkop(r0)	;have we been commanded to close the send skt
+	if eq,<
+	  tst ftpfls(fp)	;is the send socket open now?
+	  if ne,<		;if it is then close it
+	    call close,caftps(fp),r2
+	    clr caftps(fp)	;clear the connection index so we don't
+				;try to close a second time during cleanup
+	    clr ftpfls(fp)	;zero the flag
+	    >
+	  kcall frepck		;free the packet
+	  br caacv1		;check for another packet
+	  >
+
+	bitb #1,pkop(r0)	;are we supposed to send INR?
+	if ne,<
+	  call sndinr,caftl(fp)	;send an INR
+	  >
+	bitb #2,pkop(r0)	;how about INS
+	if ne,<
+	  call sndins,caltf(fp)
+	  >
+
+	mov r0,r2
+	add #pkdat,r2		;get pointer to data area
+	mov pklen(r0),r3	;how many bytes of data?
+	bic #pkfcnt,r3		;clear out the forwarding count
+	beq 2$			;free the packet, no data in it.
+	cmpb pkop(r0),#220	;is the pkt opcode 220?
+	if eq,<			;then we have an FTP data packet
+	  tst ftpfls(fp)	;ftp sending turned on?
+	  if ne,<
+	    call hhsend,<caftps(fp),r3>	;prepare to send data
+	    bcs 3$		;close things up
+	    >
+	  else <
+2$:	    kcall frepck	;free the packet
+	    br caacv1		;do receive side
+	    >
+	  >
+	else <
+	  call hhsend,<caltf(fp),r3>	;prepare to send data
+	  bcs 3$		;close things up
+	  >
+
+loop <	  movb (r2)+,r4
+	  call hhsnd8,r4
+	  sorl r3
+	  >
+
+	call hhdsnd		;force out the data
+	if cs,<			;if we had an error
+3$:	  cmpb #220,pkop(r0)	;is it on auxiliary FTP channel?
+	  if ne,<		;if not then shut down
+	    kcall frepck	;free the packet
+	    call agetse,caltf(fp),r4	;get error code from socket
+	    jmp calstx		;connection has closed while sending data
+	    >
+	  call close,caftps(fp),r2	;close the Arpa connection
+	  clr caftps(fp)	;clear this out
+	  clr ftpfls(fp)	;alternate channel has been closed
+	  >
+	kcall frepck		;free the chaos packet
+
+caacv1:
+	tst caftl(fp)		;any connection
+	beq 99$
+	call chstat,r1		;Is the CHAOS window full?
+	bcc 9$			;nothing more to do now
+	 cmpb #%csopn,cnstat(r1)	;is the connection still with us?
+	 beq 99$
+	 jmp calst1
+9$:	tst capkin(fp)
+	beq 1$
+	mov caamsl(fp),r2	;get the ptr to the incomplete msg
+	add carmns(fp),r2	;point to next byte to send
+	mov caamsz(fp),r3	;get the original size
+	sub carmns(fp),r3	;this how many are left to send
+	br 8$			;do the common code
+
+99$:	jmp 2$
+
+1$:	tst caftl(fp)
+	if ne,<
+	  call arinrs,caftl(fp),r2	;get the ins info
+	  add r2,cainsc(fp)	;update local count
+	  >
+	tst caltf(fp)
+	if ne,<
+	  call arinrs,caltf(fp),r3	;get the inr info
+	  add r3,cainrc(fp)	;update the count
+	  >
+	clr caamsg(fp)		;we have no message now.
+	mov caftl(fp),r4	;get tn receive socket
+	tst altflg(fp)		;should I read data from the FTP channel?
+	if ne,<			;yes
+	  mov caftpr(fp),r4	;get the FTP receive socket.
+	  >
+	call readms,r4,r2	;is there a message from the ARPANET?
+	if cs,<			;no
+	 tst altflg(fp)		;using FTP channel this time?
+	 if eq,<		; no
+	   call agetse,r4,r4	;get the error code for the socket
+	   jmp calstx
+	   >
+	 clr altflg(fp)		;use regular channel from now on.
+	 clr ftpflg(fp)		;no longer using alternate channel
+	 call close,r4,r2	;close the FTP data connection
+	 clr caftpr(fp)		;no longer in use
+loop <	   kcall alc16		;get a small packet
+	   exitl cc
+	   cocall		;wait for the packet
+	   rptl
+	   >
+	 movb #204,pkop(r0)	;indicate connection closed
+	 clr pklen(r0)		;no data in this packet
+	 call chdato,<r0,r1>	;send the packet
+	 if cs,<
+	  cmpb cnstat(r1),#%csopn	;connection still open?
+	  if eq,<		; yes, so chstat lied
+	    bpt
+	    >
+	  kcall frepck		;free the packet
+	  jmp calst1		;clean up and close out
+	  >
+	 jmp 2$			;done with this turn
+	 >			; end READMS fail
+	;; READMS won.
+	mov r2,caamsg(fp)	;save for freeing
+	if eq,<
+	  clr caamsl(fp)	;fake up an empty packet
+	  clr carmns(fp)
+	  clr caamsz(fp)
+	  clr r3		;zero length
+	  tst cainsc(fp)	;any ins to report
+	  bne 8$		;do so!
+	  tst cainrc(fp)	;any inr to report
+	  bne 8$		;do so!
+	  jmp 2$		;nothing to do now. reschedule
+	  >
+	add #<msg.ln+ipl.ln>,r2	;get ptr to host leader
+	mov hl.nby(r2),r3	;get number into r2
+	swab r3			;the IMP is backwards
+	mov r3,caamsz(fp)	;save the size of the msg
+	add #hl.txt,r2		;point to text area
+	mov r2,caamsl(fp)	;save the pointer to the message
+	clr carmns(fp)		;none done so far
+
+8$:	mov r3,r4
+	cmp r3,#pkmdsz		;is the size larger than the max?
+	if hi,<			; yes
+	  mov #pkmasz/2,r3	;get max packet we can allocate
+	  mov #pkmdsz,r4	;we will send as much as we can
+	  inc capkin(fp)	;set the packet incomplete flag
+	  >
+	else <
+	  add #pkdat+1,r3	;we have room to send the whole thing so add
+	  asr r3		;in the header and round up to next word
+	  clr capkin(fp)	;clear the packet incomplete flag
+	  >
+	kcall alcsiz		;get a packet
+	if cs,<
+	  inc capkin(fp)	;try again later
+	  br 2$			;go around again
+	  >
+	mov r0,r3
+	add #pkdat,r3		;point to data area
+	movb #200,pkop(r0)	;this is a data packet
+	mov r4,pklen(r0)
+	if ne,<
+  loop <    movb (r2)+,(r3)+	;transfer the data
+	    sorl r4		;loop
+	    >
+	  >
+	tst capkin(fp)		;see if we are in the incomplete pkt case
+	if ne,<
+	  add #pkmdsz,carmns(fp)	;record how much we have done for next time.
+	  >
+	else <
+	  tst caamsg(fp)	;is there a packet to free?
+	  if ne,<
+	    call fremap,caamsg(fp)	; free message
+	    clr caamsg(fp)	;we have no message to free now.
+
+;;; This turns out to be a mistake since you send too many allocate packets
+;;; which jam up link zero to that host waiting for RFNMs
+.if ne 0
+	    tst altflg(fp)	;are we using the alternate channel?
+	    if ne,<
+	      call aralc,caftpr(fp)	;send allocation
+	      >
+	    else <
+	      call aralc,caftl(fp)	;send allocation on tn channel
+	      >
+.endc
+	    >
+	  >
+	tst cainrc(fp)
+	if ne,<			;none of these
+	  bisb #1,pkop(r0)
+	  dec cainrc(fp)
+	  >
+	tst cainsc(fp)
+	if ne,<
+	  bisb #2,pkop(r0)
+	  dec cainsc(fp)
+	  >
+	tst altflg(fp)		;sending FTP data?
+	if ne,<
+	  bisb #20,pkop(r0)	;indicate as FTP data
+	  >
+	call chdato,<r0,r1>	;output
+	if cs,<
+	  cmpb cnstat(r1),#%csopn	;connection still open?
+	  if eq,<		;yes, so chstat lied
+	    bpt			;this should never happen!
+	    >
+	  kcall frepck		;free the packet we were trying to send
+	  br calst1		;lose, clean up the connections
+	  >
+
+2$:
+	cocall			;reschedule
+	tst ftpflg(fp)		;are we listening on the FTP channel?
+	if ne,<			;yes
+	  tst capkin(fp)	;in the middle of a packet?
+	  if eq,<		;no
+	    com altflg(fp)	;invert this so we use the other channel next.
+	    >
+	  >
+	jmp caacvt		;next round
+
+calst:	mov capkt(fp),r0	;free up the JCL packet?
+	if ne,<			;yes,
+	  kcall frepck		; free the RFC packet
+	  >
+	call chcls,<caccon(fp),r4>	;refuse connection with explanation
+	call logout		;we are done, go away.
+	bpt
+
+caalst:	kcall clsarp		;close all the open arpa connections
+	br calst		;no refuse the chaos connection
+
+;;; Assume we can bash r4 with error message.
+
+calst1:	mov #caaccc,r4		;Closure because CHAOS net closed
+;	br calstx
+
+calstx:	kcall clsarp
+	call chcls,<r1,r4>	;flush the chaos connection, with explanation
+	mov caamsg(fp),r1	;free any pending message, if nay
+	beq 1$			;no message here
+	 call fremap,r1
+1$:	jmp @catrlr(fp)		;finish up
+	bpt
+
+dolgot:	call logout		;logout the user
+	bpt			;should never get here
+
+clsarp:	call close,caicpc(fp),r2	;close out all the arpa connections.
+	call close,caftl(fp),r2
+	call close,caltf(fp),r2
+	call close,caftpr(fp),r2
+	call close,caftps(fp),r2
+	kretrn
+
+caictm===20.*60.		;give the Arpanet 20 seconds to lose
+cadisa:	.asciz "Gateway disabled [Arpa]"
+srvdup:	.asciz /Server already exists on socket [Arpa]/
+srvnrm:	.asciz /Insufficient Resources [Arpa]/
+srvwin:	.asciz /Server Creation Successful [Arpa]/
+cajcle:	.asciz /Bad arguments in RFC [Arpa]/
+calsne:	.asciz /Unable to listen on sockets [Arpa]/
+carfus:	.asciz /Host Refused [Arpa]/
+caicpe:	.asciz /Host Down [Arpa]/
+caaccc:	.asciz /Connection closed, chaos dropped connection [Arpa]/
+;caaccs:	.asciz /Connection closed, while sending [Arpa]/
+;caaccr:	.asciz /Connection closed, while reading [Arpa]/
+caicpt:	.asciz /Host timed out during ICP [Arpa]/
+cadctm:	.asciz /Host timed out opening data connections [Arpa]/
+srvpoe:	.asciz /Unable to complete ICP [Arpa]/
+hst1:	.ascii "s1-a "
+hst2:	.ascii "sail "
+hst3:	.ascii "score "
+hst4:	.ascii "mc "
+hst5:	.ascii "multics "
+hst6:	.ascii "xx "
+hst7:	.ascii "ai "
+hst8:	.ascii "berk "
+	.even
+
+hstnam:	.word hst1,hst2,hst3,hst4,hst5,hst6,hst7,hst8,0
+hnimpn:	.word 95.,11.,11.,44.,6.,44.,6.,78.
+hnhstn:	.word 1.,0.,3.,3.,0.,0.,2.,1.
+
+.sbttl SRVHAN - The SERVER Handler for the ARPA-CHAOS Interface
+
+;;; This procedure is run is response to a CHAOS connection for contact
+;;; SERVER.  The exact format of the JCL string is:
+;;;
+;;;     SERVER <Skt Number> <Number of Sockets> <Contact Name> <Host>
+;;;
+;;;  where all fields are ASCII characters separated by blanks and all
+;;;  numbers are in octal.  The format of the host name is <subnet>,<number>
+;;;  and if 0,0 is given the host connecting to server is used.  In response
+;;;  to a server connection request, a task is begun which waits for an
+;;;  ARPANET ICP to the given <Skt Number>.  The CHAOS connection to contact
+;;;  name <Contact Name> is opened upon receipt of ICP then the ARPA ICP is
+;;;  concluded and data transfer may commence.  Note that <Number of Sockets>
+;;;  are reserved at ICP time for use of that transfer.
+srvhan:	proc 0,0,<>,<srvctn,srvskt,srvskn,srvhst,srvpkt,srvcon>
+	mov r0,r4		;R4: RFC
+	kcall pktsiz		;get the size of the packet
+	kcall alcsiz
+	if cs,<			;no memory
+	  mov r4,r0
+	  call frepck		;free RFC
+	  call chcls,<r1,#0>	;close out the connection
+	  call logout		;we are all through now
+	  >
+	push r5			;save the fp (r5)
+	mov r4,r5		;copy packet in r5 to one in r0
+	kcall coppck
+	pop r5
+	call chrply,<r4,r1,#1>	;complete the opening of the connection
+	clr srvctn(fp)		;we have no contact name area yet, init to 0
+	mov r0,srvpkt(fp)	;save pointer to the packet
+	mov r1,srvcon(fp)	;save the connection
+	mov #cajcle,r4		;err message into r4
+	mov r0,r2		;get pointer to data area
+	add #pkdat,r2
+	mov pklen(r0),r3	;get length of data area
+	bic #pkfcnt,r3
+	if eq,<			;if eq to zero then error
+1$:	  jmp snderr
+	  >
+
+loop  <	cmpb (r2)+,#40		;search for end of contact name
+	exitl eq
+	sorl r3			;keep searching for space
+	br 1$			;syntax error
+	>
+	dec r3			;account for last char scanned
+	ble 1$			;syntax error
+
+	movb #40,r0		;set delimitr for the number
+	kcall rdnum		;read a number
+	bcs 1$			;syntax error
+	mov r0,srvskt(fp)	;save the socket number info
+
+	movb #40,r0		;set delimeter for the number
+	kcall rdnum		;read a number
+	bcs 1$
+	mov r0,srvskn(fp)	;save the number of sockets
+
+	push r2			;save the current location in the string
+	push r3			;save the current remaining length
+loop  <	cmpb (r2)+,#40		;search for space to terminate contact name
+	exitl eq
+	sorl r3
+2$:	jmp snderr
+	>
+	dec r3			;account for the space
+	ble 2$
+
+	sub (sp),r3		;how long is this string?
+	neg r3			;we did the subtraction backwards
+	cmp r3,#1		;only one long? just a space?
+	beq 2$			;syntax error
+	push r3			;save this value
+	inc r3			;add one (round to nearest word)
+	asl r3			;divide by two
+	kcall alcsiz		;get area to hold the string
+	if cs,<
+	  mov #srvnrm,r4	;no room
+	  jmp snder2		;temporary error
+	  >
+	mov r0,srvctn(fp)	;save pointer to contact name
+	pop r1			;get back size of string
+	dec r1			;don't count the trailing space
+	pop r3			;get back chars remaining in packet
+	pop r2			;get pointer to start of the string
+loop  <	movb (r2)+,(r0)+	;copy string into area
+	dec r3			;decrement the length
+	sorl r1			;loop
+	>
+	dec r3			;account for the space
+	inc r2			;skip over the space
+	clrb (r0)		;make asciz string
+
+	movb #54,r0		;a , delimits the subnet number
+	kcall rdnum
+	bcs 2$
+	movb r0,srvhst+1(fp)	;save the number of sockets
+	if eq,<			;if it was zero then we use the host who
+	  mov srvpkt(fp),r0	;sent us this message
+	  mov pkshst(r0),srvhst(fp)
+	  br srvst2		;we are all done with this phase
+	  >
+
+	movb #40,r0		;space terminates the host num field
+	kcall rdnum		;read the number
+	bcs 2$
+	movb r0,srvhst(fp)	;phew, done parsing
+
+srvst2:				;step two, check socket and create task
+	call fndskt,srvskt(fp),r0	;see if someone is already listening
+	if cc,<
+	  mov #srvdup,r4	;set error code for duplicate server requests
+	  cmpb #s.wait,sk.sts(r0)	;socket is waiting for RFC?
+	  beq snder3
+	  >
+	mov #srvnrm,r4		;load task creation failed msg
+	call crtask,<srvskt(fp),srvskn(fp),srvctn(fp),srvhst(fp),#0,#0,#srvprc>,r2
+				;create a server listener task
+	bcs snder2		;send temporary error
+	mov srvpkt(fp),r0	;get back the RFC packet in r0
+	movb #200,pkop(r0)	;set the packet opcode
+	mov #srvwin,r2		;copy in success string
+
+srvend:	mov srvcon(fp),r1	;get back connection in r1
+	clr pklen(r0)		;clear the packet length
+	kcall strcpy		;copy into packet, use string pointed to by r2
+
+				;try to tell the user we have won, if we can't
+				;then we give up
+
+loop  <	call chdato,<r0,r1>	;output the packet
+	exitl cc
+	cocall			;wait
+	cmpb #%csopn,cnstat(r1)	;connection still open?
+	rptl eq			;try again if it is
+	kcall frepck		;if we lose free the packet anyway
+	>
+	call chcls,<r1,#0>	;close the connection
+	call logout		;we are all done
+
+snder2:	mov #202,r1		;set error code for temporary error
+	br sndcm		;do common error code
+
+snder3: mov #203,r1		;set error code for duplicate listen
+	br sndcm
+
+snderr: mov #201,r1		;set error opcode
+sndcm:	mov srvctn(fp),r0	;do we have a contact name area yet?
+	if ne,<			;if so, then free it
+	  kcall frepck
+	  >
+	mov r4,r2		;move message string to r2
+	mov srvpkt(fp),r0
+	movb r1,pkop(r0)	;set error opcode
+	br srvend
+
+;;; RDNUM takes an ascii octal number and converts it to binary.
+;;; r2 -> string, r3 -> chars left in string, r0 -> delimeter for number.
+;;; Output: number in r0,  r2-> after delimeter, r3 -> remaining length
+;;; Note that it is legal for the string to end before a delim is encountered.
+;;; Carry bit is set to indicate error.	
+
+rdnum:	push r1			;save register
+	push r0			;put delim on top of stack
+	tst r3			;any chars left
+	beq 1$			;error
+
+	cmpb (r2),#'0		;see if we have at least one digit
+	blo 1$			;less than 0
+	cmpb (r2),#'7
+	bhi 1$			;gtr than 7
+
+	clr r0			;init number to zero
+loop  <	  movb (r2)+,r1		;get digit
+	  cmpb r1,(sp)		;end of string yet?
+	  if eq,<
+	    dec r3		;account for the delimiter
+	    exitl
+	    >
+	  sub #'0,r1		;is it less than 0?
+	  blo 1$
+	  cmp r1,#7		;is it gtr than 7, we only accept octal digits
+	  bhi 1$
+	  ash #3,r0		;multiply by 8
+	  add r1,r0		;accumulate result
+	  sorl r3		;loop
+	  >
+	pop *			;throw away delimeter
+	pop r1			;restore register
+	clc
+	kretrn			;return
+1$:	pop *
+	pop r1
+	sec
+	kretrn
+
+.sbttl SRVPRC - The CHAOS Net to ARPA Net Server Procedure
+;;;
+;;; A request to establish an ARPA network server causes a task to be created
+;;; which runs SRVPRC to listen for the IPC, establish the data connection
+;;; and pass control to the data transfer subroutine.  SRVPRC is invoked
+;;; with r0 = socket to listen on, r1 = number of sockets to reserve when
+;;; completing the IPC, r2 = CHAOS contact name when connection arrives
+;;; and r3 = host to contact.
+;;;
+srvprc:	proc 0,0,<>,<caskts,caltf,caftl,caamsg,caamsl,carmns,capkin,caamsz,caicpc,caccon,cainrc,cainsc,altflg,ftpflg,casknm,caftpr,caftps,ftpfls,catrlr,srvpim,srvphs,srvpcn>
+
+loop  <
+	call listen,<r0,#32.>,caicpc(fp)	;listen for printer connection
+	if cs,<
+	  call fndskt,r0,r4	;see if someone is already listening
+	  if cs,<
+	    cocall		;the socket isn't quite closed yet
+	    rptl
+	    >
+	  else <
+	    cmpb #s.wait,sk.sts(r4)	;someone already waiting?
+	    if ne,<
+	      mov r2,r0
+	      kcall frepck
+	      call logout
+	      >
+	    >
+	  >
+	>
+
+  loop	< cmpb @caicpc(fp),#s.open	;connection open yet?  Wait for ICP
+	  exitl eq
+	  cmpb @caicpc(fp),#s.wait
+	  if eq,<
+	    cocall
+	    rptl
+	    >
+	  mov r2,r0		;free the contact name string
+	  kcall frepck
+	  call close,caicpc(fp),r4	;clean up former connection.
+	  call logout
+	  >
+
+	clr caltf(fp)		;init data connection
+	clr caftl(fp)
+	clr caftpr(fp)
+	clr caftps(fp)
+
+	call chopen,<r3,#1,#chchto,r2>,srvpcn(fp)
+				;try to open CHAOS end of the connection
+	if cs,<
+	  mov r2,r0		;free the contact name string
+	  kcall frepck
+	  mov srvpcn(fp),r0	;free the close packet
+	  kcall frepck
+	  kcall clsarp
+	  kcall logout
+	  >
+	mov r2,r0		;free the storage containing the contact name
+	kcall frepck
+
+	call getsox,r1,r0	;get sockets for the ICP
+	call gcinfo,caicpc(fp),<r1,r2,r3,srvpim(fp),srvphs(fp),r1,r1,r1>
+	add #3,r3		;compute foreign skt number for xmit
+	adc r2			;its a 32 bit number
+
+	call orconn,<r0,srvpim(fp),srvphs(fp),r2,r3,#8.>,caftl(fp)
+	if cs,<
+2$:	  kcall clsarp		;clean up arpa mess
+	  call chcls,<srvpcn(fp),#srvpoe>	;close chaos connection
+	  call logout		;we are all done for
+	  >
+	dec r3			;r3 was odd so this can't cause a borrow
+	inc r0			;compute our xmit socket
+	call otconn,<r0,srvpim(fp),srvphs(fp),r2,r3,#8.>,caltf(fp)
+	bcs 2$			;error, close up
+
+	dec r0
+	call hhsend,<caicpc(fp),#4>	;send skt numbers to the host
+	bcs 2$
+
+	call hhsd32,<#0,r0>
+	call hhdsnd
+	bcs 2$
+	call close,caicpc(fp),r4	;close the ICP socket
+	bcs 2$
+	clr caicpc(fp)		;ICP channel closed
+				;open the receive side (even skt number)
+
+	mov clock,r3		;wait for the data connection to open
+	add #caictm,r3		;determine the timeout time
+loop  <	cmpb @caftl(fp),#s.open	;connection open?
+	if eq,<
+	  cmpb @caltf(fp),#s.open
+	  exitl eq		;everything open now
+	  >
+	cocall			;wait
+	cmp clock,r3		;time up yet?
+	rptl mi			;try again
+	br 2$			;we lose
+	>
+
+	clr ftpflg(fp)		;clear ftp flags
+	clr ftpfls(fp)
+	clr altflg(fp)
+	clr capkin(fp)		;clear data control flags
+	clr caamsg(fp)
+	clr cainsc(fp)		;clear out the INR/INS count
+	clr cainrc(fp)		; "    "
+	clr r0
+	mov #dolgot,catrlr(fp)	;logout when a connection closes
+	mov srvpcn(fp),r1	;conversion routine expects CHAOS conn in r1
+	jmp caacvt		;jump to the protocol conversion program
+
+.if ne 0
+chaser:
+loop <	  cocall
+	  call listen,<#131,#32.>,r0	; wait on socket 131
+	  rptl cs
+	  ;; wait for something to happen
+  loop <    cocall
+	    cmpb (r0),#s.wait	; still waiting for connection?
+	    rptl eq		; yes
+	    >
+	  cmpb (r0),#s.open	; connection open?
+	  bne 2$		; no
+
+	  call getsox,#2,r1	; get 2 sockets for the ICP
+	  call gcinfo,r0,<*,r2,r3,r4,r5,*,*,*>
+				; GCINFO results: R2,R3/ foreign socket,
+				; R4/ foreign imp, R5/ foreign host
+
+	  ;; Now send our receive socket number to other side.
+
+	  call hhsend,<r0,#4>	; start composition of 32 bit message
+	  bcs 2$
+	  call hhsd32,<#0,r1>	; put socket number into message
+	  call hhdsnd		; send message
+	  bcs 2$
+
+	  ;; Create a new task to do the rest of ICP and eventual data
+	  ;; transfer.
+	  call crtask,<#0,r1,r2,r3,r4,r5,#chasr1>,*
+
+2$:	  call close,r0,*	; close ICP connection
+	  rptl			; go back to serve again
+	  >
+
+chasr1:	add #3,r3		; +3 is foreign transmit socket number
+	adc r2			; ...
+	call orconn,<r1,r4,r5,r2,r3,#8.>,r0
+	bcs 4$
+	dec r3			; -1 to get foreign receive socket number
+				; r3 was odd so this can't cause a borrow
+	inc r1			; compute local transmit socket number
+	call otconn,<r1,r4,r5,r2,r3,#8.>,r5
+	bcs 3$
+
+	;; Wait for data connections to open.
+
+	mov clock,r3		; R3: time at which to give up
+	add #caictm,r3		; ...
+loop <    cocall
+	  cmp clock,r3		; timed out?
+	  bpl 2$		; yes
+	  cmpb (r0),#s.open	; receive connection open yet?
+	  rptl ne		; no, wait
+	  cmpb (r5),#s.open	; transmit connection open yet?
+	  rptl ne		; no, wait
+	  >
+
+	;; Send greeting message.
+
+	call hhsend,<r5,#lgremsg>	; start composition of greeting message
+	bcs 2$			; connection closed
+	mov #gremsg,r2		; HHSNDN arg: pointer
+	mov #lgremsg,r3		; HHSNDN arg: length
+	call hhsndn		; copy greeting to message
+	call hhdsnd		; send message
+	bcs 2$			; connection closed
+
+	;; Read chaosnet destination.
+	clr r2			; no message yet
+	clr r1			; R1: host number
+loop <    kcall reada
+	  bcs 2$
+	  cmp r3,#'0
+	  exitl lo
+	  cmp r3,#'7
+	  exitl hi
+	  sub #'0,r3
+	  ash #3,r1
+	  add r3,r1
+	  rptl
+	  >
+
+	;; Open chaosnet connection.
+	call chopen,<r1,#1,#chchto,#telnam>,r1
+	if cs,<			; failed
+	  bic #pkfcnt,pklen(r1)
+	  mov pklen(r1),r4
+	  add #3,r4
+	  call hhsend,<r5,r4>
+	  bcs 9$
+	  call hhsnd8,#'-
+	  mov r1,r4
+	  add #pkdat,r4
+  loop <    movb (r4)+,r3
+	    call hhsnd8,r3
+	    dec pklen(r1)
+	    rptl pl
+	    >
+	  call hhsnd8,#15
+	  call hhsnd8,#12
+	  call hhdsnd
+;	  bcs 9$
+9$:	  push r1
+	  call frepk
+	  br 2$
+	  >
+
+	call hhsend,<r5,#3>
+	bcs 1$
+	call hhsnd8,#'+
+	call hhsnd8,#15
+	call hhsnd8,#12
+	call hhdsnd
+	bcs 1$
+
+	;; create task to handle copy from chaos connection to arpa connection.
+	;; from this point on, we're no longer responsible for the arpa
+	;; transmit connection.
+	inc cnfcnt(r1)		; 2 CHCLS's required
+	call crtask,<r5,r1,#0,#0,#0,#0,#chasr2>,*
+
+	;; copy from arpa connection to chaos connection.
+loop <	  kcall getms		; get message from arpanet
+	  exitl cs		; connection closed
+	  mov ms.nby(r2),r5	; R5: number of bytes to send
+	  cmp r5,#pkmdsz	; if more than will fit in a chaos packet
+	  if hi,<		; then
+	    mov #pkmdsz,r5	; only do a full packet this time around
+	    >
+	  push #pkdat		; ALLOCW arg: nbytes
+	  add r5,(sp)		; ...
+	  call allocw		; allocate chaos packet to hold arpa message
+	  pop r4		; ALLOCW result: pointer
+	  movb #200,pkop(r4)	; set opcode
+	  mov r5,pklen(r4)	; set length
+	  push r4,r1		; CHDOW args: packet, connection
+	  add #pkdat,r4		; R4: pointer into chaos packet
+loop <	    kcall reada		; get byte from arpa message
+	    movb r3,(r4)+	; put into chaos packet
+	    sorl r5
+	    >	    
+	  call chdow		; send chaos packet (args on stack)
+	  rptl cc		; back from more, unlesss connection closed
+	  >
+
+	;; one of the connections closed.
+
+	tst r2
+	if ne,<
+	  call fremap,r2
+	  >
+
+1$:	call chcls,<r1,#0>	; close chaos connection
+	br 3$			; don't close arpa transmit, that's
+				; CHASR2's responsibility
+
+2$:	call close,r5,*		; close arpa transmit connection
+3$:	call close,r0,*		; close arpa receive connection
+4$:	jmp logout
+
+
+getms:	tst r2			; already got a message?
+	if eq,<			; no
+  loop <    cocall		; wait
+	    call readms,r0,r2	; try to read one
+	    bcs 1$		; connection closed
+	    rptl eq		; no message, go wait
+	    mov msg.ln+ipl.ln+hl.nby(r2),ms.nby(r2)
+	    swab ms.nby(r2)	; (the IMP is backwards)
+	    exitl eq
+	    call fremap,ms.nby(r2)
+	    rptl
+	    >
+	  add #ipl.ln+hl.txt,ms.hsb(r2)
+	  >
+	clc
+1$:	kretrn
+
+reada:	kcall getms		; wait until there's a message with data
+	bcs 1$
+	movb @ms.hsb(r2),r3	; get next byte
+	inc ms.hsb(r2)		; ...
+	dec ms.nby(r2)		; decrement byte count
+	if eq,<			; got last byte
+	  call fremap,r2	; free message
+	  clr r2		; and forget about it
+	  >
+	clc			; win return
+1$:	kretrn
+
+
+chasr2:	;; R0/ arpa transmit connection.  R1/ chaos connection.
+loop <	  call chdiw,r1,r2	; R2: chaos packet
+	  exitl cs		; exit if connection closed
+	  mov pklen(r2),r4	; R4: number of bytes in chaos packet
+	  bic #pkfcnt,r4	; ...
+	  if ne,<		; don't send anything if zero
+	    call hhsend,<r0,r4>	; prepare a arpa message as long as the
+				; chaos packet for sending
+	    exitl cs		; arpa connection closed
+	    mov r2,r3		; R3: pointer to first data byte
+	    add #pkdat,r3	; ...
+    loop <    movb (r3)+,r5	; get next chaos byte
+	      call hhsnd8,r5	; put it into arpa message
+	      sorl r4
+	      >
+	    call hhdsnd		; send arpa message
+	    exitl cs		; connection closed
+	    >
+	  push r2		; FREPK arg: pointer
+	  call frepk		; free chaos packet
+	  rptl
+	  >
+	tst r2			; chaos packet to free?
+	if ne,<			; yes
+	  push r2		; FREPK arg: pointer
+	  call frepk		; free chaos packet
+	  >
+	call chcls,<r1,#0>	; close chaos connection
+	call close,r0,*		; close arpa transmit connection
+	jmp logout
+
+gremsg:	.ascii "S1-GATEWAY
+"
+lgremsg==.-gremsg
+telnam:	.asciz "TELNET"
+	.even
+.endc
+
+defvar	<
+alowca:	.word -1
+>

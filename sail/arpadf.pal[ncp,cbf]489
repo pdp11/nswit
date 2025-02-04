@@ -1,0 +1,74 @@
+;;; -*-midas-*-
+.if1
+	.print "Defining ARPA machine Chaos Network configuration
+"
+.endc
+
+;.iif ndf asmnm,  asmnm===1	; use Newman by default
+.iif ndf asmmap, asmmap===0	; no /23 mapping by default
+.iif ndf asmchi, asmchi===1	; chaosnet IMP (as opposed to hardware IMP)
+
+.if eq asmchi
+setf ^"IMP interface address (0 = 176200)",impcsr
+.iif eq impcsr, impcsr==176200
+;setf ^"IMP interface vector (0 = 140)",impvec
+;.iif eq impvec, impvec==140
+.endc
+
+
+.insrt	chmacs
+
+;;; The Network Configuration and Definition for the ARPA-11 CHAOS Net
+
+twinfg===1			;2 window machine
+nmaddr==177200			;at new address
+inhst==4			;the host number of this machine
+innet==21			;the host net number
+mxcilv==7			;maximum interrupt level of all the interfaces
+
+ttyhck==5			;hack to lower the number of tty packets 
+				;allocated by trncvr; default is 2 per tty
+				;interface.
+
+	makcif 21,4,nmc			; 0 Newman
+	makcif 20,2,tty,176700,340	; 1 IMP-11 19.2
+;	makcif 20,2,tty,176730,370	; 1 IMP-11 9600
+;	makcif 23,2,tty,176500,300	; 2 Dev-6 19.2
+	makcif 23,2,tty,176720,360	; 3 Dev-6 9600
+	makcif 22,1,tty,176560,220	; 4 MD-11 
+	makcif 24,1,tty,176520,320	; 5 Dev-7 (backup for Newman)
+
+route <	20,1			;Subnet 1 Main campus chaosnet
+	,20,1			;Subnet 2 AI 9th floor ethernet
+	,20,1			;Subnet 3 MC IO 11 Pseudo net
+	,20,1			;Subnet 4 AI CHAOS 11 pseudo net
+	,20,1			;Subnet 5 XX Network 11 pseudo net
+	,20,1			;Subnet 6 Tech Square chaosnet
+	,20,1			;Subnet 7 Plasma Fusion Center link
+	,20,1 			;Subnet 10 LCSnet
+	,20,1			;Subnet 11 Arpanet pseudo net
+	,20,1			;Subnet 12 VII LCSnet
+	,20,1			;Subnet 13 EE pseudo subnet
+	,20,1			;Subnet 14 Main campus Chaosnet (IN logical subnet)
+	,20,1			;Subnet 15 Tech Square Chaosnet (IN logical subnet)
+	,20,1			;Subnet 16 PFC Chaosnet (IN logical subnet)
+	,20,1			;Subnet 17 West Campus Chaos subnet (Math Dept ...)
+	,0,2			;Subnet 20 Arpa-11 to Imp-11 TTY net
+	,0,1			;Subnet 21 NM-crock net
+	,0,4			;Subnet 22 Arpa-11 to MD-11 TTY net
+	,0,3			;Subnet 23 Arpa-11 to Dev-6 TTY net
+	,0,5			;Subnet 24 Arpa-11 to Dev-7 TTY net on loading line
+	,0,0			;Subnet 25 LLL reserved
+	,0,0			;Subnet 26 LLL reserved
+	,0,0			;Subnet 27 LLL reserved
+	,0,0			;Subnet 30 LLL reserved
+	,0,0			;Subnet 31 LLL reserved
+	,0,0			;Subnet 32 LLL reserved
+	,0,0			;Subnet 33 LLL reserved
+	,20,1			;Subnet 34 EECS Chaos subnet (bldgs 36 38 39 20)
+	,20,1			;Subnet 35 East Campus Chaos subnet
+	>
+
+rcvxmt <nmcvr,trncvr>
+
+

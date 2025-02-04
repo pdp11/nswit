@@ -1,0 +1,433 @@
+.sbttl	Peritek support
+
+ptwid==512.			; pixels per raster line
+ptht==512.			; raster lines per screen
+ptcht==10.			; character height (1st row is always 0)
+
+;;; Peritek destination object.
+
+dsect <
+	 .blkb ldptcl		; destination object protocol
+ptcsr::	 .blkw 1		; address of CSR
+ptline:: .blkw 1		; address of line buffer
+ptcpos:: .blkw 1		; pointer to current position's word
+ptlina:: .blkw 1		; offset of current line with CSR bits
+ptdraw:: .blkw 1		; pointer to routine to draw next character
+	 >,lpdobj
+
+
+ptinit:	call nxmcat		; catch NXM if Peritek doesn't respond
+	  2$
+	mov (r5),r1		; R1: Peritek CSR address
+	clr (r1)		; clear CSR to test for Peritek response
+	call nxmclr		; it's there, clear NXM catch
+	mov #ptparm,r2		; R2: pointer to monitor parameters
+	mov #nptparm,r3		; R3: number of monitor parameters
+	clr r4			; R4: parameter number
+loop <	  mov r4,4(r1)		; select paramter number
+	  inc r4		; advance count for next iteration
+	  movb (r2)+,6(r1)	; set parameter value
+	  sorl r3
+	  >
+	mov #62,(r1)		; set go and reserve video
+	push #lpdobj		; ALLOCW arg: byte size
+	call allocw		; allocate Peritek destination object
+	pop r0			; ALLOCW result: pointer
+	mov #"PT,name(r0)	; set protocol fields
+	mov #ptsend,send(r0)	; ...
+	mov #ptsend,sendw(r0)	; ...
+	mov #ptsnds,sends(r0)	; ...
+	mov #nopsub,break(r0)	; ...
+	mov #nopsub,force(r0)	; ...
+	mov #nopsub,close(r0)	; ...
+	mov (r5)+,ptcsr(r0)	; save PINIT parameter: CSR address
+	mov (r5)+,ptline(r0)	; save PINIT parameter: raster line address
+	call ptclr		; clear screen
+	mov (r5)+,r1		; R1: source port number to steal for
+				; keyboard
+	mov sport(r1),@nexts
+	mov r0,@nextd
+1$:	add #2,nexts
+	add #2,nextd
+	return
+2$:	add #3*2,r5		; skip parameters
+	clr @nexts		; clear source and destination objects
+	clr @nextd		; ...
+	br 1$
+
+
+ptparm:	.byte 78.-1,64.,64.+3,16.*3+5,33.-1,7,32.,32.,83.
+	.byte 16.-2,40,16.-2,0,0,0,0
+nptparm==.-ptparm
+
+ptsnds:	bpt
+
+ptsend:	cmpb r1,#40		; < 40 or >= 200?
+	blt ptctrl		; yes
+	;; displayable character
+ptsnd1:	push r2,r3,r4,r5	; save registers
+	asl r1			; *2 for word indexing
+	mov ptfont(r1),r1	; R1: pointer to 9 font bytes
+	mov ptcpos(r0),r2	; R2: word in raster line of current
+				; character
+	mov #ptwid/8.,r3	; R3: one raster line increment for speed
+	mov ptcsr(r0),r4	; R4: address of CSR for speed
+	mov ptlina(r0),(r4)	; map in raster line to be first written
+	jmp @ptdraw(r0)		; go to character routine that shifts
+				; appropriately for current position
+
+
+;;; Control character.
+
+ptctrl:	bhi 1$			; if >= 200 then ignore character
+	asl r1			; *2 for word indexing
+	jmp @ptctld(r1)		; dispatch on control character
+1$:	return
+
+ptctld:	.word ptsnd1		;  0 ^@
+	.word ptsnd1		;  1 ^A
+	.word ptsnd1		;  2 ^B
+	.word ptsnd1		;  3 ^C
+	.word ptsnd1		;  4 ^D
+	.word ptsnd1		;  5 ^E
+	.word ptsnd1		;  6 ^F
+	.word ptbel		;  7 ^G BEL
+	.word ptbs		; 10 ^H BS
+	.word pttab		; 11 ^I TAB
+	.word ptlf		; 12 ^J LF
+	.word ptsnd1		; 13 ^K
+	.word ptsnd1		; 14 ^L FF
+	.word ptcr		; 15 ^M CR
+	.word ptsnd1		; 16 ^N
+	.word ptsnd1		; 17 ^O
+	.word ptsnd1		; 20 ^P
+	.word ptsnd1		; 21 ^Q
+	.word ptsnd1		; 22 ^R
+	.word ptsnd1		; 23 ^S
+	.word ptsnd1		; 24 ^T
+	.word ptsnd1		; 25 ^U
+	.word ptsnd1		; 26 ^V
+	.word ptsnd1		; 27 ^W
+	.word ptsnd1		; 30 ^X
+	.word ptsnd1		; 31 ^Y
+	.word ptsnd1		; 32 ^Z
+	.word ptsnd1		; 33 ^[ ESC
+	.word ptsnd1		; 34 ^\
+	.word ptsnd1		; 35 ^]
+	.word ptsnd1		; 36 ^^
+	.word ptsnd1		; 37 ^_
+
+ptbs:	return
+
+pttab:	return
+
+ptbel:	mov #2,r1
+	xor r1,@ptcsr(r0)
+	;; should wait somehow
+	xor r1,@ptcsr(r0)
+	return
+
+
+;;; Return - set character position to first column of current line.
+
+ptcr:	mov ptline(r0),ptcpos(r0)	; next character goes in raster
+	mov #pto2,ptdraw(r0)		; column 2 of first word
+	return
+
+
+;;; Line feed - advance to next line and clear it.
+
+ptlf:	push r1,r2		; save registers
+	add #ptcht*<ptwid/8.>,ptlina(r0)
+				; down 10 raster lines
+	cmp ptlina(r0),#ptht/ptcht*ptcht*<ptwid/8>
+				; now set to raster line corresponding to
+				; character line 51?
+	if hi,<			; yes
+	  call pthom1		; wrap to first character line
+	  >
+	mov ptlina(r0),@ptcsr(r0)	; start at unused raster of character
+	sub #ptwid/8.,@ptcsr(r0)	; line 
+	mov #ptcht,r1		; R1: number of lines per character
+loop <	  call ptclin		; clear raster line
+	  add #ptwid/8.,@ptcsr(r0)	; move to next raster line
+	  sorl r1
+	  >
+	pop r2,r1		; restore registers
+	return
+
+
+;;; Home - Set character position to upper left corner.
+
+pthom:	call ptcr		; move to first character position in column
+pthom1:	bic #177700,ptlina(r0)	; clear raster line field (and blanking bit
+				; for randomness)
+	bis #100,ptlina(r0)	; set raster line to 1 since first raster of
+				; all characters is zero
+	return
+
+
+;;; Clear screen.
+
+ptclr:	push r2			; save register
+	mov #162,ptlina(r0)	; raster line 1, reverse video
+	call ptcr		; move to first column
+	bic #77700,@ptcsr(r0)	; look at line 0
+	bis #100000,@ptcsr(r0)	; turn on blanking
+loop <	  call ptclin		; clear line
+	  add #ptwid/8,@ptcsr(r0)	; move to next
+	  rptl cc		; keep going if haven't overflowed line
+	  >			; number and thus cleared blanking and set
+				; carry
+	pop r2			; restore register
+	return
+
+
+;;; Clear current raster line.
+
+ptclin:	mov ptline(r0),r2
+ptclrs:	;; CALL PTCLRS(X) to fall into loop in middle.
+.rept ptwid/16.
+	clr (r2)+
+.endr
+	return
+
+;;; JSR PC,PTNXTC to set PTDRAW to next character routine.
+
+ptnxtc:	pop ptdraw(r0)		; set PTDRAW to next character routine
+	pop r5,r4,r3,r2		; save registers pushed in PTSEND
+	return
+
+pto0n:	;; here to set PTDRAW to PTO0
+	jsr pc,ptnxtc
+
+pto0:
+.rept ptcht-1
+.iif ne .rpcnt,	add r3,(r4)
+	bisb (r1)+,(r2)
+.endr
+	jsr pc,ptnxtc
+
+pto6:
+.rept ptcht-1
+.iif ne .rpcnt,	add r3,(r4)
+	movb (r1)+,r5
+	swab r5
+	asr r5
+	asr r5
+	bis r5,(r2)
+.endr
+	jsr pc,ptnxtc
+
+pto12:	add #2,r2
+	mov r2,ptcpos(r0)
+.rept ptcht-1
+.iif ne .rpcnt,	add r3,(r4)
+	movb (r1)+,r5
+	asl r5
+	asl r5
+	asl r5
+	asl r5
+	bisb r5,-1(r2)
+	swab r5
+	bisb r5,(r2)
+.endr
+	jsr pc,ptnxtc
+
+pto2:
+.rept ptcht-1
+.iif ne .rpcnt,	add r3,(r4)
+	movb (r1)+,r5
+	asl r5
+	asl r5
+	bis r5,(r2)
+.endr
+	jsr pc,ptnxtc
+
+pto8:	inc r2
+.rept ptcht-1
+.iif ne .rpcnt,	add r3,(r4)
+	bisb (r1)+,(r2)
+.endr
+	jsr pc,ptnxtc
+
+pto14:	add #2,r2
+	mov r2,ptcpos(r0)
+.rept ptcht-1
+.iif ne .rpcnt,	add r3,(r4)
+	movb (r1)+,r5
+	swab r5
+	asr r5
+	asr r5
+	bisb r5,-1(r2)
+	swab r5
+	bisb r5,(r2)
+.endr
+	jsr pc,ptnxtc
+
+pto4:
+.rept ptcht-1
+.iif ne .rpcnt,	add r3,(r4)
+	movb (r1)+,r5
+	asl r5
+	asl r5
+	asl r5
+	asl r5
+	bis r5,(r2)
+.endr
+	jsr pc,ptnxtc
+
+pto10:
+.rept ptcht-1
+.iif ne .rpcnt,	add r3,(r4)
+	movb (r1)+,r5
+	swab r5
+	asl r5
+	asl r5
+	bis r5,(r2)
+.endr
+	;; now increment PTCPOS and see if we just put a character in last
+	;; column.
+	add #2,r2
+	bit #<ptwid/8>-1,r2
+	if eq,<
+	  call ptcr
+	  jcall ptlf
+	  >
+	mov r2,ptcpos(r0)
+	jmp pto0n
+
+ptfont:
+.rept 128.
+	.word ptbits+<.rpcnt*<ptcht-1>>
+.endr
+
+ptbits:	.byte 20,10,16,25,25,25,16,2,1		; ^@   0
+	.byte 0,4,4,4,4,25,16,4,0		; ^A   1
+	.byte 0,0,26,11,11,11,26,0,0		; ^B   2
+	.byte 14,22,21,17,21,21,17,1,1		; ^C   3
+	.byte 0,0,4,12,21,0,0,0,0		; ^D   4
+	.byte 0,0,0,37,20,20,0,0,0		; ^E   5
+	.byte 0,0,14,2,16,2,14,0,0		; ^F   6
+	.byte 0,0,36,13,12,12,21,0,0		; ^G   7
+	.byte 0,1,1,2,4,12,21,0,0		; ^H  10
+	.byte 0,0,14,22,23,15,1,2,4		; ^I  11
+	.byte 14,22,4,14,22,21,16,0,0		; ^J  12
+	.byte 10,24,4,4,4,4,4,5,2		; ^K  13
+	.byte 0,4,4,37,4,4,37,0,0		; ^L  14
+	.byte 0,0,34,12,11,11,6,0,0		; ^M  15
+	.byte 0,0,12,25,25,12,0,0,0		; ^N  16
+	.byte 6,10,30,26,21,21,16,0,0		; ^O  17
+	.byte 0,0,36,1,1,1,36,0,0		; ^P  20
+	.byte 0,0,17,20,20,20,17,0,0		; ^Q  21
+	.byte 0,0,16,21,21,21,0,0,0		; ^R  22
+	.byte 0,0,21,21,21,16,0,0,0		; ^S  23
+	.byte 21,21,37,21,12,12,4,0,0		; ^T  24
+	.byte 37,20,20,36,20,20,37,0,0		; ^U  25
+	.byte 0,0,16,33,25,33,16,0,0		; ^V  26
+	.byte 4,10,37,10,4,2,37,2,4		; ^W  27
+	.byte 0,4,2,37,2,4,0,0,0		; ^X  30
+	.byte 0,4,10,37,10,4,0,0,0		; ^Y  31
+	.byte 20,10,37,4,37,2,1,0,0		; ^Z  32
+	.byte 4,4,12,21,12,4,4,0,0		; ^[  33
+	.byte 0,10,4,2,4,10,36,0,0		; ^\  34
+	.byte 0,2,4,10,4,2,17,0,0		; ^]  35
+	.byte 0,37,0,37,0,37,0,0,0		; ^^  36
+	.byte 0,0,0,21,12,4,0,0,0		; ^_  37
+	.byte 0,0,0,0,0,0,0,0,0			;     40
+	.byte 4,4,4,4,4,0,4,0,0			; !   41
+	.byte 12,12,12,0,0,0,0,0,0		; "   42
+	.byte 0,12,37,12,12,37,12,0,0		; #   43
+	.byte 4,16,25,5,16,24,25,16,4		; $   44
+	.byte 37,23,10,4,2,31,31,0,0		; %   45
+	.byte 2,5,5,2,25,11,26,0,0		; &   46
+	.byte 6,6,4,2,0,0,0,0,0			; '   47
+	.byte 20,10,4,4,4,10,20,0,0		; (   50
+	.byte 1,2,4,4,4,2,1,0,0			; )   51
+	.byte 0,4,25,16,25,4,0,0,0		; *   52
+	.byte 0,4,4,37,4,4,0,0,0		; +   53
+	.byte 0,0,0,0,0,6,6,4,2			; ,   54
+	.byte 0,0,0,37,0,0,0,0,0		; -   55
+	.byte 0,0,0,0,0,6,6,0,0			; .   56
+	.byte 0,20,10,4,2,1,0,0,0		; /   57
+	.byte 16,21,31,25,23,21,16,0,0		; 0   60
+	.byte 4,6,4,4,4,4,16,0,0		; 1   61
+	.byte 16,21,20,10,4,2,37,0,0		; 2   62
+	.byte 16,21,20,14,20,21,16,0,0		; 3   63
+	.byte 10,14,12,11,37,10,10,0,0		; 4   64
+	.byte 37,1,17,20,20,21,16,0,0		; 5   65
+	.byte 14,2,1,17,21,21,16,0,0		; 6   66
+	.byte 37,20,10,10,4,4,4,0,0		; 7   67
+	.byte 16,21,21,16,21,21,16,0,0		; 8   70
+	.byte 16,21,21,36,20,10,6,0,0		; 9   71
+	.byte 0,0,6,6,0,6,6,0,0			; :   72
+	.byte 0,0,6,6,0,6,6,4,2			; ;   73
+	.byte 0,10,4,2,4,10,0,0,0		; <   74
+	.byte 0,0,37,0,37,0,0,0,0		; =   75
+	.byte 0,2,4,10,4,2,0,0,0		; >   76
+	.byte 16,21,10,4,4,0,4,0,0		; ?   77
+	.byte 16,21,35,25,35,1,16,0,0		; @  100
+	.byte 16,21,21,37,21,21,21,0,0		; A  101
+	.byte 17,22,22,16,22,22,17,0,0		; B  102
+	.byte 16,21,1,1,1,21,16,0,0		; C  103
+	.byte 17,22,22,22,22,22,17,0,0		; D  104
+	.byte 37,1,1,17,1,1,37,0,0		; E  105
+	.byte 37,1,1,17,1,1,1,0,0		; F  106
+	.byte 16,21,1,1,31,21,16,0,0		; G  107
+	.byte 21,21,21,37,21,21,21,0,0		; H  110
+	.byte 16,4,4,4,4,4,16,0,0		; I  111
+	.byte 20,20,20,20,20,21,16,0,0		; J  112
+	.byte 21,11,5,3,5,11,21,0,0		; K  113
+	.byte 1,1,1,1,1,1,37,0,0		; L  114
+	.byte 21,33,25,25,21,21,21,0,0		; M  115
+	.byte 21,21,23,25,31,21,21,0,0		; N  116
+	.byte 16,21,21,21,21,21,16,0,0		; O  117
+	.byte 17,21,21,17,1,1,1,0,0		; P  120
+	.byte 16,21,21,21,21,25,16,30,0		; Q  121
+	.byte 17,21,21,17,5,11,21,0,0		; R  122
+	.byte 16,21,1,16,20,21,16,0,0		; S  123
+	.byte 37,4,4,4,4,4,4,0,0		; T  124
+	.byte 21,21,21,21,21,21,16,0,0		; U  125
+	.byte 21,21,21,12,12,4,4,0,0		; V  126
+	.byte 21,21,25,25,33,33,21,0,0		; W  127
+	.byte 21,21,12,4,12,21,21,0,0		; X  130
+	.byte 21,21,12,4,4,4,4,0,0		; Y  131
+	.byte 37,20,10,4,2,1,37,0,0		; Z  132
+	.byte 34,4,4,4,4,4,4,34,0		; [  133
+	.byte 0,1,2,4,10,20,0,0,0		; \  134
+	.byte 7,4,4,4,4,4,4,7,0			; ]  135
+	.byte 0,4,16,25,4,4,4,0,0		; ^  136
+	.byte 0,0,0,0,0,0,0,0,37		; _  137
+	.byte 14,14,4,10,0,0,0,0,0		; `  140
+	.byte 0,0,16,20,36,31,26,0,0		; a  141
+	.byte 1,1,15,23,21,21,17,0,0		; b  142
+	.byte 0,0,16,21,1,1,36,0,0		; c  143
+	.byte 20,20,36,21,21,31,26,0,0		; d  144
+	.byte 0,0,16,21,17,1,16,0,0		; e  145
+	.byte 14,2,7,2,2,2,2,0,0		; f  146
+	.byte 0,0,26,11,6,1,16,21,16		; g  147
+	.byte 1,1,15,23,21,21,21,0,0		; h  150
+	.byte 4,0,4,4,4,4,10,0,0		; i  151
+	.byte 4,0,4,4,4,4,4,4,3			; j  152
+	.byte 1,1,21,11,7,11,21,0,0		; k  153
+	.byte 4,4,4,4,4,4,10,0,0		; l  154
+	.byte 0,0,13,25,25,25,25,0,0		; m  155
+	.byte 0,0,15,23,21,21,21,0,0		; n  156
+	.byte 0,0,16,21,21,21,16,0,0		; o  157
+	.byte 0,0,15,23,21,21,17,1,1		; p  160
+	.byte 0,0,16,21,21,21,36,20,20		; q  161
+	.byte 0,0,15,23,1,1,1,0,0		; r  162
+	.byte 0,0,36,1,16,20,17,0,0		; s  163
+	.byte 4,4,37,4,4,4,30,0,0		; t  164
+	.byte 0,0,21,21,21,31,26,0,0		; u  165
+	.byte 0,0,21,21,12,12,4,0,0		; v  166
+	.byte 0,0,21,21,25,25,12,0,0		; w  167
+	.byte 0,0,21,12,4,12,21,0,0		; x  170
+	.byte 0,0,21,21,21,31,26,20,16		; y  171
+	.byte 0,0,37,10,4,2,37,0,0		; z  172
+	.byte 30,4,4,4,3,4,4,4,30		; {  173
+	.byte 4,4,4,4,4,4,4,4,4			; |  174
+	.byte 3,4,4,4,30,4,4,4,3		;   175
+	.byte 0,0,2,25,25,10,0,0,0		; }  176
+	.byte 77,77,77,77,77,77,77,77,77	;  177
+

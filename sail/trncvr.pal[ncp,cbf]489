@@ -1,0 +1,457 @@
+;;; -*-midas-*-
+	.title	The Serial Line Chaos Net Transceiver Interface
+	.sbttl  The Serial Line Chaos Net Transceiver Interface
+
+;;; This is the input interrupt handler for ttys.
+
+;;; All interrupt handlers use the following structure for storing
+;;; intermediate results and general state information.
+
+;	.block tdt,td
+dsect <
+td.cif:: .blkw 1		;ptr to the interface structure
+td.iic:: .blkw 1		;ptr to where to branch to on next interrupt
+td.oic:: .blkw 1		;same but for output interrupts
+td.ist:: .blkw 1		;the input sts register
+td.idt:: .blkw 1		;input data register
+td.ost:: .blkw 1		;output status register
+td.odt:: .blkw 1		;output data register
+td.ipk:: .blkw 1		;packet being inserted into
+td.ips:: .blkw 1		;size of current packet
+td.ipd:: .blkw 1		;ptr to next char to insert
+td.ipe:: .blkw 1		;ptr to end of packet data area
+td.ics:: .blkw 1		;check sum of current input packet
+td.ier:: .blkw 1		;count of input errors.
+td.ide:: .blkw 1		;count of error packets 
+td.opd:: .blkw 1		;ptr to next character to output
+td.opc:: .blkw 1		;count of bytes to send
+td.opw:: .blkw 1		;count of words to send
+td.ocs:: .blkw 1		;check sum of character sent so far
+	>,tdt.ln
+
+dle==223
+stx==2
+etx==3
+
+ttyrtl==60./ticktm		;wait time before we will retransmit due
+				;to receipt of STS packets
+ttyatm==5*60./ticktm		;wait 5 seconds before retransmitting
+				;by clock task
+ttymab==1			;ttys don't abort so max aborts is one
+
+.rept ttycnt
+.irp num,\<.rpcnt+1>
+
+;;; First create the input interrupt handler
+
+ttyii'num:	push r0
+	mov #ttyd'num,r0
+	jmp @td.iic(r0)
+
+;;; Now the output handler
+
+ttyoi'num:	push r0
+	mov #ttyd'num,r0
+	jmp @td.oic(r0)
+
+.endm
+.endr
+
+;;; We need to define the macro which will allocate the data area for
+;;; a transceiver.
+
+.macro maktty ttynum,devadr,devvec
+	.word 0,0,0		;td.(cif,iic,oic)
+	.word devadr,devadr+2,devadr+4,devadr+6
+	.word 0,0,0,0,0,0,0	;td.(ipk,ips,ipd,ipe,ics,ier,ide)
+	.word 0,0,0,0		;td.(opd,opc,opw,ocs)
+
+ttydv'ttynum=devvec		;set a variable which we can use to fill
+				;in the device interrupt vectors later
+ttyad'ttynum===devadr		;save the device address for future use
+
+.endm
+
+;;; This is the once only initialization code.
+
+ttyonc:	push r0
+	push r1
+
+	.rept ttycnt		;fill in all the interrupt vectors
+	.irp ttynum,\<.rpcnt+1>
+
+.if ne rt11fg
+	tst havsav
+	bne 4$
+.if1				;we must restore the CSR before the vector
+x1===0				;the CHAOS interrupt handler will handle
+x2===2				;events during shutdown
+x3===4
+x4===6
+.iff
+x1===ttyad'ttynum
+x2===2+ttyad'ttynum
+x3===ttyad'ttynum+4
+x4===ttyad'ttynum+6
+.endc
+	save <x1,x2>,<x3,x4>
+.if1				;We perform this hack because the real symbols
+x1===0				;have not been defined by this point in pass 1
+x2===8
+.iff
+x1===ttydv'ttynum
+x2===8+ttydv'ttynum
+.endc
+	save <x1,x2>
+	mov #1,havsav
+4$:
+
+.endc
+	mov #ttyii'ttynum,@#ttydv'ttynum
+	mov #340,@#ttydv'ttynum+2
+	mov #ttyoi'ttynum,@#ttydv'ttynum+4
+	mov #340,@#ttydv'ttynum+6
+
+	.endm
+	.endr
+
+.if ndf ttyhck
+	ttyhck == 0		;init the fudge factor
+.endc:
+
+	clr ttyipl		;flush the old interrupt level packet list
+	clr ttyipn		;clear count of packets
+	mov #<ttycnt*2>-ttyhck,r1	;number of packets to allocate
+	mov r1,ttyipm		;this is the num we should have in reserve
+1$:	kcall alc256		;get a packet
+	bcs 2$			;thats all we can get!
+;	mov #162525,2(r0)
+;	mov #053257,4(r0)
+;	mov #100601,6(r0)
+	mov ttyipl,(r0)		;thread it on the list
+	mov r0,ttyipl
+	inc ttyipn
+	sob r1,1$
+
+2$:	pop r1
+	pop r0
+	kretrn
+
+;;; This is the initialization code which is passed the interface table
+;;; entry ptr in r1.
+
+ttyini:	push r2
+	push r0
+	mov ci.dat(r1),r2	;get the ttydat structure
+	mov r1,td.cif(r2)	;fill in the back ptr
+	mov #ttyic1,td.iic(r2)	;start interrupt level at the right place
+	mov #ttyoc1,td.oic(r2)
+	clr td.ips(r2)		;high byte is always zero
+	clr td.ier(r2)		;clear the input error count
+	clr td.ide(r2)		;clear the input packet errors
+
+;;; Now initialize the interface.
+
+	tst @td.idt(r2)		;flush pending characters
+	mov #100,@td.ist(r2)	;enable input interrupts
+	clr @td.ost(r2)		;disable output interrupts
+
+;;; Fill in the various attributes of the interface in the cif table
+
+	bisb #%xmtrd,ci.sts(r1)	;transmitter is initially ready for packets
+	mov #ttyatm,ci.atm(r1)	;fill in the age time characteristic for
+				;this interface
+	mov #ttymab,ci.mab(r1)
+
+	pop r0
+	pop r2
+	kretrn
+
+;;; This is the receiver routine.  It does nothing more than allocate
+;;; blocks when the supply gets low.
+
+ttyrcv:	bicb #%rcvrd,ci.sts(r2)	;we will be ready again
+1$:	cmp ttyipn,ttyipm	;do we have enough packets?
+	bge 2$			;yup
+	push r0
+	kcall alc256		;get another packet
+	bcc 3$
+	 pop r0			;maintain stack discipline
+	 bisb #%rcvrd,ci.sts(r2)	;the allocate failed so try again soon
+	 br 2$
+3$:
+;	mov #162525,2(r0)
+;	mov #053257,4(r0)
+;	mov #100601,6(r0)
+	lock mxcilv		;lock out interrupts
+	mov ttyipl,(r0)		;thread it on the list
+	mov r0,ttyipl
+	inc ttyipn		;another on the list
+;	jsr pc,verify
+	unlock
+	pop r0
+	br 1$
+2$:	kretrn
+;
+;verify:	push r0,r1
+;	mov ttyipl,r0
+;	clr r1
+;loop	< tst r0
+;	  if eq,<
+;	    cmp r1,ttyipn
+;	    if ne,<bpt>
+;	    exitl
+;	    >
+;	  cmp -2(r0),#1000
+;	  if ne,<bpt>
+;	  cmp 2(r0),#162525
+;	  bne 1$
+;	  cmp 4(r0),#053257
+;	  bne 1$
+;	  cmp 6(r0),#100601
+;	  bne 1$
+;	  inc r1
+;	  mov (r0),r0
+;	  cmp r1,ttyipm
+;	  if gt,<bpt>
+;	  rptl
+;	  >
+;	pop r1,r0
+;	rts pc
+;1$:	bpt
+
+;;; The is the routine called to transmit a packet out over this interface.
+;;; The packet to be sent is in r0, the cif table in r2 and the host to
+;;; send it to in r4
+
+ttyxmt:	push r3
+	push r4
+	push r5
+	bitb #%xmtrd,ci.sts(r2)	;were we really ready?
+	beq ttyxer		;nope
+	mov ci.dat(r2),r3	;get the tty data table
+	bit #100,@td.ost(r3)	;are output interrupts disabled?
+	bne ttyxer		;no, we have a bug!
+
+	bicb #%xmtrd,ci.sts(r2)	;clear the ready bit since we are printing
+	mov r0,ci.pkt(r2)	;this is the packet we are hacking
+	mov r0,td.opd(r3)	;fill in the packet to send
+	add #pkbeg,td.opd(r3)	;first byte to send
+	mov #ttyoc1,td.oic(r3)	;first interrupt goes here
+	mov pklen(r0),r4	;get the length
+	bic #pkfcnt,r4		;get the count
+	add #17.,r4		;include the header (plus 1)
+	asr r4
+	asl r4			;and round up to even word boundry
+	mov r4,td.opc(r3)	;so interrupt level knows when to stop
+	mov r4,r5		;save the count for later
+	asr r4			;word count
+	mov r4,td.opw(r3)	;this is first byte sent.
+	mov td.opd(r3),r4	;get the ptr to the data
+	clr ttychr		;a place to put chars where no sign extension
+	push r0
+	clr r0			;initialize the check sum
+1$:	movb (r4)+,ttychr	;get the character
+	asl r0			;rotate left and
+	adc r0
+	add ttychr,r0		;add the character
+	sob r5,1$		;loop till done
+	mov r0,td.ocs(r3)
+	pop r0
+
+	bis #100,@td.ost(r3)	;simulate an interrupt to start things.
+	pop r5
+	pop r4
+	pop r3
+	kretrn
+
+ttyxer:	bpt
+ttychr:	0
+
+;;; This is the actual input interrupt handler which does all the work.
+;;; All the state is kept in a the "ttydat" table pointed to by r0.
+;;; In particular the PC to use on the next interrupt is kept there
+;;; and the interrupt routine jmps indirect through that field to one
+;;; of these routines.  The action of each routine is fairly simple
+;;; and often involves changing the place where the next interrupt will
+;;; branch to.
+
+;;; This waits for the "dle" of a dle stx sequence.
+
+ttyic1:	cmpb @td.idt(r0),#dle	;is the character a dle?
+	bne ttydun		;no, wait some more
+	mov #ttyic2,td.iic(r0)	;next time expect an stx
+	br ttydun
+
+;;; This expects an stx, if it does not get one it returns to state one
+;;; waiting for a dle.
+
+ttyic2:	cmpb @td.idt(r0),#stx	;is it an stx?
+	bne ttypnt		;no, punt back to first state.
+ttyi21:	mov #ttyic3,td.iic(r0)	;wait for the length to arrive
+	br ttydun
+
+ttypnt:	mov #ttyic1,td.iic(r0)	;return to wait-for-dle state
+	inc td.ide(r0)		;count number of bad packets
+	br ttydun
+
+;;; This expects a count of the number of words in the following packet.
+;;; Currently this is not used since all packets are maximum size but
+;;; one day we may want to hair this up.
+
+ttyic3:	movb @td.idt(r0),td.ips(r0)	;get the size
+	cmpb td.ips(r0),#<pkdat-pkbeg>/2	;minimum size is 8 words
+	blo ttypnt		;punt the rest of this packet, sender's losing
+;	jsr pc,verify
+	mov ttyipl,td.ipk(r0)	;get a packet to put data in
+	beq ttypnt		;no packets, better luck next time
+	mov @td.ipk(r0),ttyipl	;unthread it
+	clr @td.ipk(r0)		;no next ptr
+	dec ttyipn		;one less packet queued
+	mov td.ipk(r0),td.ipd(r0)	;create ptr to data area
+	add #pkbeg,td.ipd(r0)	;skip over header
+	mov td.ipd(r0),td.ipe(r0)	;create ptr to end of data area
+	add td.ips(r0),td.ipe(r0)	;add in size
+	add td.ips(r0),td.ipe(r0)	;twice cause size is in words
+	clr td.ics(r0)		;initialize the check sum
+	mov #ttyic4,td.iic(r0)	;next read real data
+	br ttydun		;that all for now though
+
+ttydun:	bit #100000,@td.idt(r0)	;was there an error?
+	beq 1$
+	inc td.ier(r0)		;input errors
+1$:	pop r0			;This is branched to to return from interrupt
+	rti
+
+;;; This read characters until a dle etx is encountered.  If a dle dle is
+;;; reached then a dle is inserted into the packet.  If a dle stx is
+;;; encountered the packet is returned to the free list and the next
+;;; character is expected to be a count.
+
+ttyic4:	cmpb @td.idt(r0),#dle	;if this is a dle, see whats next
+	bne ttyi41		;if not then just insert the character
+	mov #ttyic5,td.iic(r0)
+	br ttydun
+
+ttyi41:	movb @td.idt(r0),@td.ipd(r0)	;stuff the character into the packet
+	asl td.ics(r0)		;update the checksum
+	adc td.ics(r0)
+	add @td.idt(r0),td.ics(r0)
+	inc td.ipd(r0)		;step to next byte
+	cmp td.ipd(r0),td.ipe(r0)	;are we past the end?
+	blos ttydun		;we can continue and insert another character
+
+ttyrpt:	kcall ttyifp		;free the packet we grabbed
+	br ttypnt		;return to state one
+
+;;; This read the etx which ends the packet
+
+ttyic5:	mov #ttyic4,td.iic(r0)	;if inserting dle, return to insert char state
+	cmpb @td.idt(r0),#dle	;dle dle means insert a dle
+	beq ttyi41
+	cmpb @td.idt(r0),#etx	;signal end of packet?
+	bne 1$
+	mov #ttyic6,td.iic(r0)	;now read the check sum
+	br ttydun
+1$:	kcall ttyifp		;we must free the packet
+	cmpb @td.idt(r0),#stx	;we lost somehow so start over
+	beq ttyi21		;do the stx stuff
+	br ttypnt		;garbage after dle
+
+;;; The expects the first byte of the check sum.
+
+ttyic6:	cmpb @td.idt(r0),td.ics(r0)	;check first byte of check sum
+	bne ttyrpt		;nope we lose
+	mov #ttyic7,td.iic(r0)
+	br ttydun
+
+;;; Now read the second byte and process the packet
+
+ttyic7:	cmpb @td.idt(r0),td.ics+1(r0)	;check high byte of the checksum
+	bne ttyrpt		;punt if doesn't match
+	push r1			;finally, we need a register
+	mov td.ipe(r0),r1	;get the end ptr
+	sub td.ipd(r0),r1	;subtract the data ptr
+	bne 1$			;sender didn't send enough
+	mov td.ipk(r0),@rcvpke	;thread packet onto end of list
+	mov td.ipk(r0),rcvpke
+	mov td.cif(r0),r1	;get the cif table entry
+	bisb #%rcvrd,ci.sts(r1)	;tell them there is a packet
+	inc ci.rcn(r1)		;count packets received
+	pop r1
+	mov #ttyic1,td.iic(r0)	;return to wait-for-dle state
+	br ttydun
+
+1$:	pop r1			;maintain stack dissipline
+	br ttyrpt
+
+;;; This frees a packet that was allocated for a msg which got some error.
+
+ttyifp:	mov ttyipl,@td.ipk(r0)	;unthread the packet we got and return it
+	mov td.ipk(r0),ttyipl	;to the free list
+	inc ttyipn		;and fix up the count
+	kretrn
+
+ttyipl:	0
+ttyipn:	0
+ttyipm:	0
+
+;;; This does all the real work of outputing packets over the tty line
+
+ttyfin:	pop r0			;this ends the interrupt handler for output
+	rti
+
+;;; This sends the first character, which is the dle of the dle stx.
+
+ttyoc1:	movb #dle,@td.odt(r0)	;send the dle
+	mov #ttyoc2,td.oic(r0)	;next send the stx
+	br ttyfin
+
+ttyoc2:	movb #stx,@td.odt(r0)
+	mov #ttyoc3,td.oic(r0)	;next send the word count
+	br ttyfin
+
+ttyoc3:	movb td.opw(r0),@td.odt(r0)
+	mov #ttyoc4,td.oic(r0)	;now send the real data
+	br ttyfin
+
+ttyoc4:	movb @td.opd(r0),@td.odt(r0)	;send the character
+	cmpb @td.opd(r0),#dle	;was it a dle?
+	bne ttyo41		;just a normal character so bump things
+	mov #ttyoc5,td.oic(r0)	;send the doubled dle next
+	br ttyfin
+
+ttyo41:	inc td.opd(r0)		;go to next byte
+	dec td.opc(r0)		;dec the count
+	bgt ttyfin		;send next
+	mov #ttyoc6,td.oic(r0)	;send the terminating sequence
+	br ttyfin
+
+ttyoc5:	movb #dle,@td.odt(r0)	;send the extra dle
+	mov #ttyoc4,td.oic(r0)	;go back to read characters
+	br ttyo41		;fix up for last character sent
+
+ttyoc6:	movb #dle,@td.odt(r0)	;send the dle part fo the dle etx
+	mov #ttyoc7,td.oic(r0)
+	br ttyfin
+
+ttyoc7:	movb #etx,@td.odt(r0)	;send the etx
+	mov #ttyoc8,td.oic(r0)	;next send check sum
+	br ttyfin
+
+ttyoc8:	movb td.ocs(r0),@td.odt(r0)	;send forst byte
+	mov #ttyoc9,td.oic(r0)
+	br ttyfin
+
+ttyoc9:	movb td.ocs+1(r0),@td.odt(r0)	;send the last byte of the check sum
+	mov #ttyoc1,td.oic(r0)	;and we are done with this packet
+	bic #100,@td.ost(r0)	;no more interrupts
+	mov td.cif(r0),r0	;get the cif ptr
+	bisb #%xmtrd,ci.sts(r0)	;xmtr is ready for next packet now.
+	jmp ttyfin		;return from interrupt
+
+.if ne rt11fg
+havsav:	0			;variable to indicate we have saved values for
+				;RT
+.endc
+

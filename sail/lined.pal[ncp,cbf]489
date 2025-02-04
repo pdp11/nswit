@@ -1,0 +1,688 @@
+;;; -*- Midas -*-
+.sbttl	Line Editor
+
+;;; This routine implements the line editor.  It does so by maintaining a
+;;; buffer of characters which are divided into lines.  It keeps track of
+;;; the current line and a number of previous lines, whose number is
+;;; determined by the size of the buffer and the size of the lines. 
+
+;;; The structure of the editing buffer is given below.
+;;; The line pointers are signed indexes into the character buffer (ed.txt).
+;;; The current line is pointed to by ed.cur and continues to the offset
+;;; specified by ed.lst.  When it reaches this point the text of the line it
+;;; is about to run into is deleted and ed.lst moves forward to the new last
+;;; line.  A negative index means that no such line exists.
+
+dsect <
+ed.cur:: .blkw 1	        ;This is the character index of the current line
+ed.prv:: .blkw 25.		;Index of the previous lines
+ed.lst:: .blkw 1	        ;This is the index of the last line and is a duplicate
+				; of one of the line indexes above.
+ed.stk:: .blkw 1	        ;This points to the previous line that ^P and ^N use
+ed.txt:: .blkb 512.		;This is where the characters are kept
+ed.end::
+edcurp:: .word
+edoldp:: .word
+edceol:: .word
+edrept:: .word
+edcurs:: .word
+edmaxc:: .word
+edlsch:: .word 0		; the last chracter searched for
+
+	>,ledobj
+
+.macro edincp a
+	inc a
+	cmp a,#<ed.end-ed.txt>
+	if ge,<clr a>
+.endm
+
+.macro eddecp a
+	dec a
+	if lt,<mov #<ed.end-ed.txt-1>,a>
+.endm
+
+edgetc:	call tdremw		; return next character in r1
+	bic imask(r0),r1	; handle parity setting
+	return
+
+;;; This is the entry point that is called to initialize the line editing
+;;; buffer and so on.
+
+edinit:
+.if ne asmmap
+	push @#kipar6		; save map
+	push #ledobj
+	call getpag		;get a newman page to use for the line buffer
+	mov @#kipar6,edmap6(r0)	; remember it
+	mov #140000,r5
+	mov r5,edbadr(r0)	;save it in the task storage area.
+.iff
+	push #ledobj		; allocate a line editor object
+	call allocw
+	pop r5
+	mov r5,edbadr(r0)
+.endc
+
+;;; now initialize the relevant fields
+
+	clr ed.cur(r5)
+	mov #ed.prv,r1
+	add r5,r1
+	mov #ed.lst,r2
+	add r5,r2
+loop	< mov #-1,(r1)+
+	  cmp r1,r2
+	  rptl lo
+	  >
+	clr ed.stk(r5)
+	clr ed.lst(r5)
+	clr edcurp(r5)
+	clr edoldp(r5)
+ 	clr edceol(r5)
+	clr edrept(r5)
+	clr edcurs(r5)
+	clr edmaxc(r5)
+	clr edlsch(r5)
+
+.lif ne asmmap
+	pop @#kipar6		; restore map
+	return
+
+;;; This is the entry to call to read in a line with editing etc.
+
+edgetl:
+.if ne asmmap
+	push @#kipar6		; save current map
+	mov edmap6(r0),@#kipar6	; map in page containing line editor data
+.endc
+	mov edbadr(r0),r5	;set up our structure ptr
+	mov ed.cur(r5),edcurp(r5)
+	mov ed.cur(r5),edceol(r5)
+	clr edrept(r5)		;initialize repeat count
+loop	< cmpb r1,#40		;Check for control char.
+	  if lo,<
+	    mov r1,r2
+	    asl r2		;convert to word index
+	    call @edcmds(r2)	;dispatch to correct command
+	    >
+	  else <
+	    cmpb r1,#177
+	    if eq,<call ecrubc>
+	    else <
+	      if hi,<call edmeta>
+	      else <call ecinsc>	;insert the character (self insert).
+	      >
+	    >
+	  call edgetc
+	  rptl
+	  >
+
+edcmds:	.word ecundf    ;^@
+	.word ecbegl    ;^A
+	.word ecbckc	;^B
+	.word ecundf    ;^C
+	.word ecdelc    ;^D
+	.word ecendl	;^E
+	.word ecfwdc	;^F
+	.word ecundf	;^G
+	.word ecbckc	;^H
+	.word ecinsc	;^I
+	.word ecinsc	;^J
+	.word eckill	;^K
+	.word ecrdsp	;^L
+	.word ecretn	;^M
+	.word ecnext	;^N
+	.word ecundf	;^O
+	.word ecprev	;^P
+	.word ecquot	;^Q
+	.word ecrsch	;^R
+	.word ecsrch	;^S
+	.word ectwdl	;^T
+	.word ecmult	;^U
+	.word ecundf	;^V
+	.word ecrubw	;^W
+	.word ecundf	;^X
+	.word ecyank	;^Y
+	.word ecundf	;^Z
+	.word edmeta	;altmode
+	.word ecundf	;^\
+	.word ecundf	;^]
+	.word ecundf	;^^
+	.word ecundf	;^_
+
+;;; Here is a general redisplay update routine.  It assumes that min (edcurp,
+;;; edoldp) and r2 bracket the text needing to be output.  The algorithm
+;;; starts at the beginning of the line and counts chars forward until it
+;;; gets to the min of edcurp and edoldp.  Then it moves the cursor back to
+;;; that position and outputs chars until it gets to r2.  Any deletion or
+;;; insertion operation should set r2 to edceol.  Any moving operation should
+;;; set r2 to edcurp.  A combination of insertions and deletions may require
+;;; a full redisplay.  This accomplished by setting edcurs to -1.  This will
+;;; be specially checked and r2 will be ignored.  In addition the routine
+;;; also maintains the position of the right most character it printed,
+;;; allowing blanking to work correctly.
+
+edrdsp:	push r1,r2,r3,r4
+	mov ed.cur(r5),r3	;First loop over line til we get to edoldp or edcurp
+	clr r4
+	tst edcurs(r5)		;if this is -1 then reset to lmar
+	if mi,<
+	  mov #15,r1
+	  call echoc
+	  clr edcurs(r5)
+	  mov #79.,edmaxc(r5)
+	  mov edceol(r5),r2
+	  mov ed.cur(r5),edoldp(r5)
+	  >
+	else <
+loop	  < cmp r3,edoldp(r5)
+	    exitl eq
+	    cmp r3,edcurp(r5)
+	    exitl eq
+	    mov r3,r1
+	    add r5,r1		;double index
+	    movb ed.txt(r1),r1
+	    inc r4
+	    cmp r1,#40
+	    if lt,<inc r4>
+	    edincp r3
+	    rptl
+	    >
+	  sub edcurs(r5),r4	;where are we relative to where we should be
+	  add r4,edcurs(r5)	;update the current cursor position
+	  neg r4
+	  if lt,<bpt>		;cursor should never be behind changed to the line
+	  if gt,<
+	    mov #10,r1
+loop	    < call echoc
+	      sorl r4
+	      >	;NB r4 is zero when this falls through
+	    >
+	  >
+loop	< cmp r3,edcurp(r5)
+	  if eq,<
+	    add r4,edcurs(r5)
+	    clr r4
+	    >
+	  cmp r3,r2
+	  exitl eq
+	  mov r3,r1
+	  add r5,r1		;double indexing
+	  movb ed.txt(r1),r1
+	  call echoc1
+	  inc r4
+	  cmp r1,#40
+	  if lt,<inc r4>
+	  edincp r3
+	  rptl
+	  >	;at this point r4 is current offset from edcurp
+	mov edcurs(r5),r2
+	add r4,r2
+	cmp r3,edceol(r5)	;if at the end of the line, possible blanking
+	if eq,<
+	  sub edmaxc(r5),r2
+	  add r2,edmaxc(r5)
+	  neg r2
+	  if gt,<
+	    add r2,r4		;will have to back up over this stuff
+	    mov #40,r1
+loop	    < call echoc
+	      sorl r2
+	      >
+	    >
+	  >
+	mov #10,r1
+loop	< dec r4
+	  exitl lt
+	  call echoc
+	  rptl
+	  >
+	mov edcurp(r5),edoldp(r5)
+	pop r4,r3,r2,r1
+	return
+
+;;; Insert the character in R1.
+
+ecinsc:	call edinsc
+	if cs,<call ecundf>
+	dec edrept(r5)
+	bgt ecinsc
+	clr edrept(r5)
+	mov edceol(r5),r2
+	call edrdsp
+	return
+
+edinsc:	mov edceol(r5),r4
+	edincp r4
+	cmp r4,ed.lst(r5)	;have we run into the end?
+	if eq,<
+	  call edflsl		;flush the last line.
+	  if cs,<
+	    sec			;fail if no more room.
+	    return
+	    >
+	  >
+	mov edceol(r5),r2
+	mov r2,r3
+	eddecp r3
+loop	< cmp r2,edcurp(r5)
+	  exitl eq
+	  push r3
+	  add r5,r3		;double index both regs
+	  add r5,r2
+	  movb ed.txt(r3),ed.txt(r2)
+	  pop r3
+	  mov r3,r2
+	  eddecp r3
+	  rptl
+	  >
+	add r5,r2		;double index
+	movb r1,ed.txt(r2)	;insert the character
+	mov r4,edceol(r5)
+	edincp edcurp(r5)	;line one char longer
+	clc
+	return
+
+;;; Flush the last line in the ring buffer to make room for more text in the
+;;; current line.
+
+edflsl:	push r1,r2
+	mov r5,r1
+	add #ed.cur,r1		;get ptr to the line array
+	mov r5,r2
+	add #ed.lst,r2
+loop	< tst (r1)+		;tst for negative index
+	  exitl lt
+	  cmp r1,r2
+	  rptl lo
+	  tst (r1)+
+	  >
+	tst -(r1)		;back up over first non-existant line
+	mov r5,r2
+	add #ed.prv,r2
+loop	< cmp r1,r2
+	  if los,<
+	    pop r2,r1		;only remaining line is current line
+	    sec
+	    return
+	    >
+	  mov #-1,-(r1)		;zap this line
+	  cmp -2(r1),ed.lst(r5)
+	  exitl ne
+	  rptl
+	  >
+	mov -(r1),ed.lst(r5)
+	pop r2,r1
+	clc
+	return
+
+;;; Return to the caller of the line editor.  This means "push"ing onto the
+;;; line buffer stack the current line, and to copy the current line to the
+;;; destination (network).
+
+ecretn:	mov ed.cur(r5),r2
+	mov edceol(r5),edcurp(r5)	;control-E
+	clr ed.stk(r5)      	;reset ^P and ^N stack
+	cmp edceol(r5),r2		;if line is empty
+	beq 1$			;don't push it.
+	mov r5,r2
+	add #ed.lst,r2
+	mov r5,r3
+	add #ed.prv,r3
+	clr r1
+loop	< tst -(r2)		;find last line
+	  if lt,<mov r2,r1>	;save addr of first non-existant one
+	  mov -2(r2),(r2)	;copy it down one line
+	  cmp r2,r3
+	  rptl hi
+	  >
+	tst r1
+	if eq,<
+	  mov ed.lst-2(r5),ed.lst(r5)	;all the slots are full
+	  >
+	else <
+	  mov -(r1),ed.lst(r5)
+	  >
+	mov edceol(r5),ed.cur(r5)	;start the new line at end of current one
+	mov ed.prv(r5),r2
+1$:
+loop	< cmp r2,edceol(r5)
+	  exitl eq
+	  mov r2,r1
+	  add r5,r1		;double indexing
+	  movb ed.txt(r1),r1	;copy line to output
+	  call sendc		;send character in r1
+	  edincp r2
+	  rptl
+	  >
+	clr edcurs(r5)		;we are now at the beginning of the line
+	clr edmaxc(r5)		;also a new line
+	mov edcurp(r5),edoldp(r5)
+
+	call crlf
+	mov #15,r1		;stuff the CR on the end
+	call sendc
+	call sforc		;flush output
+	pop *			;flush my return address and return for edgetl
+.lif ne asmmap
+	pop @#kipar6		; restore map
+	return
+
+edmeta:	jmp ecundf      ;No meta commands defined now.
+
+;;; Rubout the character just before the cursor.
+
+ecrubc:
+1$:	call edrubc
+	dec edrept(r5)		;check the repeat count
+	bgt 1$
+	clr edrept(r5)
+	mov edceol(r5),r2
+	call edrdsp
+	return
+
+edrubc:	cmp edcurp(r5),ed.cur(r5)
+	if ne,<
+	  mov edceol(r5),r2	;get ptr to end of line
+	  eddecp r2
+	  mov r2,edceol(r5)
+	  mov edcurp(r5),r3	;get ptr to current position
+	  mov r3,r4		;get next forward char
+	  eddecp r3		;backup one
+;;;	  movb ed.txt(r3),r5	;save rubbed out char for redisplay **R5**
+	  mov r3,edcurp(r5)
+loop	  < cmp r2,r3
+	    exitl eq
+	    push r4
+	    add r5,r4		;double index both regs
+	    add r5,r3
+	    movb ed.txt(r4),ed.txt(r3)
+	    pop r4
+	    mov r4,r3
+	    edincp r4
+	    rptl
+	    >
+	  >
+	return
+
+;;; This command moved the cursor forward one char
+
+ecfwdc:
+1$:	call edfwdc
+	dec edrept(r5)		;check the repeat count
+	bgt 1$
+	clr edrept(r5)
+	mov edcurp(r5),r2
+	call edrdsp
+	return
+
+edfwdc:	cmp edcurp(r5),edceol(r5)
+	if ne,<edincp edcurp(r5)>
+	return
+
+;;; This command moves the cursor backward one char
+
+ecbckc:
+1$:	call edbckc
+	dec edrept(r5)		;check the repeat count
+	bgt 1$
+	clr edrept(r5)
+	mov edcurp(r5),r2
+	call edrdsp
+	return
+
+edbckc:	cmp edcurp(r5),ed.cur(r5)
+	if ne,<eddecp edcurp(r5)>
+	return
+
+;;; This command deletes the next character in the line.
+
+ecdelc:
+1$:	call eddelc
+	dec edrept(r5)		;check the repeat count
+	bgt 1$
+	clr edrept(r5)
+	mov edceol(r5),r2
+	call edrdsp
+	return
+
+eddelc:	cmp edcurp(r5),edceol(r5)
+	if ne,<
+	  call edfwdc
+	  call edrubc
+	  >
+	return
+
+;;; This command inserts the Nth previous line at the current point in the
+;;; line.  N := log4(edrept)+1;
+
+ecyank:	mov #1,r1		;count distance back to yank from.
+loop	< asr edrept(r5)
+	  asr edrept(r5)
+	  exitl eq
+	  inc r1
+	  rptl
+	  >
+	call edyank
+	clr edrept(r5)
+	mov edceol(r5),r2
+	call edrdsp
+	return
+
+edyank:	asl r1
+	if le,<jmp ecundf>
+	cmp r1,#<ed.lst-ed.cur>
+	if ge,<jmp ecundf>
+	add r5,r1
+	mov ed.cur(r1),r2	;get ptr to line he wants
+	if lt,<jmp ecundf>
+	tst -(r1)
+	mov ed.cur(r1),r3	;get ptr to end of line.
+loop	< cmp r2,r3
+	  exitl eq
+	  push r2,r3
+	  add r5,r2
+	  movb ed.txt(r2),r1
+	  call edinsc
+	  pop r3,r2
+	  if cs,<jmp ecundf>
+	  edincp r2
+	  rptl
+	  >
+	return
+
+ecprev:	clr edrept(r5)
+	inc ed.stk(r5)		;go to the previous line
+	call ecbegl
+	call eckill
+	mov ed.stk(r5),r1
+	call edyank
+	mov ed.cur(r5),edoldp(r5)
+	mov edceol(r5),r2
+	call edrdsp
+	return
+
+ecnext:	sub #2,ed.stk(r5)
+	br ecprev
+
+ecquot:	call edgetc
+1$:	push r1
+	call edinsc
+	pop r1
+	if cs,<jmp ecundf>
+	dec edrept(r5)
+	bgt 1$
+	clr edrept(r5)
+	mov edceol(r5),r2
+	call edrdsp
+	return
+
+ecrdsp:	clr edrept(r5)
+	mov #-1,edcurs(r5)
+	call edrdsp
+	return
+
+;;; This command erases the previous word
+
+ecrubw:
+1$:
+loop	< cmp edcurp(r5),ed.cur(r5)
+	  exitl eq
+	  call edbckc
+	  mov edcurp(r5),r2
+	  add r5,r2
+	  movb ed.txt(r2),r1
+	  push r1
+	  call eddelc
+	  pop r1
+	  call edalph
+	  rptl cc
+	  >
+loop	< cmp edcurp(r5),ed.cur(r5)
+	  exitl eq
+	  call edbckc
+	  mov edcurp(r5),r2
+	  add r5,r2
+	  movb ed.txt(r2),r1
+	  call edalph
+	  if cc,<
+	    call edfwdc
+	    exitl
+	    >
+	  call eddelc
+	  rptl
+	  >
+	dec edrept(r5)
+	bgt 1$
+	clr edrept(r5)
+	mov edceol(r5),r2
+	call edrdsp
+	return
+
+;;; Returns with carry set if the character in R1 is an alphabetic.
+;;; (actually if its a word constituent).
+edalph:	push r1
+	sub #'z+1,r1		; check if character is in range a-z
+	add #26.,r1		; set carry if a-z
+	if cc,<
+	  add #'a-'Z,r1		; check range A-Z
+	  add #26.,r1		; set carry if A-Z
+	  if cc,<
+	    add #'A-'9,r1
+	    add #10.,r1		; set carry if 0-9
+	    >
+	  >
+	pop r1
+	return
+
+ecmult:	tst edrept(r5)
+	if eq,<mov #4,edrept(r5)>
+	else <
+	  mov edrept(r5),r1
+	  asl r1
+	  asl r1
+	  mov r1,edrept(r5)
+	  >
+	return
+
+ecbegl:
+loop	< cmp edcurp(r5),ed.cur(r5)
+	  exitl eq
+	  call edbckc
+	  rptl
+	  >
+	clr edrept(r5)
+	mov edcurp(r5),r2
+	call edrdsp
+	return
+
+ecendl:
+loop	< cmp edcurp(r5),edceol(r5)
+	  exitl eq
+	  call edfwdc
+	  rptl
+	  >
+	clr edrept(r5)
+	mov edcurp(r5),r2
+	call edrdsp
+	return
+
+eckill:
+loop	< cmp edcurp(r5),edceol(r5)
+	  exitl eq
+	  call eddelc
+	  rptl
+	  >
+	clr edrept(r5)
+	mov edceol(r5),r2
+	call edrdsp
+	return
+
+;;; Internal routine to read a search character
+;;; depends on R2 being the 2*value of the search command being used
+edgets:	call edgetc		; get character to search for.	
+	cmpb r1,#037&'Q		; is it ^Q?
+	if eq,<call edgetc>	; yes, quote char
+	else <			; not quoted
+	  asr r2		; restore the value of R2
+	  cmpb r1,r2		; is this the search command itself repeated?
+	  if eq,<movb edlsch(r5),r1>	; yes, repeat last search
+	  else < movb r1,edlsch(r5)>	; no, remember this search char
+	  >
+	return
+
+;;; Reverse character search command
+ecrsch:	call edgets		; get a character to search for in R1
+	push edcurp(r5)		; save cursor in case search fails.
+loop	< cmp edcurp(r5),ed.cur(r5)	; at beginning of line?
+	  if eq,<		; yes,
+	    pop edcurp(r5)		; search failed, restore the cursor
+	    jmp ecundf
+	    >
+	  push r1		; save r1 cause edbckc smashes it
+	  call edbckc		; move back one character
+	  pop r1
+	  mov edcurp(r5),r2	; cursor
+	  add r5,r2
+	  cmpb r1,ed.txt(r2)	; is the cursor pointing at our search char
+	  rptl ne
+	  >
+	pop *			; search succeeded, throw old cursor away
+	clr edrept(r5)		; zero the repeat count
+	mov edcurp(r5),r2
+	call edrdsp
+	return
+
+;;; Forward character search command
+ecsrch:	call edgets		; get character to search for in R1.
+	push edcurp(r5)		; save cursor in case search fails
+loop	< cmp edcurp(r5),edceol(r5)	; are we at end of line?
+	  if eq,<		; yes, 
+	    pop edcurp(r5)	; search failed, restore the cursor
+	    jmp ecundf		; punt the command
+	    >
+	  mov edcurp(r5),r2	; current cursor
+	  add r5,r2
+	  cmpb r1,ed.txt(r2)	; is the cursor pointing to our search char ?
+	  exitl eq		; yes, we've found it
+	  push r1		; no, save R1 cause edfwdc smashes it
+	  call edfwdc		; move forward a character
+	  pop r1
+	  rptl
+	  >
+	pop *			; search succeeded, throw old cursor away
+	call edfwdc		; leave cursor one char beyond one searched for
+	clr edrept(r5)		; zero repeat count
+	mov edcurp(r5),r2	; edrdsp arg: current cursor
+	call edrdsp		; call redisplay
+	return
+
+ectwdl:
+	jmp ecundf
+
+ecundf:	mov #7,r1
+	call echoc
+	clr edrept(r5)
+	return
+

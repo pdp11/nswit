@@ -1,0 +1,510 @@
+.sbttl	Telnet protocol
+
+iac==377
+will==373
+wont==374
+do==375
+dont==376
+tnnop==361
+dm==362
+ip==364
+ayt==366
+
+binary==0
+echo==1
+sga==3
+tm==6
+logo==18.
+optmax==18.
+
+
+
+dsect <
+
+; Comment goes here.
+uoptst:: .blkb optmax+1
+soptst:: .blkb optmax+1
+wtmc==uoptst+tm			; unack'd WILL TM count
+dtmc==soptst+tm			; unack'd DO TM count
+
+hldout:: .blkb 1
+negopr:: .blkb 1		;print negotiations flag
+lecho::	 .blkb 1		;local echo flag
+	 .even
+	>,ltndat
+
+	movb #-1,lecho		;initally we do local echo, however we endevour
+				;to turn it off immediatly
+	clrb negopr(r0)
+	clrb hldout(r0)
+
+	clr pakptr(fp)		;initialize
+
+	;; initialize all options off
+	mov #optmax,r0
+loop <	  clrb uoptst(r0)
+	  clrb soptst(r0)
+	  dec r0
+	  rptl pl
+	  >
+
+	kcall alc16		;get a 16 word packet for initial IAC
+	mov #istrng,r3		;get pointer to initial IAC string
+	mov r0,r4		;point to data area
+	add #pkdat,r4
+	clr pklen(r0)		;clear out the length
+	movb #200,pkop(r0)	;set the packet opcode
+
+loop <	  movb (r3)+,(r4)+	;move byte into packet
+	  exitl eq		;if zero then exit
+	  inc pklen(r0)		;bump up length
+	  rptl
+	  >
+	kcall outpak		;output the packet
+	bisb #1,uoptst+sga	;indicate we've requested SGA
+	bisb #1,soptst+sga	;in both directions
+	bisb #1,soptst+echo	;and remote echo
+	tstb negopr
+	if ne,<
+	  print ^"sent WILL 3 sent DO 3 sent DO 1 "
+	  >
+
+loop <	kcall readch		;read a char from the net (char in R2)
+	cmp r2,#iac		;is this an IAC?
+	if ne,<			;treat as a normal char
+1$:	tstb dtmc		; if outstanding DO TMs, then throw away
+	rptl gt			; output
+  loop <    tstb hldout		; wait until output is no longer held
+	    exitl eq		; ...
+	    cocall		; ...
+	    rptl		; ...
+	    >
+	  call ttyout,r2	; output character
+	  rptl
+	  >
+	kcall readch		; get command byte
+	mov r2,r3		; save
+	cmp r3,#iac		; is it an IAC?
+	beq 1$			; yes, output IAC
+	cmp r3,#will		; WILL, WONT, DO, DONT?
+	rptl lt			; no, ignore anything else (NOP, SGA, IP, etc.)
+				; (WILL is least of the 4, and only IAC is
+				; higher, so a less than test suffices)
+	kcall readch		; get what option
+	tstb negopr		; print negotiations?
+	if ne,<			; yes
+	  print ^"received "
+	  cmp r3,#will
+	  if eq,<
+	    print ^"WILL "
+	    >
+	  cmp r3,#wont
+	  if eq,<
+	    print ^"WONT "
+	    >
+	  cmp r3,#do
+	  if eq,<
+	    print ^"DO "
+	    >
+	  cmp r3,#dont
+	  if eq,<
+	    print ^"DONT "
+	    >
+	  mov r2,r0
+	  kcall prnum
+	  mov #40,r0
+	  kcall prtch
+	  >
+	cmp r3,#do		; DO or DONT?
+	if ge,<			; yes
+	  sub #do+1,r3		; DO -) -2, DONT -) 0
+	  asl r3		; ...
+	  cmp r2,#optmax	; option number greater than our table?
+	  if hi,<		; yes, we don't support it then
+	    call uuopt
+	    >
+	  else <		; option number not too large
+	    mov r2,r0
+	    asl r0
+	    call @uopt(r0)	; call appropriate routine
+	    >
+	  rptl
+	  >
+	;; must be WILL or WONT
+	sub #will+1,r3		; WILL -) -2, WONT -) 0
+	asl r3			; ...
+	cmp r2,#optmax		; option number greater than our table?
+	if hi,<			; yes, we don't support it then
+	  call usopt
+	  >
+	else <			; option number not too large
+	  mov r2,r0
+	  asl r0
+	  call @sopt(r0)	; call appropriate routine
+	  >
+	rptl
+	>
+
+
+; Unknown option DO/DONT handler.
+uuopt:	tst r3			; DO?
+	if ne,<			; yes
+	  kcall swont		; reply WONT
+	  >			; no need to reply to DONT, as we're already
+	kretrn			; in that state (can't have accepted
+				; previously if we've never heard of the
+				; option!)
+
+; Simple supported user telnet option handler (invoked for received DO/DONT).
+; These options are preferred on, so a received DO or DONT just sets the
+; state (we have to honor a DONT according to protocol).
+suopt:	bitb #1,uoptst(r2)	; is this a reply to our request?
+	if eq,<			; no
+	  cmpb r3,uoptst(r2)	; already in requested state?
+	  if ne,<		; no
+	    push r3
+	    asr r3		; DO -) WILL, DONT -) WONT
+	    add #will+1,r3	; ...
+	    call sndiac		; reply, accepting request
+	    pop r3
+	    >
+	  >
+	movb r3,uoptst(r2)	; set option status to -2 for on, 0 for off
+	kretrn
+
+; Unknown option WILL/WONT handler.
+usopt:	tst r3			; WILL?
+	if ne,<			; yes
+	  kcall sdont		; reply DONT
+	  >			; no need to reply to WONT, as we're already
+	kretrn			; in that state (can't have accepted
+				; previously if we never heard of the
+				; option!)
+
+; Simple supported server telnet option handler (invoked for received
+; WILL/WONT). These options are preferred on, so a received WILL or WONT just
+; sets the state (we have to honor a WONT according to protocol).
+ssopt:	bitb #1,soptst(r2)	; is this a reply to our request?
+	if eq,<			; no
+	  cmpb r3,soptst(r2)	; already in requested state?
+	  if ne,<		; no
+	    push r3
+	    asr r3		; WILL -) DO, WONT -) DONT
+	    add #do+1,r3	; ...
+	    call sndiac		; reply, accepting request
+	    pop r3
+	    >
+	  >
+	movb r3,soptst(r2)	; set option status to -2 for on, 0 for off
+	kretrn
+
+; Server echo option handler (received WILL ECHO).
+secho:	tstb echof		; if user desires any echo at all, either
+	if ne,<			; remote or local, then let other side chose
+				; which
+	  movb r3,lecho		; -2 -) 0 (remote echo), 0 -) 1 (local echo)
+	  asrb lecho		; ...
+	  comb lecho		; ...
+	  >
+	br ssopt
+
+
+; DO/DONT timing mark.  Server sends a DO TM when it wants to synchronize
+; input with output (e.g. for flushing typeahead after an error).  We can
+; have sent ahead a WILL TM "response" at the user's request (e.g. if user
+; anticipated flushing, and wants to resume typeahead).  [Actually, there
+; currently isn't a command to do this.]
+dtm:	decb wtmc		; decrement count of "WILL TM"s sent and
+				; unack'd
+	if mi,<			; none
+	  clrb wtmc		; keep count at zero
+	  tstb r3		; DO?
+	  if mi,<		; yes
+	    ;; should wait for all character in output buffer to be sent.  oh well.
+	    call swill		; reply WILL, saying we're synch'd
+	    >			; (ignore DONTs)
+	  >
+	else <			; this is a reply to our WILL TM
+	  tstb r3		; DO?
+	  if pl,<		; no, DONT
+	    print ^"timing mark ignored
+"
+	    >
+	  >
+	kretrn
+
+; WILL/WONT timing mark.  Server sends WILL/WONT TM in reply to our DO TM.
+; Currently we never send DO TM.  The muzzle command uses this to know when
+; to resume output.
+wtm:	decb dtmc		; decrement count of "DO TM"s sent
+	if mi,<			; none were sent
+	  clrb dtmc		; keep count at zero
+	  tstb r3		; WILL?
+	  if mi,<		; yes
+	    call sdont		; reply DONT, meaning TM ignored
+	    >
+	  >
+	kretrn
+
+
+; WILL/WONT logout.
+wlogo:	tstb r3			; WILL?
+	if mi,<			; yes
+	  bitb #1,soptst+logo	; we requested it?
+	  if ne,<		; yes, so this is a reply
+	    bicb #1,soptst+logo	; request no longer pending
+	    call clscon		; close the connection
+	    jmp tnbeg
+	    >
+	  call sdont		; unrequested, so refuse
+	  kretrn
+	  >
+	bicb #1,soptst+logo	; request no longer pending
+	print ^"LOGOUT refused
+"
+	kretrn
+
+swont:	mov #wont,r3
+	br sndiac
+
+swill:	mov #will,r3
+	br sndiac
+
+sdont:	mov #dont,r3
+	br sndiac
+
+sdo:	mov #do,r3
+	; fall through to SNDIAC
+
+sndiac:	kcall alc16		;get a packet
+	movb #200,pkop(r0)	;set the packet opcode
+	mov #3,pklen(r0)	;set the length of the packet
+	movb #iac,pkdat(r0)	;set in IAC
+	movb r3,pkdat+1(r0)	;set in will/wont do/dont
+	movb r2,pkdat+2(r0)	;indicate what we are doing
+	kcall outpak		;output the packet
+	tstb negopr		; print negotiations?
+	if ne,<			; yes
+	  print ^"sent "
+	  cmp r3,#will
+	  if eq,<
+	    print ^"WILL "
+	    >
+	  cmp r3,#wont
+	  if eq,<
+	    print ^"WONT "
+	    >
+	  cmp r3,#do
+	  if eq,<
+	    print ^"DO "
+	    >
+	  cmp r3,#dont
+	  if eq,<
+	    print ^"DONT "
+	    >
+	  mov r2,r0
+	  kcall prnum
+	  mov #40,r0
+	  kcall prtch
+	  >
+	kretrn
+
+outcat:	.blkw 1
+
+;;; Read a character from the network.
+readch:	tst pakptr(fp)		;do we have a packet yet?
+	if eq,<
+loop <	  cocall		;give the other guy a chance
+	  mov conect,r1		;is connection still there?
+	  if eq,<
+	    jmp tnbeg
+	    >
+	  call chdati,r1,r0	;get a packet from the arpa net
+	  exitl cc		;got a packet
+	  cmpb cnstat(r1),#%csopn
+	  rptl eq		;connection open, no input data
+	  tst r0		;did we get an explanation back?
+	  if eq,<		;if no, try once again
+	    call chdati,r1,r0
+	    >
+	  tst r0		;any message yet?
+	  if ne,<
+	    mov r0,errpak	;save error packet for other task
+	    >
+	  jmp tnbeg		;restart this process
+	  >
+
+	  mov r0,pakptr(fp)	;save pointer to packet
+	  mov r0,datptr(fp)
+	  add #pkdat,datptr(fp)	;save pointer to data area
+	  mov pklen(r0),datend(fp)	;calc end of data
+	  bic #pkfcnt,datend(fp)	;clear out forwarding count
+	  add datptr(fp),datend(fp)
+	  >
+				
+	cmp datptr(fp),datend(fp)	;are we out of data
+	if eq,<
+	  mov pakptr(fp),r0	;free packet
+	  kcall frepck
+	  clr pakptr(fp)
+	  br readch		;start all over again
+	  >
+	clr r2
+	bisb @datptr(fp),r2	;return char in R2
+	inc datptr(fp)		;bump up the pointer
+	;; should really free packet here when done with in
+	kretrn			;return
+
+
+typpak:	proc 0,0,<r2,r3,r4>
+	mov pklen(r0),r2	;get size of data area
+	bic #pkfcnt,r2		;clear out the forwarding count
+	if ne,<
+	  mov r0,r3
+	  add #pkdat,r3		;point to data in packet
+  loop <    movb (r3)+,r4	;extract char
+	    call ttyout,r4	;print it
+	    sorl r2
+	    >
+	  >
+	return			;all done
+
+doccon:	kcall cmdoct
+	;; R1/ host no.
+	kcall flshln
+	kcall alc16		;get a packet for the open
+	mov r0,r3
+	mov #"TE,(r3)+
+	mov #"LN,(r3)+
+	mov #"ET,(r3)+
+	clrb (r3)+		;insure a null at the end of the string
+	br docon1
+
+
+dsthst==21_8+4			;send to arpa-11
+docon:	kcall alc16		;get a packet for the open
+	mov r0,r3
+	call mvstrg,<#jcls1,r3>,r3	;start building JCL for the open
+	call rdstmv,r3,r3	;read a string from the cmd and move to packet
+	call mvstrg,<#jcls2,r3>,r3	;finish building jcl
+	clrb (r3)+		;insure a null at the end of the string
+	kcall flshln		;flush out the rest of the command line
+	mov #dsthst,r1
+docon1:	call chopen,<r1,#1,r0>,r1	;open connection
+	if cs,<
+	  kcall frepck		;free the JCL string
+	  mov r1,r0		;put packet into r0
+	  call typpak		;type contents of packet
+	  kcall frepck		;get rid of the packet
+	  print ^"
+
+"
+	  return		;get another command
+	  >
+
+	kcall frepck		;no need for data area any more
+
+	mov r1,conect		;save ptr to the connection
+	print ^"Connection Open
+
+"
+	return			;ok, send chars to and from user
+
+dodis:				;disconnect from host
+	jcall clscon		;close the connection
+
+clscon:
+	mov conect,r1		;do we have an open connection?
+	if ne,<
+	  call chcls,<r1,#0>	;close chaos connection
+	  print ^"Connection Closed
+"
+	  clr conect
+	  >
+	kretrn
+
+dologo:	mov #logo,r2
+	kcall sdo
+	bisb #1,soptst+logo
+	return
+
+domon:	comb negopr		;toggle state
+	if eq,<
+	  print ^"Negotiation monitoring off
+"
+	  >
+	else <
+	  print ^"Negotiation monitoring on
+"
+	  >
+	return
+
+dobre:	;; should send TELNET break command, but for upward compatibility,
+	;; still the same as IP command
+doip:	kcall alc16		;get a small packet
+	movb #202,pkop(r0)	;set opcode for INS
+	mov #4,pklen(r0)	;set the packet length
+	movb #iac,pkdat(r0)	;send IAC IP IAC DM
+	movb #ip,pkdat+1(r0)
+	movb #iac,pkdat+2(r0)
+	movb #dm,pkdat+3(r0)
+	jcall outpak		;send the packet
+
+domuzz:	incb dtmc		;increment count of DO TMs
+	kcall alc16		;get a small packet
+	movb #200,pkop(r0)	;set opcode for INS
+	mov #3,pklen(r0)	;set the packet length
+	movb #iac,pkdat(r0)	;send IAC DO TM
+	movb #do,pkdat+1(r0)
+	movb #tm,pkdat+2(r0)
+	jcall outpak		;send the packet
+
+;;; Output data character obeying TELNET protocol.
+telout:	call putchr,<#inbuf,r0>	; output character
+	bcs 1$			; no room
+	tstb uoptst+binary	;are we in binary mode perchance?
+	if pl,<			;no, then follow NVT standard
+	  cmpb r0,#15		;did we just output the CR?
+	  if eq,<		;if so, then we must output a LF to conform
+	    call putchr,<#inbuf,#12>	;to telnet protocol
+	    if cs,<		;if the buffer happens to be full, then we
+	      call remchr,#inbuf,r0	;remove the CR we output
+				;and try again
+	      br 1$		;later
+	      >
+	    >
+	  >
+	cmpb r0,#377		;did we just output an IAC
+	if eq,<
+	  call putchr,<#inbuf,#377>	;double IACs
+	  if cs,<			;won't fit
+	    call remchr,#inbuf,r0	;so remove the first IAC
+	    br 1$
+	    >
+	  >
+	clc
+1$:	kretrn
+
+;;; Send a chaosnet packet out over our telnet connection.
+outpak:
+	mov conect,r1
+loop <	  call chdato,<r0,r1>
+	  exitl cc
+	  cmpb cnstat(r1),#%csopn	;open?
+	  if eq,<
+	    cocall		;wait
+	    mov conect,r1	;fetch connection
+	    rptl ne
+	    >
+	  kcall frepck
+	  >
+	kretrn			;back to the users
+
+eolstr:	.asciz "
+"				;CR/LF
+jcls1:	.asciz "ARPA "
+jcls2:	.asciz " 27 2"		;ICP to socket 3, reserve 3 sockets
+istrng:	.byte iac,will,sga,iac,do,sga,iac,do,echo,0
+	.even
+
+

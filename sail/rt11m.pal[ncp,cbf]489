@@ -1,0 +1,254 @@
+rt11fg === 1			;indicate an assembly for RT-11
+				;if not defined, then we are version 3 RT-11
+.iif ndf rt11vn, rt11vn===3
+.iif eq rt11vn-4,rt11vn===3
+
+.macro ...cm0 starg
+.if b starg
+	clr -(%6)		;push zero onto the stack
+.iff				;else
+.if idn starg,#0
+	clr -(%6)		;again, zero onto the stack
+.iff
+	mov starg,-(%6)		;push arg onto stack
+.endc
+.endc
+.endm
+
+.macro ...cm1 area,ic,chan,flag
+	...cm5 area
+	...v2=0
+.if b flag
+.iif b area, ...v2=1
+.iff
+.iif dif flag,set, ...v2=1
+.endc
+.if ne ...v2
+.if idn chan,#0
+	clrb (%0)		;clear out channel
+.iff
+.if nb chan
+	movb chan,(%0)		;set channel number
+.endc
+.endc
+.iff
+.if b chan
+	movb #ic,1(%0)
+.iff
+.ntype ...v2,chan
+.if eq ...v2-27
+	mov chan+<ic*400>,(%0)
+.iff
+	mov #ic*400,(%0)
+	movb chan,(%0)
+.endc
+.endc
+.endc
+.endm
+
+.macro ...cm2 arg,offse,ins,cset,bb
+.if b arg
+.if nb cset
+.if ne ...v1-3.
+	clr'bb offse(%0)
+.endc
+.endc
+.iff
+.if idn arg,#0
+	clr'bb offse(%0)
+.iff
+	mov'bb arg,offse(%0)
+.endc
+.endc
+.if nb ins
+	emt 375		;issue general emt
+.endc
+.endm
+
+.macro ...cm3 chan,ic
+.if b chan
+	mov #ic*400,%0		;chan is zero if blank
+.iff
+.ntype ...v2,chan
+.if eq ...v2-27
+	mov chan+<ic*400>,%0	;load up r0 with constant
+.iff
+	mov #ic*400,%0		;set up operation code
+	bisb chan,%0		;add in chan
+.endc
+.endc
+	emt 374			;rt-11 trap
+.endm
+
+.macro ...cm4 area,chan,buf,wcnt,blk,crtn,ic,code
+	...cm1 area,ic,chan,code
+	...cm2 blk,2.
+	...cm2 buf,4.
+	...cm2 wcnt,6.
+	...cm2 crtn,8.,x
+.endm
+
+.macro ...cm5 src,bb
+.if nb src
+.if dif src,R0
+	mov'bb src,%0		;move pointer into r0
+.endc
+.endc
+.endm
+
+.macro ...cm6 area,ic,chan,flag
+	...cm5 area
+.if b flag
+.if nb area
+	mov #ic*400+chan,(%0)
+.endc
+.iff
+.if idn flag,set
+	mov #ic*400+chan,(%0)
+.endc
+.endc
+.endm
+
+.macro .close chan
+	...cm3 chan,6.
+.endm
+
+.macro .csige outspc,defext,cstrng,linbuf
+.if nb linbuf
+.ntype ...v2,outspc		;get type of outspc arg
+.if eq ...v2-27		;if immediate mode
+	...cm0 outspc'+1	;make odd as flag for rt-11
+.iff
+	...cm0 outspc		;push onto the stack
+	inc (%6)		;make odd as a flag (odd address is bug)
+.endc
+.iff				;else
+	...cm0 outspc		;push onto the stack
+.endc
+	...cm0 defext		;arg onto stack
+	...cm0 cstrng		;ditto
+	emt 344			;call rt-11
+.endm
+
+.macro .device	area,addr,link,code
+.if b link
+	...cm6 area,12.,0,code
+.iff
+	...cm6 area,12.,1,code
+.endc
+	...cm2 addr,2.,x
+.endm
+
+.macro .exit
+	emt 350			;return to rt-11
+.endm
+
+.macro .ttinr
+	emt 340
+.endm
+
+.macro .readw	area,chan,buf,wcnt,blk,code
+	...cm4 area,chan,buf,wcnt,blk,#0,8.,code
+.endm
+
+.macro .settop addr
+	...cm5 addr
+	emt 354
+.endm
+
+.macro .writw	area,chan,buf,wcnt,blk,code
+	...cm4 area,chan,buf,wcnt,blk,#0,9.,code
+.endm
+
+	.sbttl Other Macros to Support RT-11
+
+
+; The save macro creates part of the list of things to be restored
+; upon return to RT-11
+
+.macro	save a1,a2,a3,a4,a5,a6,a7,a8,a9
+	.irp foo,<<a1>,<a2>,<a3>,<a4>,<a5>,<a6>,<a7>,<a8>,<a9>>
+
+	.if nb foo
+	     expand foo
+	.endc
+	.endr
+
+.endm
+
+; Issue the appropriate .device call to RT-11 for the list of SAVEs
+
+.macro savlst
+.if eq asmsj			;if NOT under SJ monitor
+.if eq rt11vn-3
+	.device #xgemtbl,#xgsavl,l
+.iff
+	.device #xgemtbl,#xgsavl
+.endc
+.endc
+.endm
+
+.macro reslst
+.if ne asmsj			; if under SJ monitor, we need to do all
+				; the work by hand 
+	push r0
+	mov #xgsavl+2,r0	; presume the linking kind; to hell with V2
+loop <	  tst (r0)		; list done?
+	  exitl eq		; yes.
+	  mov 2(r0),@0(r0)	; restore the value
+	  add #4,r0
+	  rptl
+	  >
+	pop r0
+.endc
+.endm
+
+;expand is a utility macro for SAVE
+
+.macro	expand a
+	xgflg === 0
+
+	.irp foo,<a>
+	     .if eq xgflg
+		xgflg===1
+		xgval === foo
+	     .iff
+		xgcnt === <foo-xgval>/2
+	     .endc
+	.endr
+
+	.if1
+	     .if ndf xgtotal
+		xgtotal === 0
+	     .endc
+
+	     xgtotal === xgtotal+xgcnt
+	.endc
+
+	.rept xgcnt
+	     .if1
+		mov @#0,0	;leave room for pass two
+	     .endc
+	     .if2
+		xgtmp===.
+		.=xgpntr
+		.word xgval+<2*.rpcnt>,0,0
+		.=xgtmp
+		mov @#xgval+<2*.rpcnt>,xgpntr+2
+		xgpntr === xgpntr + 4
+	     .endc
+	.endr
+.endm
+
+.macro putlst
+xgemtbl===.
+	.word 0,0
+xgsavl===.
+.if eq rt11vn-3
+	.word 0
+.endc
+xgpntr===.
+.=4*xgtotal+.+2			;allow for 0 word ending list
+.endm
+
+

@@ -1,0 +1,16 @@
+Rebooting the Switch
+
+1) Place the Boot/Run switch in the Boot position.  The DatMedia across
+   from the S-1 should now be talking to device 7.
+2) Hit the reset button on the switch.  A $ should come out on the TI.
+   Type AL170010 in response to the $.  Wait 5 seconds.
+3) Go to the DataMedia and type at device 7:
+     R XPATCH			xpatch should prompt with a *, then type:
+     SY:SWITCH.BIN/U:177550	xpatch will type stuff about ^Z^X etc.
+     type ^Z^V (that is Control-Z Control-V)
+4) The switch should come up in less than 30 seconds.
+   Type ^Z^X (Control-Z Control-X) followed by a ^C (Control-C)
+   to exit XPATCH on device 7.
+   Reset the Boot/Run switch back to the run position.
+
+SWITCH.DOC[1,CBF]				     -CBF 9 June 1980

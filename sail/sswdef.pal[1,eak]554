@@ -1,0 +1,104 @@
+;;; -*-PALX-*-
+;;; The Network Configuration and Definition for the SIPB concentrator
+
+       arcmac===16300
+       mitccc===16310
+       eddie===3404
+       eecs===5542
+       math===7770
+       lcsvax===3120
+       mc===1440
+       ml===3114
+       multics===16050
+       oz===11406
+       scrcte===17402
+       speech===12035
+       mitxx===2420
+
+
+pdp11===23			; LSI11/23
+asmrt11===0			; assemble under RT11
+asmled===1			; assemble line editor
+chaos===1			; assemble chaos net
+asmmap===1
+coast===east
+chchto===<15.*60.>/ticktm	; make chaos timeouts 15. seconds on east coast
+
+.macro	%sname
+	.ascii "SIPB Switch"
+.endm
+icmdchr==34			; the command character
+.macro	%greet
+	.asciz "Type Control-Backslash (^\) for service.
+"
+.endm
+
+;;; Hardware configuration table.
+.macro	.hports
+	dl  60,177560,64.,^"SIPB1 x3-7788",kbd	; Port 0 (console)
+	dl 300,176500,64.,^"1200 baud",kbd	; Port 1 DLV11-J
+	dl 310,176510,64.,^"SIPB2 x3-7788",kbd	; Port 2
+	dl 320,176520,64.,^"SIPB3 x3-7788",kbd	; Port 3
+
+	dz 330,160100
+	 dzl 13430,64.,^"SIPB4",kbd		; Port 4
+	 dzl 17031,64.,^"SIPB5",kbd
+	 dzl 17432,64.,^"modem",kbd
+	 dzl 17433,64.,^"SIPB7",kbd		; Port 7
+	maksvr timser,^"TIME"
+	maksvr uptser,^"UPTIME"
+	maksvr exser,^"ex"
+	maksvr dpser,^"dp"
+	maksvr echser,^"ECHO"
+	maksvr sndser,^"SEND"
+	maksvr conser,^"CONNECT"
+	maksvr telser,^"TELNET"
+
+.if ne 0
+mul0===nhport
+	dl 340,176540,64.,^"Port 8"
+	dl 350,176550,64.,^"Port 9"
+	dl 360,176560,64.,^"Port 10"
+	dl 370,176570,64.,^"Port 11"
+	dl 340,176540,64.,^"Port 12"
+	dl 350,176550,64.,^"Port 13"
+	dl 360,176560,64.,^"Port 14"
+	dl 370,176570,64.,^"Port 15"
+.endc
+.endm
+
+.macro	.pnames
+	telkey ^"arcmac",arcmac
+	telkey ^"ccc",mitccc
+	telkey ^"eddie",eddie
+	telkey ^"eecs",eecs
+	telkey ^"lcs vax",lcsvax
+	telkey ^"math",math
+	telkey ^"mc",mc
+	telkey ^"ml",ml
+	key    ^"modem",6
+	telkey ^"multics",multics
+	telkey ^"oz",oz
+	telkey ^"scrc tenex",scrcte
+	telkey ^"speech",speech
+	telkey ^"xx",mitxx
+	.word 0
+;mulrot:	.word "RO,mul0,mul0,mul0+4
+.endm
+
+.iif ndf chaos, chaos===0	; no chaosnet code
+.if ne chaos
+
+.insrt chmacs
+
+  ;; NOTE, this is the MIT, not the LLNL net!
+  inhst==20			;the host number of this machine
+  innet==34			;the host net number
+  mxcilv==7			;maximum interrupt level of all the interfaces
+
+  makcif 34,20,cha,164140,270
+
+rcpwait==3			; 50ms
+
+.endc
+

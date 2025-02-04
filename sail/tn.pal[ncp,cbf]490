@@ -1,0 +1,298 @@
+	.title	Telnet
+	.sbttl Server Telnet
+
+;;; here are the definitions for the telnet option negotiations.
+
+iac === 255.
+dont === 254.
+do === 253.
+wont === 252.
+will === 251.
+echo === 1.
+suprga === 3.
+
+;srvrtn:	proc 0,0,<>,<lastim>
+;
+;income:	tst alowst
+;	beq 3$
+;	call listen,<#27,#32.>,r0	;listen for connection
+;	bcc 1$			;lossage?
+;	bpt
+;3$:	cocall
+;	br income
+;
+;1$:	cmpb #s.open,(r0)	;open yet?
+;	beq 2$
+;	cocall
+;	tst alowst
+;	bne 1$
+;	call close,r0,r0
+;	br income
+;
+;2$:	call gcinfo,r0,<junk,r2,r3,imp,host,junk,junk,junk>
+;	mov r0,icpcnl
+;	add #3,r3		;get the connection socket numbers
+;	adc r2			;double precision(!)
+;	call getsox,#2,r1	;get sockets to use for this conn.
+;	mov r1,ourskt
+;
+;	call orconn,<r1,imp,host,r2,r3,#8.>,r0	;open the receive side
+;	bcc ropen
+;error1:	call ttysnd,<#s.hdwn,#l.hdwn>
+;	call close,icpcnl,r2
+;	br income
+;
+;ropen:	dec r3			;his even socket or our odd one
+;	inc r1
+;	call otconn,<r1,imp,host,r2,r3,#8.>,r1	;open transmit side
+;	bcs error1
+;
+;	call hhsend,<icpcnl,#4>
+;	call hhsd32,<#0,ourskt>
+;	call hhdsnd
+;	bcs error1
+;	call close,icpcnl,r2
+;	bcc 8$			;check for error
+;	jmp error
+;
+;8$:	mov clock,r3		;remember when we start waiting
+;4$:	cmpb (r0),#s.open
+;	bne 5$
+;	cmpb (r1),#s.open
+;	beq 7$
+;5$:	cocall
+;	mov clock,r4
+;	sub r3,r4		;how long have we waited
+;	cmp r4,opento
+;	blt 4$
+;	call print,#s.opto	;open timed out
+;	jmp clsup
+;
+;;;; Now the connection is open so we shuttle characters back and forth
+;;;; till the connection is closed.
+;7$:	call print,#s.gotc
+;6$:	cocall
+;	call numchr,<>,r3	;get number of chrs to read
+;	tst r3
+;	ble 1$			;do input side now
+;	mov clock,r2
+;	sub lastim(fp),r2
+;	cmp r2,#6.		;wait 1/10 sec
+;	blos 1$			;punt for now
+;	mov clock,lastim(fp)
+;	call hhsend,<r1,r3>
+;2$:	call getchr,<>,r4
+;	call hhsnd8,r4
+;	sob r3,2$
+;	call hhdsnd
+;	bcs clsup
+;
+;1$:	call readms,r0,r3	;get a msg
+;	bcs clsup		;connection closed?
+;	tst r3
+;	beq 6$
+;	push r1
+;	mov r3,r1		;save ptr for freeing
+;	add #<msg.ln+ipl.ln>,r3	;get to host leader
+;	mov hl.nby(r3),r4	;get number of bytes
+;	swab r4			;since imp gets stuff backwards
+;	add #hl.txt,r3		;get ptr to data
+;	call ttysnd,<r3,r4>
+;	push r0
+;	mov bgheap,r0
+;	jsr pc,freeb
+;	pop r0
+;	pop r1
+;	br 6$
+;
+;clsup:	call print,#s.conc
+;	call close,r0,r2
+;	bcs error
+;	call close,r1,r2
+;	bcs error
+;	cocall
+;	jmp income		;start over
+;
+;error:	bpt
+;	jmp clsup
+
+	.sbttl User Telnet to MC
+
+usertn:	proc 0,0,<>,<lastim,gotiac>
+
+outgo:	tst  openmc		;wait till we should start
+	bne 1$
+	cocall
+	br outgo
+1$:	clr r1
+	clr r2
+	clr r3
+	call getsox,#4,r0
+	mov r0,r4
+	add #2,r4
+	call listen,<r4,#8.>,r2	;listen for incoming TN connections
+	bcs 8$
+	inc r4
+	call listen,<r4,#8.>,r3
+	bcc 11$
+8$:	call ttysnd,<#s.hdwn,#l.hdwn>
+	call close,r2,r0
+	call close,r3,r0
+	call close,r1,r0
+	clr openmc		;start over
+	br outgo
+
+11$:	push r2
+	push r3
+	call orconn,<r0,tnimp,tnhost,#0,#27,#32.>,r1
+	bcs 8$
+2$:	cmpb (r1),#s.open	;wait for it to open
+	beq 3$
+	cocall
+	cmpb (r1),#s.clsd
+	bne 2$			;keep trying
+	br 8$
+
+3$:	call readms,r1,r3	;wait for the socket number to arrive
+	bcc 12$
+	call close,r1,r0	;we don't really nead this...
+	br 5$
+12$:	tst r3
+	bne 4$
+	cocall
+	br 3$			;not yet.
+
+4$:	push r1			;so we can free msg later
+	mov r3,r1
+	add #<msg.ln+ipl.ln+hsl.ln>,r3
+	cmp <hl.nby-hsl.ln>(r3),#400	;should be one (swapped) byte
+	bne 6$
+	cmpb <hl.bsz-hsl.ln>(r3),#32.	;32 bit byte
+	beq 7$
+6$:	bpt
+7$:	clr r4
+	clr r2
+	bisb (r3)+,r4
+	swab r4
+	bisb (r3)+,r4
+	bisb (r3)+,r2
+	swab r2
+	bisb (r3)+,r2
+	push r0
+	mov bgheap,r0
+	jsr pc,freeb
+	pop r0
+	pop r1
+	call close,r1,r1	;close the ic
+	bcs 6$
+
+5$:	pop r1			;get transmit channel
+	pop r0			;get receive channel
+
+9$:	cmpb (r0),#s.open
+	bne 10$
+	cmpb (r1),#s.open
+	beq conopn
+10$:	cocall 			;wait for connections to open
+	cmpb (r0),#s.clsd
+	beq 13$
+	cmpb (r1),#s.clsd
+	bne 9$
+13$:	mov r0,r2		;abort things
+	clr r3
+	jmp 8$
+
+conopn:	call print,#s.mcop	;announce
+
+	mov #utniac,r2		;get the initial TN nego string
+	mov #ltniac,r3		;get the length
+	call hhsend,<r1,r3>
+	bcs clsupu
+3$:	movb (r2)+,r4
+	call hhsnd8,r4
+	sob r3,3$
+	call hhdsnd
+	bcs clsupu
+
+6$:	cocall
+	tst openmc
+	beq clsupu		;wants to close the connection
+	call numc,<#tyibuf>,r3	;get number of chrs to read from the tty
+	tst r3
+	beq 1$			;do input side now
+	mov clock,r2
+	sub lastim(fp),r2
+	cmp r2,#6.		;wait 1/10 sec
+	blos 1$			;punt for now
+	mov clock,lastim(fp)
+	push r1			; HHSEND args: transmit channel,
+	push r3			;	       char count
+	asl (sp)		; double char count in case they're all IAC's
+	call hhsend
+	bcs clsupu
+	push r0,r1
+	mov #tyibuf,r1
+loop	< kcall getc		; get a char from keyboard
+	  cmpb r0,#iac		; did user type an IAC?
+	  if eq,<		; yes, we must double it cause its an IAC
+	    call hhsnd8,r0	; ...
+	    >
+	  call hhsnd8,r0
+	  sorl r3
+	  >
+	pop r1,r0
+	call hhdsnd
+	bcs clsupu
+
+1$:	call readms,r0,r3
+	bcs clsupu
+	tst r3
+	beq 6$
+9$:	push r1
+	mov r3,r1		;save ptr for freeing
+	add #<msg.ln+ipl.ln>,r3	;get to host leader
+	mov hl.nby(r3),r4	;get number of bytes
+	swab r4			;since imp gets stuff backwards
+	add #hl.txt,r3		;get ptr to data
+	call ttysnd,<r3,r4>
+	push r0
+	mov bgheap,r0
+	jsr pc,freeb
+	pop r0
+	pop r1
+	br 6$
+
+clsupu:	call print,#s.ucnc
+	call close,r0,r2
+	bcs 1$
+	call close,r1,r2
+	bcs 1$
+	cocall
+	jmp outgo
+1$:	bpt 			;error while closing up
+	jmp outgo
+
+tnimp:	.word 54		;IMP for MIT-MC
+tnhost:	.word 3			;Host number for MIT-MC
+
+.if ne 0			;server telnet
+host:	.word
+imp:	.word
+ourskt:	.word
+icpcnl:	.word
+junk:	.word
+opento:	.word 30.*60.		;time out after 30 seconds
+.endc
+
+utniac:	.byte iac,do,echo,iac,do,suprga,iac,will,suprga
+ltniac==.-utniac
+s.hdwn:	.ascii /Host Down
+/
+l.hdwn==.-s.hdwn
+;s.gotc:	.asciz /srvrtn: connection ** /
+;s.opto:	.asciz /srvrtn: open timed out ** /
+;s.conc:	.asciz /srvrtn: connection closed ** /
+s.mcop:	.asciz /usertn: connection ** /
+s.ucnc:	.asciz /usertn: connection closed ** /
+	.even
+

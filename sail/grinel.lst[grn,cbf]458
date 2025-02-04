@@ -1,0 +1,326 @@
+  1) GRINEL.OLD[GRN,CBF] and 2) GRINEL.PAL[GRN,CBF]	2-23-81 12:15	pages 7,7
+
+**** File 1) GRINEL.OLD[GRN,CBF]/7P/22L
+1)		     br grslep		; no characters to process
+1)	grdspt:     bic #177600,r1	; no need for random parity
+1)		    cmp r1,#177		; throw padding away
+**** File 2) GRINEL.PAL[GRN,CBF]/7P/22L
+2)		     exitl		; no characters to process
+2)	grdspt:	    bic #177600,r1	; no need for random parity
+2)		    cmp r1,#177		; throw padding away
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/7P/40L
+1)		    >			; otherwise we fall through to grslep..
+1)		  ; might  be interesting to meter here someday ..
+1)	; no more characters to process, write out a cursor and go to sleep
+1)	grslep:	  jsr pc,grpend		; perform any pending operations
+1)		  jsr pc,gbfxcl		; make sure we can modify buffer
+**** File 2) GRINEL.PAL[GRN,CBF]/7P/40L
+2)		    >			; otherwise we fall through
+2)		  ; might  be interesting to meter here someday ..
+2)	; no more characters to process, write out a cursor and go to sleep
+2)		  jsr pc,grpend		; perform any pending operations
+2)		  jsr pc,gbfxcl		; make sure we can modify buffer
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/7P/68L
+1)	; GRSEND - send out a Grinnell buffer if there are any commands in it
+**** File 2) GRINEL.PAL[GRN,CBF]/7P/68L
+2)	gsloop:
+2)	loop <	  ;; main loop for reading and dispatching
+2)	  loop <    call getchr
+2)		     exitl		; no characters to process
+2)	1$:	    tstb r1
+2)		    if mi,<
+2)		      cmp r5,g.pbuf(gp) ; is there something pending to send?
+2)		      if ne,<		; yes,
+2)			jsr pc,grsend	; send it; this is nec only until we change
+2)		        >		; everything not to smash R5
+2)		      bic #177600,r1	; clear high bits
+2)		      cmp r1,#%tdmax	; is this TD code in range?
+2)		      rptl hi		; no, ignore
+2)		      add r1,r1		; word offset
+2)		      jsr pc,@gsdisp(r1) ; dispatch on these
+2)		      mov g.pbuf(gp),r5	; may have gotten smashed
+2)		      rptl
+2)		      >
+2)		    jsr pc,grordy	; put an ordinary character in output buffer
+  1) GRINEL.OLD[GRN,CBF] and 2) GRINEL.PAL[GRN,CBF]	2-23-81 12:15	pages 7,7
+
+2)		    cmp r5,g.ebuf(gp)	; are we near end of buffer?
+2)		    rptl lo		; get another character only if room
+2)		    >			; otherwise we fall through
+2)		  ; might  be interesting to meter here someday ..
+2)	; no more characters to process, write out a cursor and go to sleep
+2)		  jsr pc,grpend		; perform any pending operations
+2)		  jsr pc,gbfxcl		; make sure we can modify buffer
+2)		  jsr pc,grcusn		; put cursor commands in the buffer
+2)		  jsr pc,grsend		; send the buffer out to Grinnell
+2)		  mfps -(sp)		; mask ourselves so there is no window between
+2)		  spl 7			; the discovery that we still have no chars
+2)		  call getchr		; and the actual zeroing of O.BLK
+2)		   br 2$		; indeed we are out of chars
+2)		  mtps (sp)+		; restore priority
+2)		  jsr pc,gbfxcl		; we have a character, turn the cursor off
+2)		  jsr pc,grcusf		; ...
+2)		  jsr pc,grsend
+2)		  br 1$			; no, one arrived while we were doing cursor!
+2)	2$:	  clr o.blk(r0)		; indicate we will need wakeup
+2)		  mtps (sp)+
+2)		  jsr pc,sleep		; sleep
+2)		  mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+2)		  jsr pc,gbfxcl		; we were awakened, turn the cursor off
+2)		  jsr pc,grcusf		; ...
+2)		  jsr pc,grsend
+2)		  rptl
+2)		  >
+2)	; GRSEND - send out a Grinnell buffer if there are any commands in it
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/12L
+1)		grbs			; 10 ^H Backspace - Right Cursor
+1)		grtab			; 11 ^I Tab
+**** File 2) GRINEL.PAL[GRN,CBF]/8P/12L
+2)		grbs			; 10 ^H Backspace - left Cursor
+2)		grtab			; 11 ^I Tab
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/25L
+1)		grscru			; 25 ^U reserved for scroll up
+1)		grscrd			; 26 ^V reserved for scroll down
+1)		greol			; 27 ^W Erase to end of Line
+**** File 2) GRINEL.PAL[GRN,CBF]/8P/25L
+2)		grscru			; 25 ^U scroll up
+2)		grscrd			; 26 ^V scroll down
+2)		greol			; 27 ^W Erase to end of Line
+  1) GRINEL.OLD[GRN,CBF] and 2) GRINEL.PAL[GRN,CBF]	2-23-81 12:15	pages 8,8
+
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/34L
+1)		grmr			; 36 ^^ Master Rest
+1)		greos			; 37 ^_ Erase to end of Screen
+1)	; GRPEND perform any pending operations.  For now just output a possibly
+**** File 2) GRINEL.PAL[GRN,CBF]/8P/34L
+2)		grmr			; 36 ^^ Master Reset
+2)		greos			; 37 ^_ Erase to end of Screen
+2)	gsdisp:	grjunk	; 200 %TDMOV - Move cursor
+2)		grjunk	; 201 %TDMV1 - Dummy, shouldn't be seen.
+2)		tdeos	; 202 %TDEOF - Erase to end of page
+2)		greol	; 203 %TDEOL - Erase to end of line
+2)		tddlf	; 204 %TDDLF - Delete forward
+2)		tdexit	; 205 %TDMTF - Motor off (terminets only) HACK! back to DM mode
+2)		grjunk	; 206 %TDMTN - Motor on  (  " " )
+2)		tdcrl	; 207 %TDCRL - CRLF and CLEOL (see note below)
+2)		grjunk	; 210 %TDNOP - Noop for SuperDuperImage
+2)		grjunk	; 211 %TDBS  - Backspace, only on TTY's with %TORAW set.
+2)		grjunk	; 212 %TDLF  - Linefeed,   (   "   )
+2)		grjunk	; 213 %TDRCR - CR,         (   "   )
+2)		tdors	; 214 %TDORS - Output Reset.  Seen when TTY output reset done.
+2)		gresc	; 215 %TDQOT - Device dependent data in next byte (quoted)
+2)		grrt1	; 216 %TDFS  - Move cursor forward one space
+2)		tdmv0	; 217 %TDMV0 - Replacement for %TDMOV, illegal if %TORAW.
+2)		tdclr	; 220 %TDCLR - Home and Clear the screen
+2)		grbel	; 221 %TDBEL - Ding the bell
+2)		grjunk	; 222 %TDINI - System just came up, reinit intelligent term
+2)		tdilp	; 223 %TDILP - Insert Line-Position. Followed by count
+2)		tddlp	; 224 %TDDLP - Delete Line-Position. Followed by count
+2)		tdicp	; 225 %TDICP - Insert Char-Position. Followed by count
+2)		tddcp	; 226 %TDDCP - Delete Char-Position. Followed by count
+2)		tdbow	; 227 %TDBOW - Enter Black-on-White mode (inverse video)
+2)		tdrst	; 230 %TDRST - Reset mode. Deselect all special modes (eg BOW)
+2)		grjunk	; 231 %TDGRF - Enter graphics mode.
+2)		tdrsu	; 232 %TDRSU - Region scroll up.
+2)		tdrsd	; 233 %TDRSD - Region scroll down.
+2)		tdexit	; 234 Private code, means exit software-tty mode
+2)			; 234 %TDMAX
+2)	%tdmax==<.-grdisp>/2
+2)	; GRPEND perform any pending operations.  For now just output a possibly
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/129L
+1)		  clr r3		; go to top line
+1)		  jsr pc,grdln
+  1) GRINEL.OLD[GRN,CBF] and 2) GRINEL.PAL[GRN,CBF]	2-23-81 12:15	pages 8,9
+
+**** File 2) GRINEL.PAL[GRN,CBF]/9P/93L
+2)	grlf1:	  clr r3		; go to top line
+2)		  jsr pc,grdln
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/179L
+1)		mov r2,r1		; base of Grinnell Screen
+1)	.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+**** File 2) GRINEL.PAL[GRN,CBF]/9P/143L
+2)	grdelc:	mov r2,r1		; base of Grinnell Screen
+2)	.iif ne gs.lin,  .error "GS.LIN assumed 0 here"
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/205L
+1)		  cmp r4,#chrlin	; overflow off right margin?
+1)		  if lo,<		; no
+**** File 2) GRINEL.PAL[GRN,CBF]/9P/169L
+2)	grrt1:	  cmp r4,#chrlin	; overflow off right margin?
+2)		  if lo,<		; no
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/271L
+1)		cmp r1,r5		; if number of lines is beyond end of
+1)		if hi,<			; region, cut it off at end of region
+**** File 2) GRINEL.PAL[GRN,CBF]/9P/235L
+2)	grsu1:	cmp r1,r5		; if number of lines is beyond end of
+2)		if hi,<			; region, cut it off at end of region
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/303L
+1)		cmp r1,r5		; if number of lines is beyond end of
+1)		if hi,<			; region, cut it off at end of region
+**** File 2) GRINEL.PAL[GRN,CBF]/9P/267L
+2)	grsd1:	cmp r1,r5		; if number of lines is beyond end of
+2)		if hi,<			; region, cut it off at end of region
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/508L
+1)	grext:	; extended command.  Enter Tektronix mode is the only one now
+1)		call getchw		; get another character
+**** File 2) GRINEL.PAL[GRN,CBF]/9P/472L
+2)	grext:	; extended command.
+2)		call getchw		; get another character
+  1) GRINEL.OLD[GRN,CBF] and 2) GRINEL.PAL[GRN,CBF]	2-23-81 12:15	pages 8,9
+
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/8P/512L
+1)		cmpb r1,#'T		; enter Tektronix mode?
+**** File 2) GRINEL.PAL[GRN,CBF]/9P/476L
+2)		cmpb r1,#'I		; ITS mode?
+2)		if eq,<			; yes
+2)		  pop *			; remove GRLOOP address
+2)		  jmp gsloop		; goto software tty loop
+2)		  >
+2)		cmpb r1,#'T		; enter Tektronix mode?
+***************
+
+
+**** File 1) GRINEL.OLD[GRN,CBF]/9P/2L
+1)		.sbttl Graphics
+**** File 2) GRINEL.PAL[GRN,CBF]/10P/2L
+2)	.sbttl	ITS software terminal
+2)	tdeos:	jmp greol		; for now
+2)	tddlf:	mov gs.lwm(r2),(r5)+	; set current write modes
+2)		mov gllas(r3),(r5)+	; vertical position
+2)		asl r4			; horizontal position
+2)		mov glles(r4),(r5)+	; ...
+2)		asr r4			; ...
+2)		mov r2,r1		; base address of line array
+2)		add r3,r1		; index by line
+2)		mov (r1),r1		; pointer to a line
+2)		add r4,r1		; and to a char
+2)		movb #40,(r1)		; store the character into screen image
+2)		bisb gs.bld(r2),(r1)	; copy current state of bold flag
+2)		mov #gi.wac+40,(r5)+	; put a write alphanumeric space command in buffer
+2)		jsr pc,grsend		; and output it
+2)		rts pc
+2)	tdcrl:	clr r4			; CR
+2)		cmp r3,#<linscr-1>*2	; last line?
+2)		if eq,<
+2)		 jmp grlf1		; yes, scroll
+2)		 >
+2)		tst (r3)+		; LF
+2)		jmp greol
+2)	tdors:	rts pc			; for now
+2)	tdmv0:	call tdarg		; get vertical position
+2)		cmp r1,#linscr-1	; clip at screen height
+2)		if hi,<			; ...
+2)		  mov #linscr-1,r1	; ...
+2)		  >
+2)		mov r1,r5		; copy
+  1) GRINEL.OLD[GRN,CBF] and 2) GRINEL.PAL[GRN,CBF]	2-23-81 12:15	pages 9,10
+
+2)		call tdarg		; get horizontal position
+2)		cmp r1,#chrlin-1	; clip at screen width
+2)		if hi,<			; ...
+2)		  mov #chrlin-1,r1	; ...
+2)		  >
+2)		mov r5,r3		; set vertical position
+2)		asl r3			; line no. is always *2
+2)		mov r1,r4		; set horizontal position
+2)		rts pc
+2)	tdicp:	call tdarg		; number of blanks to insert
+2)		push r1			; won't get smasehd on stack
+2)	loop <	  jsr pc,grinsc		; insert 1 blank
+2)		  dec (sp)
+2)		  rptl hi
+2)		  >
+2)		rts pc
+2)	tddcp:	call tdarg
+2)		push r1			; won't get smashed on stack
+2)	loop <	  jsr pc,grdelc		; delete 1 character
+2)		  dec (sp)
+2)		  rptl hi
+2)		  >
+2)		rts pc
+2)	tddlp:	mov #<linscr-1>*2,r5	; delete line is region scroll up with
+2)		br tdrsu1		; last line of region the last line of screen
+2)	tdrsu:	call tdarg		; get no. of lines in region
+2)		mov r1,r5		; copy
+2)		dec r5			; convert to last line of region * 2
+2)		asl r5			; ...
+2)		add r3,r5		; ...
+2)		cmp r5,#<linscr-1>*2	; clip at screen height
+2)		if hi,<			; ...
+2)		  mov #<linscr-1>*2,r5	; ...
+2)		  >
+2)	tdrsu1:	call tdarg		; get no. of lines to scroll
+2)		asl r1			; convert to first line to move
+2)		add r3,r1		; ...
+2)		jmp grsu1		; go to datamedia code
+2)	tdilp:	mov #<linscr-1>*2,r5	; insert line is region scroll down with
+2)		br tdrsd1		; last line of region the last line of screen
+2)	tdrsd:	call tdarg		; get no. of lines in region
+2)		mov r1,r5		; copy
+2)		dec r5			; convert to last line of region * 2
+2)		asl r5			; ...
+2)		add r3,r5		; ...
+2)		cmp r5,#<linscr-1>*2	; clip at screen height
+2)		if hi,<			; ...
+2)		  mov #<linscr-1>*2,r5	; ...
+  1) GRINEL.OLD[GRN,CBF] and 2) GRINEL.PAL[GRN,CBF]	2-23-81 12:15	pages 9,10
+
+2)		  >
+2)	tdrsd1:	call tdarg		; get no. of lines to scroll
+2)		asl r1			; convert to first line to move
+2)		add r3,r1		; ...
+2)		jmp grsd1		; go to datamedia code
+2)	tdbow:	mov #200,gs.bld(r2)	; set bold flag
+2)		bis #%wminv,gs.lwm(r2)	; and set inverse write mode
+2)		rts pc
+2)	tdrst:	clr gs.bld(r2)		; clear bold flag
+2)		bic #%wminv,gs.lwm(r2)	; and clear inverse write mode
+2)		rts pc
+2)	tdarg:	call getchw
+2)		mov t.nmp(r0),@#nm.map+2
+2)		bic #177400,r1		; clear high byte
+2)		return
+2)	tdexit:	pop *			; remove retrun addr of gsloop
+2)		jmp grloop		; and go back to the other loop
+2)	tdclr:	jsr pc,grini		; reinitialize everything
+2)		mov t.nmp(r0),@#nm.map+2 ; map our Newman pages back in
+2)		rts pc
+2)		.sbttl Graphics
+***************
+
+

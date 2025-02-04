@@ -1,0 +1,145 @@
+;;; -*-midas-*-
+	.sbttl Traffic Controller
+
+;;; To start time sharing among existing tasks branch to "manlop".
+
+;;; Task Control Block
+stksiz == 130.
+
+dsect <
+tb.sr0:: .blkw 1		;saved register 0
+tb.sr1:: .blkw 1
+tb.sr2:: .blkw 1
+tb.sr3:: .blkw 1
+tb.sr4:: .blkw 1
+tb.sr5:: .blkw 1
+tb.ssp:: .blkw 1		;saved stack pointer
+tb.spc:: .blkw 1		;the PC of the task
+.lif ne asmmap
+tb.ar6:: .blkw 1		;page # for process's page 6 (11/23 mapping)
+tb.stk:: .blkb stksiz		;the stack is actually right here!
+tb.fqm:: .blkw 1		;ptr to first message in the queue
+tb.lqm:: .blkw 1		;ptr to last message in the queue
+tb.are:: .blkw 1		;area pointer for the TCB messages
+tb.nxt:: .blkw 1		;pointer to the next task
+	>,tcb.ln
+
+.macro	initcb start,end	;Generate the code to initializes the free
+				;TCB list.
+	tcbabg===start
+	tcbaen===end
+	clr tcbfls		;free the tcb list to start with
+	clr tskcnt
+	clr plist
+	mov #tcbabg,r0
+loop	< mov tcbfls,(r0)	;thread this onto the free list
+	  mov r0,tcbfls
+	  add #tcb.ln,r0
+	  cmp r0,#tcbaen
+	  rptl lo
+	  >
+.endm
+
+;;; Procedure to create a new task
+crtask:	proc 7,1,<r0,r1>
+	mov tcbfls,r1		;get first tcb in free list
+	beq 2$			;we lose, return an error
+	 inc tskcnt		;count the tasks
+	 mov (r1),tcbfls	;unthread first free one.
+	 mov r1,out1(fp)	;save the new tcb for the user
+	 tst plist
+	 if eq,<
+	   mov r1,plist		;first task to run.
+	   mov r1,tcbtbl	;first task created.
+	   >
+	 mov #tcb.ln/2,r0	;clear out the storage for the tcb
+loop	 < clr (r1)+	;clear it out
+	   sorl r0
+	   >
+	 mov out1(fp),r1	;get new tcb back in r1
+	 mov arg1(fp),tb.sr0(r1)	;load initial regs
+	 mov arg2(fp),tb.sr1(r1)	;load initial regs
+	 mov arg3(fp),tb.sr2(r1)	;load initial regs
+	 mov arg4(fp),tb.sr3(r1)	;load initial regs
+	 mov arg5(fp),tb.sr4(r1)	;load initial regs
+	 mov arg6(fp),tb.sr5(r1)	;load initial regs
+	 mov arg7(fp),tb.spc(r1)	;set the initial PC
+	 mov r1,r0		;get copy of pointer in r0
+	 add #tb.stk+stksiz,r0	;the machine needs move pointer
+	 mov r0,tb.ssp(r1)	;set the initial stack pointer
+.lif ne asmmap
+	 mov #1400,tb.ar6(r1)	; start task out with identity map
+	 mov tcbtbl,r0		;first task in the static TCB table
+	 mov tb.nxt(r0),tb.nxt(r1)	;thread in the new tcb
+	 mov r1,tb.nxt(r0)	;we are now instantiated
+	 return
+
+2$:	clr out1(fp)		;just making sure
+	rtnerr			;return the error
+
+;;; LOGOUT: This is called when a process wants to delete itself.  I
+;;; takes not arguments and does not return.
+logout:	mov curtsk,r0		;get the current task
+	mov r0,r1
+1$:	mov tb.nxt(r1),r1	;set around the loop
+	cmp tb.nxt(r1),r0	;have we gotten around yet?
+	bne 1$			;nope
+	mov tb.nxt(r0),tb.nxt(r1)	;unthread the current task
+	cmp r0,#tcbabg		;are we in the area?
+	blo 2$
+	cmp r0,#tcbaen		;check against the end too
+	bhis 2$
+	mov tcbfls,(r0)		;thread tcb onto free list
+	mov r0,tcbfls
+2$:	br manlop		;now go run the next guy, in plist
+
+;;; Now the code to actually do scheduling.
+
+manlop:
+	inc swgs		;remember how often we came here
+	mov plist,r0
+	mov tb.nxt(r0),plist
+	mov r0,curtsk
+	tst (r0)+		;save r0 for last
+	mov (r0)+,r1
+	mov (r0)+,r2
+	mov (r0)+,r3
+	mov (r0)+,r4
+	mov (r0)+,r5
+	mov (r0)+,sp
+	mov (r0)+,savepc
+.lif ne asmmap
+	mov (r0)+,@#kipar6
+	mov @curtsk,r0
+	mtps #0			; reset low priority
+	mov #171717,@curtsk
+	jmp @savepc		;Run the process...
+resced:	 			;He comes here to let others run...
+	mtps #340		; high priority so stack doesn't get smashed
+	cmp @curtsk,#171717
+	if ne,<bpt>
+	mov r0,@curtsk		;this assumes that r0 is first in TCB
+	mov curtsk,r0
+	pop tb.spc(r0)		;he pushed the pc he wanted saved.
+.lif ne asmmap
+	mov @#kipar6,tb.ar6(r0)
+	tst (r0)+
+	mov r1,(r0)+
+	mov r2,(r0)+
+	mov r3,(r0)+
+	mov r4,(r0)+
+	mov r5,(r0)+
+	mov sp,(r0)+
+	cmp sp,r0
+	bhi manlop
+	bpt
+
+curtsk:	.word 0
+savepc:	.word 0
+
+tskcnt: .word 
+tcbtbl:	.word
+plist:  .word
+swgs:	.word 0
+tcbfls:	.word
+

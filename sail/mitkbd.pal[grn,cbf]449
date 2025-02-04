@@ -1,0 +1,282 @@
+				; -*- palx -*-
+.sbttl MIT keyboard
+
+
+; r3 holds the current shift modes in effect, right hand keys in low
+; byte, left hand keys in high byte, encoded as follows:
+
+; bit position
+; (1 is lowest order bit)    Mask
+shf===1			  ;   1   is SHIFT
+top===2			  ;   2   is TOP
+ctl===3			  ;   4   is Control
+mta===4			  ;  10   is Meta
+cap==5			  ;  20   is CAPS lock, this appears on left hand only
+sai==6			  ;  40   is SAIL lock, this makes the kbd look SAIL
+grk==7			  ; 100   is Greek lock
+asc==8			  ; 200	  is hardware ascii mode
+
+; generate masks
+.irp bitpos,<shf,top,ctl,mta,cap,sai,grk,asc>
+rt'bitpos===1_<bitpos-1>	; define the right byte
+lf'bitpos===1_<8.+bitpos-1>	; define the left byte
+$rt'bitpos===bitpos		; table entry for right byte
+$lf'bitpos===100+bitpos		; shift table entry for left byte
+.endr
+
+mitkbd:	clr r3				; start off all unshifted
+mitkb1:	call inchr
+	mov r1,r2
+	bic #177600,r1
+	bit #rtasc,r3			; is kbd in hardware ascii mode?
+	if ne,<				; yes,
+	  tst r1			; possibly leaving ascii mode?
+	  if eq,<
+	    call inchr			; cheap for now, 2 in a row
+	    bit #177,r1			; yes, leaving ascii mode
+	    if eq,<
+	      bic #rtasc,r3
+	      br mitkb1
+	      >
+	    mov r1,r2
+	    clr r1			; output null
+	    call putchr
+	    >
+	  mov r2,r1			; use all 8 bits in ascii mode
+	  call putchr			; otherwise character gets output
+	  br mitkb1			; this completes hard ascii mode loop
+	  >
+	movb mitcon(r1),r5		; is this character a shift char?
+	if pl,<				; yes,
+	  mov #1,r1			; load up a 1 bit for ashing over
+	  bit #100,r5			; left or right handed shift?
+	  if mi,<			; left.
+	    add #8.,r5			; remember to shift mask 8 more bits over
+	    >
+	  bic #177700,r5		; mask down to just bit positin
+	  dec r5			; a value of 1 means shift of 0
+	  ash r5,r1			; shift r1 r5 places to the left
+					; makes right mask for shift state
+	  tstb r2			; which transition?
+	  if pl,<			; depressed (DOWN)
+	    bis r1,r3			; turn the shift mode on
+	    >
+	  else <			; released (UP)
+	    bic r1,r3			; turn the shift mode off
+	    >
+	  >
+	else <				; not a shift char..
+	  tstb r2			; is this an UP transition?
+	  bmi mitkb1			; if so then ignore.
+	  bit #lfgrk+rtgrk,r3		; greek?
+	  if ne,<
+	    movb mitgrk(r1),r1
+	    >
+	  else <
+	    bit #lftop+rttop,r3		; top?
+	    if ne,<
+	      movb mittop(r1),r1
+	      >
+	    else <
+	      bit #lfshf+rtshf,r3	; shift lock?
+	      if ne,<			; yes,
+	        bit #rtsai,r3		; sail mode?
+		if eq,<			; no,
+	          movb mitcap(r1),r1	; use shift table
+		  >
+		else <			; yes, sail mode
+		  cmpb mitcap(r1),mitord(r1)	; does this characer have
+					; a different shift meaning in
+					; normal mode?
+		  if ne,<
+1$:		    movb mitcap(r1),r1	; yes, then use its shifted meaning
+		    >
+		  else <		; no, has same meaning when shifted
+		    movb mitalt(r1),r1	; then we still use its sail meaning
+		    >
+		  >			; close sail mode
+		>			; close shift
+	      else <			; no, not shifted
+		bit #rtcap,r3		; caps lock?
+		if ne,<
+		  cmpb mitcap(r1),mittop(r1) ; is shift and top the same?
+		  bne 1$		; no, then capitalize
+		  >			; else, check sail bit
+	        bit #rtsai,r3		; sail mode?
+		if eq,<			; no,
+		  movb mitord(r1),r1	; use ordinary table
+		  >
+		else <			; yes, sail mode
+		  movb mitalt(r1),r1	; use sail table
+		  >			; close else sail
+		>			; close else not shifted
+	      >				; close else top
+	    >				; close else greek
+	  cmpb r1,#200		; null character?
+	  beq mitkb1		; ignore
+	  if hi,<		; quoted char hack
+	    bit #rtsai,r3	; in Sail mode?
+	    if ne,<		; yes, then do quoted char ahck
+	      mov r1,r2		; save the char
+	      clr r1		; we must preceed by Null
+	      call putchr
+	      mov r2,r1
+	      bic #177600,r1	; mask off garbage and flag bit
+	      >
+	    >
+	  bit #lfmta+rtmta,r3	; Meta, must send a 200 followed by
+	  if ne,<		; the character
+	    bit #rtsai,r3	; in Sail mode?
+	    if eq,<
+	      bis #200,r1	; No, then Meta turns on 200 bit
+	      >
+	    else <
+	      mov r1,r2
+	      mov #200,r1
+	      call putchr
+	      mov r2,r1
+	      >
+	    >
+	  bit #lfctl+rtctl,r3	; Control - Turn on the 200 bit
+	  if ne,<		; yes,
+	    bit #rtsai,r3	; in Sail mode?
+	    if eq,<
+	      bic #140,r1	; No, create ASCII controlified character.
+	      >
+	    else <
+	      bis #200,r1	; Yes, simulate EDIT key.
+	      >
+	    >			; close control
+	  call putchr
+	  >			; close else not shift character
+	jmp mitkb1
+
+; tables
+	.even
+.irp tab,<ord,cap,top,grk,con,alt>
+mit'tab:
+	.rept 128.
+	.byte 200
+	.endr
+	.endr
+
+.macro defkey keynum,ordval,capval,topval,grkval,conval,altval
+	%.s=== .
+	.= mitord + keynum
+	.byte ordval
+	.= mitcap + keynum
+	.byte capval
+	.= mittop + keynum
+	.byte topval
+	.= mitgrk + keynum
+	.byte grkval
+	.= mitcon + keynum
+	.byte conval
+	.= mitalt + keynum
+	.byte altval
+	.= %.s
+	.endm
+
+;	key  normal shifted   top    greek  control   sail
+defkey	 10,    200,    200,    200,    200,    200,    200   ; Macro
+defkey	 20,      0, 200+'-, 200+'-,	  0,	200,	  0   ; Terminal
+defkey	 50,	 21,     21,     21,	 21,	200,	 21   ; Quote
+defkey	 70,	 10,	 10,	 10,	 10,	200,	 10   ; Overstrike
+defkey	110,	  4,	  4,	  4,	  4,	200,	 36   ; Clear Input
+defkey	120,	 14,	 14,	 14,	 14,	200,	214   ; Clear Screen
+defkey	140,	 'b,	 'b,	 'b,	 'b,	200,	 37   ; Hold Output
+defkey	170,	 23,	 23,	 23,	 23,	200,	 17   ; Stop Output
+defkey	 67,	  7,	  7,	  7,	  7,	200,	  3   ; Abort
+defkey	 77,	200,	200,	200,	200,	200, 200+'-   ; Break
+defkey	 27,	 21,	 21,	 21,	 21,	200,     37   ; Resume
+defkey	 17,	 32,	 32,	 32,	 32,	200,	  3   ; Call
+defkey	 11,	 '1,	 '1,	 '1,	 '1,	200,	 '1   ;   I
+defkey	  1,	 '2,	 '2,	 '2,	 '2,	200,	 '2   ;   II
+defkey	 31,	 37,	 37,	 37,	 37,	200,	  0   ; System
+defkey	 41,	 ':,	 14,	 14,	200,	200,	 ':   ; : +/- phi
+defkey   51,     '1,     '!,     '!,    200,    200,     '1   ; 1 ! dagger
+defkey   61,     '2,     '@,     '@,    200,    200,	 '2   ; 2 @ 2dagger
+defkey   71,     '3,     '#,     '#,    200,    200,	 '3   ; 3 # capdelta
+defkey  101,     '4,     '$,     '$,    200,    200,     '4   ; 4 $ cent
+defkey  111,     '5,     '%,     '%,    200,    200,     '5   ; 5 % smallcircle
+defkey  121,     '6,    136,    136,    200,    200,     '6   ; 6 ^ quad
+defkey  131,     '7,     '&,     '&,    200,    200,     '7   ; 7 & divide
+defkey  141,     '8,     '*,     '*,    200,    200,     '8   ; 8 * times
+defkey  161,     '9,     '(,     '(,    200,    200,     '9   ; 9 ( paragraph
+defkey  171,     '0,     '),     '),    200,    200,     '0   ; 0 ) largecircle
+defkey  151,     '-,     '_,     '_,    200,    200,     '-   ; - _ underscore
+defkey   56,     '=,     '+,     '+,    200,    200,     '=   ; = + apx.equal
+defkey   76,    173,     74,     74,    200,    200,    173   ; { < broken-[
+defkey   36,    175,     76,     76,    200,    200,    175   ; } > broken-]
+defkey   26,     '?,     '?,     '?,     '?,    200, 200+'W   ; Status
+defkey   16,  'P&37,  'P&37,  'P&37,  'P&37,    200,  'P&37   ; Thumbs-Up o-
+defkey  176,  'N&37,  'N&37,  'N&37,  'N&37,    200,  'N&37   ; Thumbs-Down o+
+defkey   12,     '3,     '3,     '3,     '3,    200,     '3   ;  III
+defkey    2,     '4,     '4,     '4,     '4,    200,     '4   ;   IV
+defkey   22,     36,     36,     36,     36,    200,     36   ; Network
+defkey   42,     11,     11,     11,     11,    200,     11   ; Tab
+defkey   52,     'q,     'Q,      4,    200,    200,     'q   ; q and theta
+defkey   62,     'w,     'W,     37,    200,    200,     'w   ; w or omega
+defkey   72,     'e,     'E,     22,      6,    200,     'e   ; e intersec epsilon
+defkey  102,     'r,     'R,     23,    200,    200,     'r   ; r union rho
+defkey  112,     't,     'T,     20,    200,    200,     't   ; t subset tau
+defkey  122,     'y,     'Y,     31,    200,    200,     'y   ; y superset psi
+defkey  132,     'u,     'U,     24,    200,    200,     'u   ; u for-all upsilon
+defkey  142,     'i,     'I,     16,    200,    200,     'i   ; i infinity iota
+defkey  162,     'o,     'O,     25,    200,    200,     'o   ; o exists omicron
+defkey  172,     'p,     'P,     17,      7,    200,     'p   ; p delta pi
+defkey  152,     '(,     '[,     '[,    200,    200,     '(   ; ( [ double-[
+defkey  157,     '),     '],     '],    200,    200,     ')   ; ) ] double-]
+defkey  167,	 '`,    176,	176,	  5,	200,	 '`   ; ` ~ not sign
+defkey  147,     '\,     '|,     '|,    200,    200,     '\   ; \ | double-|
+defkey  137,    177,    177,    177,    177,    200,    177   ; Delete
+defkey  117,  'B&37,  'B&37,  'B&37,     26,    200,  'B&37   ; Left Finger ox
+defkey  107,  'F&37,  'F&37,  'F&37,  'F&37,    200,  'F&37   ; Right Finger o/
+defkey    3,    200,    200,    200,    200, $rtsai,    200   ; Mode Lock
+defkey   33,     33,     33,     33,     33,    200,     33   ; Alt Mode
+defkey   43,    177,    177,    177,    177,    200,    177   ; Rubout
+defkey   53,     'a,     'A,    200,      2,    200,     'a   ; a tie-tac alpha
+defkey   63,     's,     'S,    200,    200,    200,     's   ; s tac-tie sigma
+defkey   73,     'd,     'D,    200,    200,    200,     'd   ; d |- delta
+defkey  103,     'f,     'F,    200,    200,    200,     'f   ; f -| phi
+defkey  113,     'g,     'G,    200,    200,    200,     'g   ; g uparrow gamma
+defkey  123,     'h,     'H,      1,    200,    200,     'h   ; h downarrow eta
+defkey  133,     'j,     'J,     30,    200,    200,     'j   ; j <- old-theta
+defkey  143,     'k,     'K,     31,    200,    200,     'k   ; k -> kappa
+defkey  163,     'l,     'L,     27,     10,    200,     'l   ; l <-> lambda
+defkey  173,     73,     ':,     ':,    200,    200,     73   ; ; : umlat
+defkey  153,	 47,	 '",	 '",	200,	200,	 47   ; ' " blob
+defkey  156,     15,     15,     15,     15,    200,     15   ; Return
+defkey  146,     12,     12,     12,     12,    200,	 12   ; Line
+defkey  136,      3,      3,      3,      3,    200,      3   ; End
+defkey  116,     'h,     'H,     'h,     'h,    200,     '?   ; Help
+defkey   55,    200,    200,    200,    200, $rtcap,    200   ; Caps Lock
+defkey   14,    200,    200,    200,    200, $lfgrk,    200   ; Left Greek 
+defkey   24,    200,    200,    200,    200, $lftop,    200   ; Left Top
+defkey   44,    200,    200,    200,    200, $lfshf,    200   ; Left Shift
+defkey   54,     'z,     'Z,    200,    200,    200,     'z   ; z floor zeta
+defkey   64,     'x,     'X,    200,    200,    200,     'x   ; x ciel xi
+defkey   74,     'c,     'C,     32,    200,    200,	 'c   ; c not-= chi
+defkey  104,     'v,     'V,    200,    200,    200,     'v   ; v =~ final-sigma
+defkey  114,     'b,     'B,    236,    203,    200,     'b   ; b eqv beta
+defkey  124,     'n,     'N,     34,    200,    200,     'n   ; n <= nu
+defkey  134,     'm,     'M,     35,    200,    200,     'm   ; m => mu
+defkey  144,     54,     74,     74,    200,    200,     54   ; , < double-<
+defkey  164,     '.,     76,     76,    200,    200,     '.   ; . > double->
+defkey  174,     '/,     '?,     '?,     13,    200,     '/   ; / ? integral
+defkey   45,    200,    200,    200,    200, $rtshf,    200   ; Right Shift
+defkey  145,    200,    200,    200,    200, $rttop,    200   ; Right Top
+defkey  135,    200,    200,    200,    200, $rtgrk,    200   ; Right Greek
+defkey  115,    200,    200,    200,    200,    200,    200   ; Repeat
+defkey  105,    200,    200,    200,    200, $rtasc,    200   ; Alt Lock
+defkey   35,     14,     14,    200,    200,    200,     14   ; Left Hyper
+defkey    5,     13,     13,    200,    200,    200,     13   ; Left Super
+defkey   25,    200,    200,    200,    200, $lfmta,    200   ; Left Meta
+defkey   40,    200,    200,    200,    200, $lfctl,    200   ; Left Control
+defkey  154,     40,     40,     40,     40,    200,     40   ; Space
+defkey   46,    200,    200,    200,    200, $rtctl,    200   ; Right Control
+defkey   75,    200,    200,    200,    200, $rtmta,	200   ; Right Meta
+defkey   65,    200,    200,    200,    200,    200,    200   ; Right Super
+defkey  175,    200,    200,    200,    200,    200,    200   ; Right Hyper
+
+.even

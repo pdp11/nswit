@@ -1,0 +1,145 @@
+;;; -*-midas-*-
+	.title Chaos Net Test Program
+
+;;; This is a test program for debugging the chaos net using tty lines as
+;;; ether.  This is the source program and will attempt to open a connection
+;;; to the other end of the net.
+
+.=100				;put down an initial clock vector
+	.word 102		;so we can easily start the program
+	rti
+.=1300
+	.insrt dcls
+	.insrt defns
+
+src===0
+dest===1
+	setf ^/Is this the source (src) or destination (dest) machine?/,whom
+
+	.insrt ncptc
+
+.if eq whom
+	.insrt arpadf
+.iff
+	.insrt chsmdf
+.endc
+
+ 	.insrt cncp
+
+	.insrt allint
+				;ALLINT must come after cncp for definitional
+				;reasons.
+	.insrt nutils
+
+.iif eq whom,	deftcb <chtest,chlsnr,stptsk>
+.iif ne whom,	deftcb <chlsnr,stptsk>
+
+clock:	0,0
+clkint:	adc clock
+	adc clock+2
+	rti
+
+start:	mtps #340		;No interruptions now
+	mov #1000,sp
+	mov #6,@#4
+	clr @#6
+	mov #12,@#10
+	clr @#12
+	mov #22,r0
+1$:	mov r0,-2(r0)
+	mov #3,(r0)+		;BPT on spurious interrupt
+	tst (r0)+
+	cmp r0,#400
+	blo 1$
+
+	mov #1202,r0
+2$:	mov r0,-2(r0)
+	mov #2,(r0)+		;Ignore spurious Newman interrupts
+	tst (r0)+
+	cmp r0,#1300
+	blo 2$
+
+	initcb
+	clr clock
+	clr clock+2
+	mov #clkint,@#100
+	mov #341,@#102
+	mov bgheap,r1
+	mov #hpsize/2,r0
+	jsr pc,makear
+	call chinit
+	mtps #0
+	jmp manlop
+
+;;; This is the task which tryies to open a connection to the other host
+;;; on our little old net.
+
+	proc chtest,0,0
+
+	call chopen,<#1_8+5,#4,#testr>,r1	;open connection
+	bcc ctok1
+	bpt
+ctok1:	kcall alc16		;get a packet
+	mov #astr,r2		;get the string to send
+	clrb pkop(r0)
+	clr pklen(r0)
+	kcall strcpy
+1$:	call chdato,<r0,r1>
+	bcc ctok2
+	cmpb #%csopn,cnstat(r1)
+	beq 2$
+	bpt
+2$:	cocall
+	br 1$
+ctok2:	br ctok1
+	bpt
+	call chcls,r1
+	bpt
+1$:	cocall
+	br 1$
+
+;;; This is the task that listen for a connection
+
+	proc chlsnr,0,0
+
+	call chlsn,<#testr,#0>,r0
+	bpt
+	call chrply,<r0,#4>,r1	;open the connection
+	bcc clok1
+	bpt
+clok1:	call chdati,r1,r0	;read a packet from the net
+	bcc clok2
+	cocall
+	cmpb #%csopn,cnstat(r1)	;connection still open?
+	beq clok1
+	tst r0
+	bne 1$
+	 call chdati,r1,r0	;get the reason if not returned already
+1$:	bpt
+clok2:	bpt
+	kcall frepck		;flush the packet we just got
+	br clok1		;get another packet
+
+;;; This task just stops when an altmode is typed on the console
+
+stptsk:	cocall
+	cmpb #33,@#177562
+	bne stptsk
+	bpt
+	br stptsk
+
+testr:	.asciz	/TEST/
+astr:	.asciz	/aaaaaa/
+	.even
+
+;;; now allocate the TCB stuff
+
+	alctcb
+
+hpsize==20000
+bgheap:	1$
+1$:	.blkb hpsize
+
+patch:
+
+	.end

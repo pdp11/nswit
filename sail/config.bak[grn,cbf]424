@@ -1,0 +1,108 @@
+.sbttl Configuration
+
+setf ^"Configuration (1=Service, 2=Simulator)?",choice
+
+.ifz choice-2           ; Simulator
+ilct:
+; device   device    interrupt   unit   input  output  parameter
+;  type    address    vector    number  speed   speed    word
+   dl,     177560,     60,      0,      9600,   9600,	 0
+   0
+itct:
+;  Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q
+;   PC        PC     Link    Link    Size    Size    Size   Size
+   c1in,    c1out,   1,      1,	     40,     40,     40,    40
+   0
+.endc
+
+.ifz choice-1                   ; grinnell config
+ilct:   ; Initial Line Configuration Table
+; device   device    interrupt   unit   input  output  parameter
+;  type    address    vector    number  speed   speed    word
+
+   ; console device, used only for stopping program
+   dl,	   177560,     60,      0,         0,      0,    0	  ; 1
+   ; dzv's used for talking to switch
+   dzv,    170200,    400,      0,      9600,   9600,    17030	  ; 2 40P
+   dzv,    170200,    400,      1,      9600,   9600,    17031	  ; 3 41P
+   dzv,    170200,    400,      2,      9600,   9600,    17032    ; 4 42P
+   dzv,    170200,    400,      3,      9600,   9600,    17033    ; 5 43P
+   dzv,    170210,    410,	0,	9600,	9600,	 17030	  ; 6 36P
+   dzv,    170210,    410,	1,	9600,	9600,	 17031	  ; 7 37P
+   dzv,	   170210,    410,	2,	9600,	9600,	 17032	  ; 8 38P
+   dzv,	   170210,    410,	3,	9600,	9600,	 17033	  ; 9 39P
+   dl,	   176500,    300,	0,	9600,	9600,	 0	  ; 10 32P
+   dl,	   176510,    310,	0,	9600,	9600,	 0	  ; 11 33P
+   dl,	   176520,    320,	0,	9600,	9600,	 0	  ; 12 34P
+   dl,	   176530,    330,	0,	9600,	9600,	 0	  ; 13 35P
+   ; keyboard current loop readers, Quadrasyncs
+   dl,	   170040,    140,	0,	1200,	1200,	 0	  ; 14 32T
+   dl,	   170050,    150,	0,	1200,	1200,	 0	  ; 15 33T
+   dl,	   170060,    160,	0,	1200,	1200,	 0	  ; 16 34T
+   dl,	   170070,    170,	0,	1200,	1200,	 0	  ; 17 35T
+   dl,     170100,    200,	0,	1200,	1200,    0 	  ; 18 44T
+   dl,     170110,    210,	0,	1200,	1200,    0	  ; 19 45T
+   dl,     170120,    220,	0,	1200,	1200,    0	  ; 20 46T
+   dl,	   170130,    230,	0,	1200,	1200,	 0  ;broken 21 47T
+   dl,	   170140,    240,	0,	1200,	1200,	 0	  ; 22 36T
+   dl,	   170150,    250,	0,	1200,	1200,	 0	  ; 23 37T
+   dl,	   170160,    260,	0,	1200,	1200,    0	  ; 24 38T
+   dl,	   170170,    270,	0,	1200,	1200,	 0	  ; 25 39T
+   ; Grinnell screens
+   grn,    172410,    124,      0,         0,      0,   14.       ; 26
+   grn,	   172410,    124,	0,	   0,	   0,	15.	  ; 27
+   grn,	   172410,    124,	0,	   0,	   0,	16.	  ; 28
+   grn,	   172410,    124,	0,	   0,	   0,	17.	  ; 29
+   grn,	   172410,    124,	0,	   0,	   0,	18.	  ; 30
+   grn,	   172410,    124,	0,	   0,	   0,	19.	  ; 31
+   grn,	   172410,    124,	0,	   0,	   0,	20.	  ; 32
+   grn,	   172410,    124,	0,	   0,	   0,	21.	  ; 33
+   grn,	   172410,    124,	0,	   0,	   0,	22.	  ; 34
+   grn,	   172410,    124,	0,	   0,	   0,	23.	  ; 35
+   grn,	   172410,    124,	0,	   0,	   0,	24.	  ; 36
+   grn,	   172410,    124,	0,	   0,	   0,	25.	  ; 37
+   0  ; end Line Configuration Table
+
+itct:   ; Initial Terminal Configuration Table
+;Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q ; # per sw pat
+; PC        PC     Link    Link    Size    Size    Size   Size  ;   son pt pan
+ ttyin,  ttyout,   1.,     1.,      40,    40,     40,    40    ; 1
+ sailin, sailou,   2.,    22.,     200,    40,     40,    40    ; 2 CBF 31 26P
+ sailin, sailou,   3.,    23.,     200,    40,     40,    40    ; 3 JMB 23 10P
+ sailin, sailou,   4.,    24.,     200,    40,     40,    40    ; 4 PMF  1 13P
+ sailin, sailou,   5.,    25.,     200,    40,     40,    40	; 5 JRS 36 25P
+ sailin, sailou,   6.,    26.,     200,    40,     40,    40    ; 6 JBR  5 14P
+ sailin, sailou,   7.,    27.,     200,    40,     40,    40    ; 7 LSP 22  9P
+ sailin, sailou,   8.,    28.,     200,    40,     40,    40    ; 8 SJC 13 21P
+ sailin, sailou,   9.,    29.,     200,    40,     40,    40    ; 9 TM  10  3P
+ sailin, sailou,  10.,	  30.,	   200,	   40,	   40,	  40	; 10OTA 17 22P
+ sailin, sailou,  11.,	  31.,	   200,	   40,	   40,	  40	; 11
+ sailin, sailou,  12.,	  32.,	   200,	   40,	   40,	  40	; 12
+ sailin, sailou,  13.,	  33.,	   200,	   40,	   40,	  40	; 13
+ s1kbd,  s1kbdo,  26.,     2.,      40,    40,     40,    40    ; 14CBF    43T
+ s1kbd,  s1kbdo,  27.,     3.,      40,    40,     40,    40    ; 15JMB    10T
+ s1kbd,  s1kbdo,  28.,     4.,      40,    40,     40,    40    ; 16PMF    13T
+ s1kbd,  s1kbdo,  29.,     5.,      40,    40,     40,    40    ; 17JRS    35T
+ s1kbd,  s1kbdo,  30.,     6.,      40,    40,     40,    40    ; 18JBR    14T
+ s1kbd,  s1kbdo,  31.,     7.,      40,    40,     40,    40    ; 19LSP     9T
+ s1kbd,  s1kbdo,  32.,     8.,      40,    40,     40,    40    ; 20SJC    21T
+ s1kbd,  s1kbdo,  33.,     9.,      40,    40,     40,    40    ; 21TM      3T
+ s1kdb,	 s1kbdo,  34.,	  10.,	    40,	   40,	   40,	  40	; 22OTA	   22T
+ s1kdb,	 s1kbdo,  35.,	  11.,	    40,	   40,	   40,	  40	; 23
+ s1kdb,	 s1kbdo,  36.,	  12.,	    40,	   40,	   40,	  40	; 24
+ s1kdb,	 s1kbdo,  37.,	  13.,	    40,	   40,	   40,	  40	; 25
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 18CBF J14 D2
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 19JMB J15 I2
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 20PMF J16 C2
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 21JRS J17 E1
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 22JBR J18 B2
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 23LSP J19 I1
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 24SJC J20 H2
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 25TM  J21 A1
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 26OTA J22 H1
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 27    J23
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 28	J24
+ grnin,  grnout,   0,      0,        0,   140,     40,     0	; 29	J25
+ 0
+.endc
+

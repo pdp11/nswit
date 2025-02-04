@@ -1,0 +1,73 @@
+Disk controller to connect an industry standard "Storage Module" interface
+compatible disk drive (such as Ampex 9300) to Digital Equipment Corporation
+(henceforth DEC) LSI-11 "Q-bus" (henceforth Q-Bus).
+  The following features are required:
+  1) Controller should mount entirely in standard LSI-11 chassis.  Must not
+     require external chassis.
+  2) Must control at least 2 disk drives.
+  3) Capable of reading and writing data on using all heads, and on all the
+     tracks of any disk that stores 20,160 bytes per track and uses an
+     industry standard Storage Module type interface.  Furthermore, at least
+     16,384 bytes of the 20,160 bytes per track shall be capable of being
+     read and written.
+  4) Be immune to data loss due to Q-Bus contention.  (Eg. via full sector
+     buffers in disk controller).
+  5) Support disk transfer rates of at least 2.0 Megabytes per second and
+     be capable of sustaining said transfer rate for a full track (at least
+     16,384 bytes) into a DEC MSV11-D memory.
+  6) Store and process error correction and detection information in sector
+     headers capable of correcting at least 1 11-bit burst error per sector
+     and detecting longer or more frequent errors.
+  7) Provide means of detecting errors in disk header information at least
+     as reliable as a 16-bit Cyclic Redunancy Check.
+  8) Allow for controlling at least 6 drives from a single Q-Bus backplane,
+     in a flexible fashion.
+
+     For example, if each disk controller attaches up to 2 disk drives,
+     then it must be possible to mount at least 3 disk controller units in
+     1 backplane.  This would also mean that the units must be capable of
+     being configured to respond to up to 3 different control register
+     addresses.  The choice between these control register addresses must
+     be field selectable,  either by jumpers, switches, or at worst,
+     changing PROM sets.  If by changing PROM sets an assortment of PROMs
+     must be provided allowing at least 1 alternate choice for each
+     board purchased.
+
+  9) Be capable of data transfers to any location in the full 18 bit
+     Q-Bus address space.
+ 10) Support the customary range of control functions and error status
+     indicators for a PDP11 disk controller.  Emulation of a specific
+     DEC disk controller is not required.
+ 11) Require no more than 10 Amps at +5V and 1 Amp at +12V to be taken
+     from standard pins on backplane.
+ 12) Support Storage Module Interface signals necesary for assuming and
+     releasing control of a dual-ported disk drive.
+ 13) Provide programs to diagnose disk and controller and format disk
+     media.  Programs should be supplied on DEC RX01 compatible floppy
+     disks.  Programs should either run under DEC RT-11 operating system
+     or run standalone.
+
+Preference will be given to products that:
+  1) take up the least backplane space per disk drive supported.
+  2) use an error correction technique on header information (i.e., similar
+     to requirement for data) instead of the CRC technique.
+  3) support more than the minimum requireement of 6 disk drives per
+     backplane.
+  4) allow wide range of control register address, interrupt vector
+     selection and interrupt priority via more convenient means.  (I.e.
+     switches are more convenient than jumpers which are more convenient
+     than PROM replacement).
+  5) minimize head to head switching times.
+  6) provide error detection/correction techniques capable of detecting and
+     correcting more than one 11-bit burst error per sector.
+  7) provide for selection and per track variation of sector size during
+     formatting.
+
+
+Requirements for bid:
+  In addition to indicating compliance or non-compliance to each of the
+  requireed items, vendor should provide standard programming and
+  installation manuals for product as part of bid.  These will be used
+  by project staff to judge conformance with requirement 10.  Vendor
+  should indicate to what extent and in what fashion its product
+  provides preferred features.

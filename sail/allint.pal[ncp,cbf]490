@@ -1,0 +1,88 @@
+;;; -*-midas-*-
+;;; Interface from the CHAOS NCP storage allocation system
+;;; to the ARPA machine storage allocator.
+
+alc16:	push r1			;save r1, it gets bashed
+	mov chheap,r1		;area in which to allocate
+	mov #32.,r0		;r0 will get bashed with pointer to the packet
+	kcall allocb		;allocate storage
+	mov r1,r0		;get pointer to packet
+	pop r1			;restore r1
+	kretrn
+
+alc32:	push r1			;save r1, it gets bashed
+	mov chheap,r1		;area in which to allocate
+	mov #64.,r0		;r0 will get bashed with pointer to the packet
+	kcall allocb		;allocate storage
+	mov r1,r0		;get pointer to packet
+	pop r1			;restore r1
+	kretrn
+
+alc64:	push r1			;save r1, it gets bashed
+	mov chheap,r1		;area in which to allocate
+	mov #128.,r0		;r0 will get bashed with pointer to the packet
+	kcall allocb		;allocate storage
+	mov r1,r0		;get pointer to packet
+	pop r1			;restore r1
+	kretrn
+
+alc128: push r1			;save r1, it gets bashed
+	mov chheap,r1		;area in which to allocate
+	mov #256.,r0		;r0 will get bashed with pointer to the packet
+	kcall allocb		;allocate storage
+	mov r1,r0		;get pointer to packet
+	pop r1			;restore r1
+	kretrn
+
+alc256: push r1			;save r1, it gets bashed
+	mov chheap,r1		;area in which to allocate
+	mov #512.,r0		;r0 will get bashed with pointer to the packet
+	kcall allocb		;allocate storage
+	mov r1,r0		;get pointer to packet
+	pop r1			;restore r1
+	kretrn
+
+alcsiz:	push r1			;save r1, it gets bashed
+	mov chheap,r1		;area in which to allocate
+	mov r3,r0		;r3 has the size
+	asl r0			;get size in bytes
+	kcall allocb		;allocate storage
+	mov r1,r0		;get pointer to packet
+	pop r1			;restore r1
+	kretrn
+
+frepck:
+	tst r0
+	beq 2$
+.if df nmfrpk
+.if ne nmfrpk
+	cmp r0,#nmbot		;are we in the newman area
+	blo 1$
+	cmp r0,nmcd1+nd.hpa	;are we in the NM packet area?
+	bhis 1$			;no, try the real thing
+	jcall nmfrpk		;free the packet from the newman chaos buffer
+1$:
+.endc
+.endc
+	push r1			;save r1
+	mov r0,r1		;get pointer to packet in proper place
+	mov chheap,r0		;get location of heap
+	kcall freeb		;free the packet
+	pop r1			;restore the world
+2$:	kretrn
+
+pktsiz:
+.if df nmfrpk
+.if ne nmfrpk
+	cmp r0,#nmbot		;are we in the newman area
+	blo 1$
+	cmp r0,nmcd1+nd.hpa	;are we in the NM packet area?
+	bhis 1$			;no, try the real thing
+	jcall nmpksz		;get the size of the newman packet.
+1$:
+.endc
+.endc
+	mov -2(r0),r3		;put the length in r3. The length lives at
+				;two before the block of allocated storage
+	asr r3			;return size in words
+	kretrn

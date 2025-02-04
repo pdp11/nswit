@@ -1,0 +1,188 @@
+;;; -*-MIDAS-*-
+
+.sbttl	Tasks
+
+.iif ndf asmmap, asmmap===0
+$$wait===1			; CNCP should take advantage of TASKM features
+
+;;; Each task is represented by a Task control block (TCB) that contains its
+;;; processor state and a little data for task multiplexing.
+
+;;; Task control block.
+dsect <
+	 .blkw 1		; run queue link
+twait::	 .blkw 1		; 60ths until runnable
+tstack:: .blkw 1		; stack area
+tsp::	 .blkw 1		; stack pointer
+	>,ltcb
+
+tcheck==52525			; check word at base of stack
+
+
+;;; Get here by executing IOT instruction to give up the processor to other
+;;; tasks.  The processor state is stored in the current task's TCB, at which
+;;; point it is considered "asleep".  A wake up by an interrupt routine or
+;;; another task will move it to a queue waiting its turn for the processor.
+;;; After the current task is asleep, the next task on the queue is removed
+;;; and give the processor.
+
+taskm:	;; high priority set while saving registers so that task stacks can be
+	;; smaller.  note that the stack space required to save the registers
+	;; provides a little room for interrupt stack usage when the task is
+	;; running.
+
+	;; put task to bed.
+	;; if this changes, TINIT will need to change.
+	;; (also see CRTASK in chaosnet code.)
+.lif ne  asmmap
+	push @#kipar6		; save page 6 map for this task
+	push r5,r4,r3,r2,r1,r0	; save registers on stack
+spc==14				; offset of PC on stack
+.iif ne asmmap, spc==spc+2	; include KIPAR6
+	mov ctask,r0		; pointer to this task
+	cmp @tstack(r0),#tcheck	; did task (or interrupt) grow stack too
+				; large and bash our constant check word?
+	if ne,<			; yes!
+	  bpt			; bah humbug
+	  ;; can continue if things are patched up (like check word).
+	  ;; we could do some of that here, but that'd just encourage
+	  ;; continuer to be careless.
+	  >
+	mov sp,tsp(r0)		; save stack pointer in fixed place
+
+	;; Get next task to run.
+
+taskm1:	;; initialization JMPs here to get things started.
+	mov runq,r0		; is there another task to run?
+	if eq,<			; not on run queue
+	  mov busyq,r0		; any on busy wait queue?
+	  bne 3$		; yes
+	  clr ctask		; make things look nice
+	  mov #stack,sp		; set up new stack pointer for waiting
+	  ;; wait for an interrupt, then check again.
+  loop <    clr -(sp)		; PS on stack for RTT hack
+	    jsr pc,2$		; PC on stack for RTT hack
+	    wait		; wait at low priority
+	    spl 7		; high priority for testing RUNQ
+	    mov runq,r0		; is there another task to run?
+	    rptl eq		; no
+	    >
+	  >
+	mov (r0),runq		; remove task from queue
+	if eq,<			; if no more tasks
+	  mov #runq,runqe	; then point tail at head
+	  >
+
+1$:	;; got a task to run; shake it until it wakes up.
+	mov r0,ctask		; save pointer to this task object
+	clr (r0)		; clear link word so two instructions can add
+				; task to queue
+	mov tsp(r0),sp		; restore stack pointer
+	pop r0,r1,r2,r3,r4,r5	; restore registers
+.lif ne  asmmap
+	pop @#kipar6		; restore page 6 map for task
+	rti			; return from IOT
+
+2$:	rtt			; set low priority and execute WAIT
+				; instruction without intervening interrupt
+
+3$:	mov (r0),busyq
+	bne 1$
+	mov #busyq,busyqe
+	br 1$
+	
+
+;;; Give processor to other tasks and then come back.
+resced:	mov ctask,@busyqe	; put ourself on end of busy waiting queue
+	mov ctask,busyqe	; ...
+	iot			; do task multiplexing
+	rts pc
+
+
+;;; Wake up a task.  Task must not already be on the run queue!
+
+.macro	wake.l t		; low priority version
+	mov t,@runqe		; set link word of last task on run queue to
+				; this task
+	mov t,runqe		; and make this the last task
+.endm
+
+.macro	wake.h t		; high priority version
+	mov @runqe,@t   	; if interrupting in middle of WAKE.L, this
+				; will magically cause everything to win
+	mov t,@runqe		; set link word of last task on run queue to
+				; this task
+	mov t,runqe		; and make this the last task
+.endm
+
+
+;;; Initialize a TCB (provided by caller so extra words can be allocated for
+;;; caller's use).  Stack arguments are TCB, initial PC, and stack size.
+;;; Task is put on run queue.  The stack size should represent the maximum
+;;; space used by the task, not including processor state stored on stack by
+;;; TASKM.  For example, a task that did not use the stack at all (either for
+;;; subroutine calls or pushing/poping) would specify 0.
+
+lskovr==<1+6+2>*2		; stack overhead for non-executing task
+.iif ne  asmmap, lskovr==lskovr+2
+
+tinit:	push r0,r1		; save registers
+	mov 12(sp),r0		; R0: TCB pointer
+	clr (r0)		; zero link field
+	add #lskovr,6(sp)	; increase for check word, registers, and
+				; PC/PS
+	push 6(sp)		; ALLOCW arg: size in bytes
+	call allocw		; allocate stack
+	pop r1			; ALLOCW result: pointer to storage
+	mov r1,tstack(r0)	; set pointer to stack base
+	mov #tcheck,@tstack(r0)	; initialize check word
+	add 6(sp),r1		; pointer to top of stack
+	;; PS/PC/register initialization depends on the code at TASKM.
+	clr -(r1)		; initial PS
+	mov 10(sp),-(r1)	; initial PC
+.lif ne  asmmap
+	mov #1400,-(r1)		; page 6 is identity map
+.rept 6
+	clr -(r1)		; initial registers
+.endr
+	mov r1,tsp(r0)		; set initial stack ptr
+	wake.l r0		; add to end of run queue
+	pop r1,r0		; restore registers
+	pop 4(sp)		; remove arguments
+	cmp (sp)+,(sp)+		; ...
+	return
+
+
+;;; Kill current task.
+
+logout:	mov ctask,r0
+;	jcall tkill
+
+
+;;; Kill current task.  R0 is object containing TCB to free afterward.
+
+tkill:	mov #stack,sp
+	mov ctask,r1
+	push tstack(r1)
+	call free
+	push r0
+	call free
+	br taskm1
+
+
+;;; Tasking initialization.
+
+tgo:	mov #taskm,@#20		; initialize IOT vector to put current task
+	mov #pr7,@#22		; to sleep and schedule another
+	clr runq		; initialize task multiplexor variables
+	mov #runq,runqe		; ...
+	clr busyq		; initialize busy waiting queue
+	mov #busyq,busyqe	; ...
+	return
+
+
+ctask:	.blkw 1			; current task being run
+runq:	.blkw 1			; run queue head
+runqe:	.blkw 1			; run queue tail
+busyq:	.blkw 1			; busy waiting queue head
+busyqe:	.blkw 1			; busy waiting queue tail

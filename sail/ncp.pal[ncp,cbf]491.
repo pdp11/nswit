@@ -1,0 +1,1148 @@
+;;; ARPAnet NCP.					-*-MIDAS-*-
+
+%ncpvn===%fnam2
+
+.insrt strucs
+.insrt imp
+
+
+.sbttl NCP Process
+
+ncptsk:	 			;NCP process starting address
+nloop:	jsr pc,getmsg		;wait for message, returned in r2
+	push r2			;so we can free the msg later
+	mov ms.hst(r2),r4	;get the hte for this message
+	mov r4,ncphte		;save it
+	add #ms.txt,r2
+	tstb il.lnk(r2)		;is it on link zero?
+	beq 2$			;yes, dispatch
+	bpt 			;there is a bug!
+	br ncpdu1
+
+2$:	mov he.imp(r4),impnum	;save the imp and host numbers too
+	movb he.hst(r4),hostnm
+	mov r2,r4
+	add #ipl.ln,r4		;pointer to start of host-host msg
+	mov r4,r3		;save start ptr
+	add #hl.txt,r4		;get pointer to start of text
+	cmpb hl.bsz(r3),#8.	;should be eight bit bytes
+	beq 1$
+	inc ncpgar		;ncp got a garbage message
+	br ncpdu1		;give it up
+1$:	mov hl.nby(r3),r3	;get byte count
+	swab r3
+	mov r3,r1
+	add r4,r1
+	push r1			;save the length
+
+3$:	clr r0
+	bisb (r4)+,r0		;get command opcode
+	cmp r0,#15		;maximum cmd
+	ble 4$			;i's OK
+	inc ncpgar		;ncp received a garbage message
+	br ncpdun
+4$:	mov r0,cmdtyp
+	asl r0
+	inc hhmsgs(r0)
+	push r4			;save this for him
+	add ncplen(r0),(sp)	;save the incremented version
+	mov ncpmsg(r0),r1	;get ptr to control command name
+	mov #s.rcvd+5,r2
+	movb (r1)+,(r2)+	;copy name into message
+	movb (r1)+,(r2)+
+	movb (r1)+,(r2)+
+	promap <call print,#s.rcvd>	;what we got.
+	jsr pc,@ncptbl(r0)
+	pop r4			;get it back
+	cmp r4,(sp)		;compare with end of message
+	blo 3$			;get next cmd
+ncpdun:	pop *			;discard the message end ptr
+ncpdu1:	pop r1			;get the message so we can free it
+	call fremsg,<ncpare,r1>	;get rid of the message
+	br nloop		;go get another message
+
+ncptbl:	.word nop.,r2s,str,cls,all,gvb,ret,inr,ins,eco,erp,err,rst,rrp
+ncplen:	.word 0,9.,9.,8.,7,3,7,1,1,1,1,11.,0,0
+ncpmsg:	.word s.nop,s.rts,s.str,s.cls,s.all,s.gvb,s.ret,s.inr
+	.word s.ins,s.eco,s.erp,s.err,s.rst,s.rrp
+
+gvb:
+ret:
+erp:
+	inc nignor		;count them but otherwise punt for now
+nop.:
+	rts pc
+
+;;; This handles both types of RFC.  If opening is in progress we will
+;;; finish opening the connection.  If someone is listen on the socket
+;;; of the incomming RFC then accept it and send the corresponding RFC.
+;;; Otherwise we will rebuf the attempt for connection.
+r2s:
+str:
+	mov ncphte,r0		;first check to see if host i`up.
+	cmpb he.sts(r0),#h.dead
+	bne 3$
+
+;;; This should just send a reset but this seems to blow many hosts away so
+;;; since it doesn't seem to screw anything we will punt for now.  Instead
+;;; we will declare him up and go on.
+
+	cmpb #h.rsnt,he.sts(r0)
+	beq 4$
+	movb #h.up,he.sts(r0)
+	br 3$
+4$:	rts pc
+
+	movb #h.rsnt,he.sts(r0)	;set the host state to reseting
+	mov clock,he.rst(r0)	;so we know when to time out
+	call hhsend,<r0,#1>	;send the reset
+	call hhsnd8,#hh.rst
+	call hhdsnd
+	rts pc
+
+3$:	call hget32,<>,<r0,r1>	;get his socket number
+	call hget32,<>,<r2,r3>	;get my socket number
+	tst r2			;If hi half non zero we barf.
+	bne sndcls		;refuse but there is no socket.
+	call fndskt,r3,r2	;get the socket table entry ptr.
+	bcs sndcls		;no sockets available
+	cmpb sk.sts(r2),#s.free	;new unheard of socket.
+	beq sndcls
+	call hget8,<>,r4	;get the link/size byte
+	cmp #hh.rts,cmdtyp
+	beq 1$
+	cmpb r4,sk.siz(r2)	;byte-size must match
+	bne refuse
+	br 2$
+1$:	movb r4,sk.lnk(r2)	;If RTS then last byte is the link
+2$:	cmpb sk.sts(r2),#s.wait	;was it waiting for connection
+	beq accept		;send the matching RFC and notify
+;;; Only if someone is waiting do we accept RFC's from random hosts.
+	mov sk.hst(r2),r4	;get the hte ptr
+	cmp he.imp(r4),impnum	;from a different host?
+	bne refuse		;safe to refuse
+	cmpb he.hst(r4),hostnm
+	bne refuse
+	cmpb sk.sts(r2),#s.opng	;being opened?
+	bne sndcls		;he tried to connect twice.  If icp try later
+
+	cmp r0,sk.ysh(r2)	;make sure everything is OK and open the con.
+	bne refuse		;he seems to be sending me shit!
+	cmp r1,sk.ysl(r2)
+	bne refuse
+fnshop:	movb #s.open,sk.sts(r2)	;Its open!
+	mov clock,sk.ctm(r2)
+	bit #1,sk.mys(r2)	;if rcv socket send inital allocation
+	bne 1$			;if odd then NOT receive
+	call sndalc,r2		;send allocation
+1$:	rts pc			;finis
+
+;;; send a cls on this socket pair and hope he goes away
+refuse:	movb #s.clsg,sk.sts(r2)	;start closing socket.
+	mov clock,sk.ctm(r2)	;initialize the timeout
+sndcls:	call hhsend,<ncphte,#9.>	;start a host to host message
+	call hhsnd8,#hh.cls	;send a close msg
+	call hhsd32,<#0,r3>	;send my socket #
+	call hhsd32,<r0,r1>	;send his.
+	call hhdsnd		;send it flying
+	rts pc
+
+accept:				;a local user was listening on this socket so accept to con.
+	mov ncphte,r4
+	incb he.cnt(r4)		;another connection to this host
+	mov r4,sk.hst(r2)	;fill in the hte of the socket
+	mov r0,sk.ysh(r2)	;fill in foriegn socket
+	mov r1,sk.ysl(r2)
+
+	call hhsend,<r4,#10.>	;send the str to complete things
+	mov #hh.rts,r4		;assume for the moment we have an STR
+	cmp #hh.str,cmdtyp
+	beq 1$
+	mov #hh.str,r4		;here if it was really an RTS
+1$:	call hhsnd8,r4		;send the command type
+	call hhsd32,<#0,r3>	;send my socket #
+	call hhsd32,<r0,r1>	;echo his.
+	movb sk.siz(r2),r4	;byte size if recvd RTS
+	cmp #hh.rts,cmdtyp
+	beq 2$
+	call fndlnk,r2,r4	;this is a rcv conn so create link
+	bcc 3$
+	bpt
+3$:	movb r4,sk.lnk(r2)
+2$:	call hhsnd8,r4		;byte size.
+	call hhdsnd		;off with it.
+	jmp fnshop		;finish opening connection
+
+;;; This handles close requests or close echos.
+cls:
+	call hget32,<>,<r0,r1>	;get his socket
+	call hget32,<>,<r2,r3>	;get my socket #
+	tst r2			;this should be zero
+	bne 1$			;if not then PUNT
+	tst r3			;check this too, just for luck
+	beq 1$			;pure shit, thats all I ever get...
+	call fndskt,r3,r2	;look up the socket #
+	bcs 1$			;no such socket
+	cmpb sk.sts(r2),#s.free	;any such socket?
+	beq 1$
+	cmp r0,sk.ysh(r2)	;does this match?
+	bne 1$
+	cmp r1,sk.ysl(r2)
+	bne 1$
+	cmp ncphte,sk.hst(r2)	;did it come from the right host?
+	bne 1$
+
+;;; Here we close down the connection for him
+	cmpb sk.sts(r2),#s.open	;if open or opng then go to clsd
+	beq 2$
+	cmpb sk.sts(r2),#s.opng
+	beq 2$
+	cmpb sk.sts(r2),#s.clsg	;did we initiate the close?
+	if eq,<
+	  movb #s.free,sk.sts(r2)	;so then free the connection
+	  >
+				;else this is a spurious close
+1$:	rts pc
+2$:	call fluskt,<r2,#scemfh>	;free the socket
+	jmp sndcls
+
+;;; Here we handle allocation requests
+all:
+	call hget8,<>,r0	;get the link this refers to.
+	call lnkscn,<r0,ncphte>,r1	;convert the link # to socket ptr
+	tst r1
+	beq 1$			;illegal link.
+	call hget16,<>,r0	;get the msg allocation
+	add r0,sk.nms(r1)	;add in the new allocation
+	call hget32,<>,<r2,r3>
+	add r3,sk.bsl(r1)	;add in lsw of new bit allocation
+	adc sk.bsh(r1)		;carry...
+	add r2,sk.bsh(r1)	;the msw.
+1$:	rts pc
+
+;;; This is just "up" confirmation for other hosts.
+eco:
+	call hget8,<>,r0
+	call hhsend,<ncphte,#2>	;we just echo this byte back at him
+	call hhsnd8,#hh.erp
+	call hhsnd8,r0
+	call hhdsnd
+	rts pc
+
+;;; This sends back a reset reply to resets
+rst:
+	call hstdwn,<ncphte,#scemrr>
+	mov ncphte,r1
+	movb #h.up,he.sts(r1)	;host is reset now.
+	call hhsend,<r1,#1>
+	call hhsnd8,#hh.rrp
+	call hhdsnd
+	rts pc
+
+;;; This gets reset replys and updates the host status.
+rrp:
+	mov ncphte,r0
+	cmpb he.sts(r0),#h.rsnt	;was it our reset?
+	bne 1$
+	movb #h.up,he.sts(r0)	;declare the host up.
+	rts pc
+1$:	inc spurrp		;another spurios rrp
+	rts pc
+
+;;; This records all err type msgs.
+err:
+	mov #12.,r0		;copy twelve bytes
+	mov errlog,r1
+1$:	movb (r4)+,(r1)+
+	sob r0,1$
+	cmp r1,#erlend
+	blo 2$
+	mov #erlend,r1
+2$:	mov r1,errlog
+	rts pc
+
+errlog:	.word .+2
+	.blkb 4*12.		;enough for 4o messages
+erlend::
+
+inr:
+	call hget8,<>,r0		;get the link out of the msg
+	call lnkscn,<r0,ncphte>,r1	;get the socket this refers to
+	br incomm
+
+ins:
+	call hget8,<>,r0		;get the link out of the msg
+	call lnkskt,<r0,ncphte>,r1	;get the socket this refers to
+
+incomm:	tst r1
+	beq 1$			;no such link
+	inc sk.inc(r1)		;one more of these.
+1$:	rts pc
+
+	.sbttl NCP Interface Subroutines
+
+;;; get-sockets (num-sockets) (base-socket)
+getsox:	proc 1,1,r0
+
+	clr out1(fp)
+	mov arg1(fp),r0		;get number of sockets.
+	beq gsdone
+	mov newskt,out1(fp)	;get the socket number
+	add r0,newskt		;for the next guy
+	inc newskt		;round up since we always start even
+	bic #1,newskt
+gsdone:	return
+
+newskt:	.word 256.		;first available socket #
+
+;;; get-channel-info (channel) (local-socket, foreign-socket-hi,
+;;; foreign-socket-lo, imp, host, host-status, byte-size,
+;;; connection-status)
+gcinfo:	proc 1,10,r0
+
+	clr out1(fp)
+	clr out2(fp)
+	clr out3(fp)
+	clr out4(fp)
+	clr out5(fp)
+	clr out6(fp)
+	clr out7(fp)
+	clr out10(fp)
+	mov arg1(fp),r0		; get arg: channel
+	cmpb (r0),#s.free	; check channel status
+	if ne,<			; if not free,
+	  sub #sk.sts,r0	; make into ptr to socket table entry
+				; perhaps we should range check this #?
+ 	  mov sk.mys(r0),out1(fp)
+	  mov sk.ysh(r0),out2(fp)
+	  mov sk.ysl(r0),out3(fp)
+	  movb sk.siz(r0),out7(fp)
+	  movb sk.sts(r0),out10(fp)
+	  mov sk.hst(r0),r0	; now for the host info
+	  if eq,< bpt >
+	  mov he.imp(r0),out4(fp)
+	  movb he.hst(r0),out5(fp)
+	  movb he.sts(r0),out6(fp)
+	  >
+	return
+
+;;; open-receive-connection (local-socket, imp, host, foreign-socket-msw,
+;;;			     foreign-socket-lsw, byte-size) (channel)
+orconn:	proc 6,1,<r0,r1,r2>
+	pushp6
+	call makhte,<arg2(fp),arg3(fp)>,r0	;get an hte for this host
+	bcs 3$
+	call filskt,<arg1(fp),r0,arg4(fp),arg5(fp),arg6(fp)>,r1
+	bcs 3$			;no links available.
+	call fndlnk,r1,r2	;allocate a link
+	if cs,<bpt>
+	movb r2,sk.lnk(r1)	;slam it in.
+	call rsthst,r0
+	bcs 2$			; host dead
+	movb #s.opng,sk.sts(r1)	;mark it as being opened.
+	mov clock,sk.ctm(r1)
+	call hhsend,<r0,#10.>	;send the RTS to host
+	call hhsnd8,#hh.rts
+	call hhsd32,<#0,sk.mys(r1)>	;local socket
+	call hhsd32,<sk.ysh(r1),sk.ysl(r1)>	;foreign socket
+	movb sk.lnk(r1),r0
+	call hhsnd8,r0
+	call hhdsnd
+	add #sk.sts,r1		;use ptr to sts as channel
+	mov r1,out1(fp)		;for returning it
+	popp6
+	return
+2$:	movb #s.free,sk.sts(r1)
+	call fluskt,<r1,#0>
+3$:	mov #badcnl,out1(fp)	;error!
+	popp6
+	rtnerr
+badcnl:	.word -1
+
+;;; open-transmit-connection (local-socket, imp, host, foreign-socket-msw,
+;;;		foreign-socket-lsw, byte-size) (channel)
+otconn:	proc 6,1,<r0,r1>
+
+	pushp6
+	call makhte,<arg2(fp),arg3(fp)>,r0
+	bcs 3$
+	call filskt,<arg1(fp),r0,arg4(fp),arg5(fp),arg6(fp)>,r1
+	bcs 3$			;all OK
+	call rsthst,r0		;reset the host if necessary
+	bcs 3$			;couldn't reset the host.
+	movb #s.opng,sk.sts(r1)
+	mov clock,sk.ctm(r1)
+	call hhsend,<r0,#10.>	;send the RTS to host
+	call hhsnd8,#hh.str
+	call hhsd32,<#0,sk.mys(r1)>	;local socket
+	call hhsd32,<sk.ysh(r1),sk.ysl(r1)>	;foreign socket
+	movb sk.siz(r1),r0
+	call hhsnd8,r0
+	call hhdsnd
+	add #sk.sts,r1		;get channel ptr
+	mov r1,out1(fp)		;for returning it
+	popp6
+	return
+3$:	mov #badcnl,out1(fp)
+	popp6
+	rtnerr 			;return bad channel
+
+;;; listen-for-connection (socket, byte-size) (channel)
+listen:	proc 2,1,<r0,r1>
+	pushp6
+	mov arg1(fp),r0		;get socket to listen on
+	ble badlsn		;no socket to listen on!?
+	call filskt,<r0,#0,#0,#0,arg2(fp)>,r1	;get empty socket.
+	bcs badlsn
+	movb #s.wait,sk.sts(r1)	;wait for ACTION.
+	mov clock,sk.ctm(r1)
+	add #sk.sts,r1
+	mov r1,out1(fp)
+	popp6
+	return
+badlsn:	mov #badcnl,out1(fp)
+	popp6
+	rtnerr
+
+.if nz 0
+;;; send (socket, data-block-addr) (code)
+send:	proc 2,1
+
+;;; receive (socket) (data-block-addr, code)
+rceive:	proc 1,2
+.endc
+
+;;; close (channel) (code)
+close:	proc 1,1,r0
+
+	pushp6
+	mov arg1(fp),r0		;get channel
+	beq 2$
+	tst (r0)
+	blt 2$
+	sub #sk.sts,r0		;get socket ptr.
+	beq 2$			;bad channel: punt
+	cmp sk.own(r0),curtsk	;do we own this connection?
+	bne 2$			;batshit again
+	cmpb sk.sts(r0),#s.free	;just in case of lossage
+	beq 2$
+	cmpb sk.sts(r0),#s.clsg	;already closing?
+	beq 2$			;just punt.
+	cmpb sk.sts(r0),#s.wait	;just waiting for connection?
+	beq 8$			;just free it
+5$:	cmpb sk.sts(r0),#s.clsd	;Did the channel go away spuriously?
+	bne 9$			;socket already closed.
+8$:	movb #s.free,sk.sts(r0)	;free it up so it can be reused
+	call fluskt,<r0,#0>	;free up any remaining messages
+	br 4$
+9$:	tst sk.nqm(r0)		;are there any queued msgs?
+	blt 3$			;too many msgs sent?
+	beq 7$			;wait till coast is clear
+	bit #1,sk.mys(r0)	;is this a transmit connection
+	beq 7$			;no, don't wait for msgs to go out
+	cocall
+	br 5$			;wait for outtsk to send all
+7$:	tst sk.hst(r0)
+	beq 3$			;internal error
+	movb #s.clsg,sk.sts(r0)	;mark it as closing
+	call fluskt,<r0,#scemlh>	;clean everything up
+	mov clock,sk.ctm(r0)	;initialize the timeout
+	call hhsend,<sk.hst(r0),#9.>	;send the close
+	call hhsnd8,#hh.cls
+	call hhsd32,<#0,sk.mys(r0)>
+	call hhsd32,<sk.ysh(r0),sk.ysl(r0)>
+	call hhdsnd
+
+4$:	clr out1(fp)		;return good code
+	popp6
+	return
+3$:	bpt 			;when bad error happens stop
+2$:	mov #-1,out1(fp)	;bad code
+	popp6
+	rtnerr
+
+sndinr:	proc 1,0,<r0,r1>
+	mov #hh.inr,r0		;get the right interrupt command
+	br sndcom
+
+sndins:	proc 1,0,<r0,r1>
+	mov #hh.ins,r0		;get the right interrupt command
+
+sndcom:	mov arg1(fp),r1		;get channel
+	sub #sk.sts,r1		;convert to socket ptr
+	call hhsend,<sk.hst(r1),#2>
+	call hhsnd8,r0
+	movb sk.lnk(r1),r0
+	call hhsnd8,r0		;send the link number to the host
+	call hhdsnd
+	return
+	.sbttl NCP support subroutines
+
+;;; This is called with an hte ptr and resets it and all the sockets
+;;; currently open to it and cleans everything up nicely.  The second
+;;; argument is the reason the host went down.
+hstdwn:	proc 2,0,<r0,r1,r2>
+
+	mov arg1(fp),r2
+	movb #h.dead,he.sts(r2)	;kill host while we clean up
+	clrb he.nst(r2)		;clear the network status bits.
+;	call fremsg,<outare,he.lms(r2)>	;free the message
+;	clr he.lms(r2)
+	mov #sktble,r0
+1$:	cmp r2,sk.hst(r0)	;check for conns. to this host
+	bne 2$
+	cmpb sk.sts(r0),#s.open	;if open or opng then go to clsd, else free
+	beq 5$			;we behave just as if we received a cls on skt
+	cmpb sk.sts(r0),#s.opng
+	beq 5$
+	cmpb sk.sts(r0),#s.clsg
+	bne 2$			; if CLSD, WAIT, USED, FREE
+	movb #s.free,sk.sts(r0)
+	br 2$			;next socket please
+5$:	call fluskt,<r0,arg2(fp)>	;free the socket, with explanation
+2$:	add #skt.ln,r0
+	cmp r0,#sktend
+	blo 1$			;loop over all sockets
+	return
+
+;;; This is called with a skt ptr and deletes it.  It is called by CLS:
+;;; HSTDWN, and CLOSE.  If the state in not clsg, the the state is set to
+;;; clsd so that local users will be able to find out that their connection
+;;; just disappeared out from under it.  It also frees all queued messages
+;;; on that connection.
+fluskt:	proc 2,0,<r0,r1,r2,r3,r4>
+
+	mov arg1(fp),r2
+	cmpb #s.free,sk.sts(r2)
+	beq 7$
+	cmpb #s.clsg,sk.sts(r2)	;see if we have called close?
+	beq 7$			;if so we don't change the state.
+	movb #s.clsd,sk.sts(r2)	;blow the connection away.
+	mov arg2(fp),sk.err(r2)	;remember the reason why.
+	mov clock,sk.ctm(r2)
+	bit #1,sk.mys(r2)	;is it a receive socket?
+	beq 4$			;yes, save the messages for the user to read
+7$:	mov sk.fqm(r2),r4
+	if ne,<
+	  bit #1,sk.mys(r2)
+	  if eq,<
+	    mov sk.are(r2),r0	;get the correct area
+	    >
+	  else <
+	    mov outare,r0
+	    >
+	call mapmsg,r0		;map in the area containing the queued msgs
+loop	< mov ms.nxt(r4),r3
+	  call fremsg,<r0,r4>	;free this message
+	  dec sk.nqm(r2)
+	  cmp r4,sk.lqm(r2)
+	  exitl eq
+	  mov r3,r4
+	  rptl
+	  >
+	>
+2$:	tst sk.nqm(r2)		;make sure its zero
+	if ne,<
+	  bit #1,sk.mys(r2)	;old cause error if receive socket
+	  if eq,<bpt>
+	  >
+	clr sk.fqm(r2)
+	clr sk.lqm(r2)
+	bit #1,sk.mys(r2)
+	if eq,<
+	  call frepag,sk.are(r2)	;free the newman page
+	  mov sk.bsl(r2),r3
+	  ash #-3,r3		;convert from bits to bytes
+	  sub r3,outalc		;take back the allocation
+	  >
+	clr sk.bsl(r2)
+	clr sk.bsh(r2)
+4$:	return
+
+;;; rsthst (host-table-entry)
+;;; This is called when a host is noticed to be down or its state
+;;; is unknown and a connection to it is desired.  It sends a reset
+;;; to the host and waits for a reset reply.  If it has to wait longer
+;;; than some timeout period it will punt and leave the host down.
+rsthst:	proc 1,0,<r0,r1>
+
+	mov arg1(fp),r0
+	cmpb he.sts(r0),#h.rsnt	;are we waiting for a rrp?
+	beq 1$
+	cmpb he.sts(r0),#h.dead	;check for him if host is really down
+	bne 4$			;OK return
+
+	movb #h.rsnt,he.sts(r0)	;set the host state to reseting
+	mov clock,he.rst(r0)	;so we know when to time out
+	call hhsend,<r0,#1>	;send the reset
+	call hhsnd8,#hh.rst
+	call hhdsnd
+
+1$:	cocall 			;wait for a reset reply to arrive.
+	cmpb he.sts(r0),#h.dead	;host died.
+	beq 3$
+	cmpb he.sts(r0),#h.rsnt
+	bne 4$
+	br 1$
+
+3$:	rtnerr
+4$:	return
+
+;;; This extracts the interesting inr and ins counts from a given channel.
+;;; arinrs (channel) (count)
+arinrs:	proc 1,1,<r1>
+
+	mov arg1(fp),r1
+	sub #sk.sts,r1
+	mov sk.inc(r1),out1(fp)
+	clr sk.inc(r1)
+	return
+
+;;; readms (channel) (msg)
+;;; This routine reads a message from the specified connection and returns
+;;; it to the user.
+readms:	proc 1,1,<r0,r1>
+
+	mov arg1(fp),r0
+	sub #sk.sts,r0		;get a socket ptr
+	clr out1(fp)		;initialize the return value
+	cmp sk.own(r0),curtsk	;see if this task owns the socket
+	beq 3$
+;	bpt
+	br 4$
+3$:	mov sk.fqm(r0),r1	;get message to return to user
+	bne 1$
+ 	cmpb #s.clsd,sk.sts(r0)	;has the socket gone away
+	bne 2$
+4$:	rtnerr 			;connection died.
+1$:	pushp6			; save page 6
+	call mapmsg,sk.are(r0)	;make sure the sockets area is mapped in.
+	dec sk.nqm(r0)
+	if lt,<bpt>
+	mov ms.nxt(r1),sk.fqm(r0)
+	if eq,<clr sk.lqm(r0)>
+	call movmsg,<stdare,r1>,r1	;move message to standard area
+				;note: this does not change the NM mapping
+	mov r1,out1(fp)
+	popp6			; restore page 6
+2$:	return
+
+;;; hhsend (host-table-entry--or--channel, max-size)
+;;; This initializes things so that a host-to-host message can be send
+;;; to the specified host not to exceed "max-size" bytes in length.
+;;; Between calling hhsend and hhdsnd a process may not call cocall.
+hhsend:	proc 2,0,<r0,r1,r2>
+
+	mov arg1(fp),r0		;get the hte or channel
+	cmp r0,#sktble
+	blo 5$
+	  cmp r0,#sktend
+	  bhis 5$
+	    sub #sk.sts,r0
+loop	    < cmpb sk.sts(r0),#s.open	;is the connection still there?
+	      if ne,<
+		rtnerr
+		>
+	      cmp sk.nqm(r0),#2	;is the socket jammed up?
+	      exitl lt
+	      cocall		;wait here for things to un jam
+	      rptl
+	      >
+	    br 1$
+5$:	cmp r0,#hstble		;it is an HTE then?
+	if lo,<bpt>		;this is garbage!
+	cmp r0,#hstend
+	if his,<bpt>
+	clr r0			;mark it as a hte not a skt
+
+1$:
+loop	< tst hhlock		;anyone else sending messages?
+	  exitl eq		;nope
+	  cocall
+	  rptl
+	  >
+	inc hhlock		;lock it now, hhdsnd will unlock it
+
+	mov arg2(fp),r1		;get the estimated size
+	add #<ipl.ln + hsl.ln + msg.ln>,r1	;amount to allocate
+
+	pushp6
+	promap <
+	  call allmsg,<outare,r1>,r1	;get storage for message
+	  mov r0,ms.skp(r1)	;fill in the msg header
+	  makptr r1,<ms.txt+ipl.ln>,r2	;get ptr to host leader
+
+	  tst r0		;is this a skt or and hte?
+	  if ne,<
+	    mov sk.hst(r0),ms.hst(r1)
+	    movb sk.siz(r0),hl.bsz(r2)
+	    mov #-1,ctlcmd	;so we won't report a funny ctl cmd
+	    >
+	  else <
+	    mov arg1(fp),ms.hst(r1)	;fill the hte into the msg header
+	    movb #8.,hl.bsz(r2)
+	    clr hhfrst		;control msg so enable print out
+	    >
+	  mov #<ipl.ln+hsl.ln>,ms.len(r1)
+	  clrb hl.pd1(r2)
+	  clr hl.nby(r2)	;no data yet.
+	  clrb hl.pd2(r2)
+	  >			;restore the map
+	popp6
+	mov r1,hhmsg		;save these for future reference
+	mov r2,hhhdr
+	add #hl.txt,r2		;ptr to next byte
+	mov r2,hhptr
+	return
+
+hhmsg:	.word 0			;ptr to the current host-to-host msg
+hhhdr:	.word 0			;ptr to host leader for above
+hhptr:	.word 0			;ptr to next host-to-host data.
+hhfrst:	.word 1			;flag so hhsnd8 can report control cmds
+ctlcmd:	.word -1
+
+;;; hhsnd8 (byte-to-send)
+;;; this sticks a byte into the current host-to-host message
+hhsnd8:	proc 1,0,<r0,r1>
+
+	pushp6
+	promap <
+	  call mapmsg,outare
+
+	  mov hhhdr,r0		;bump the size
+	  if eq,<bpt>
+	  inc hl.nby(r0)
+	  mov hhptr,r0
+	  movb arg1(fp),(r0)+
+	  mov r0,hhptr
+	>
+	popp6
+	tst hhfrst		;is this the first send8?
+	if eq,<
+	  inc hhfrst
+	  mov arg1(fp),ctlcmd	;save this for later
+	  >
+	return
+
+;;; hhsd16 (word-to-send)
+;;; This adds a 16-bit word to the current host-to-host message
+hhsd16:	proc 1,0,<r0>
+
+	pushp6
+	promap <
+	  call mapmsg,outare
+
+	  mov hhhdr,r0
+	  if eq,<bpt>
+	  add #2,hl.nby(r0)
+	  mov hhptr,r0
+	  movb arg1+1(fp),(r0)+
+	  movb arg1(fp),(r0)+
+	>
+	popp6
+	mov r0,hhptr
+	return
+
+
+;;; hhsd32 (high-order-word-to-send, lo-order-word)
+;;; This sends a 32-bit number but receives it as two words.
+hhsd32:	proc 2,0,<r0>
+
+	pushp6
+	promap <
+	  call mapmsg,outare	;map the area
+
+	  mov hhhdr,r0
+	  if eq,<bpt>
+	  add #4,hl.nby(r0)
+	  mov hhptr,r0
+	  movb arg1+1(fp),(r0)+
+	  movb arg1(fp),(r0)+
+	  movb arg2+1(fp),(r0)+
+	  movb arg2(fp),(r0)+
+	>
+	popp6
+	mov r0,hhptr
+	return
+
+;;; hhdsnd
+;;; This send the current message off to the output process.
+hhdsnd:	proc 0,0,<r0,r1,r2,r3,r4>
+
+	pushp6
+	savmap			;save the old map
+	call mapmsg,outare
+
+	mov hhhdr,r1
+	if eq,<bpt>
+	mov hl.nby(r1),r3
+	bit #1,hhptr		;make sure msg ocupies whole words.
+	if ne,<			;it is an odd addr.  even it out.
+	  clrb @hhptr		;zero the extra byte
+	  inc r3
+	  inc hhptr
+	>
+	mov hhmsg,r2		;get msg to send
+	mov ms.skp(r2),r4	;get socket ptr if any
+	beq 11$
+	cmpb sk.sts(r4),#s.open	;is the socket still open
+	beq 13$
+12$:	dec hhlock		;clean up and report error
+	call fremsg,<outare,r2>	;free the message
+	resmap			;restore the newman map
+	popp6
+	rtnerr
+11$:	mov ms.hst(r2),r4	;if host-to-host then is host down?
+	cmpb he.sts(r4),#h.dead
+	beq 12$
+
+13$:	add r3,ms.len(r2)	;total message length
+	clr r3
+	bisb hl.bsz(r1),r3
+	mov hl.nby(r1),r1	;convert to n bit bytes.
+	ash #3,r1		;8-bit bytes -> bits
+	clr r0			;32-bit dividend
+	div r3,r0		;bits = msg.ln+ipl.ln+hl.bsz-bit bytes
+	tst r1			;remainder must be zero!
+	if ne,<bpt>
+	mov hhhdr,r1
+	mov r0,hl.nby(r1)
+	mov r0,ms.nby(r2)
+	mov ms.skp(r2),r4
+	if ne,<inc sk.nqm(r4)>	;increment this here so we always know there
+				;are msgs in the pipe.  Else a call to close
+				;will lose packets.
+	mov tcbout,r3		;send it to the output guy.
+	jsr pc,putmsg
+	resmap
+	popp6
+
+	cmp curtsk,tcbncp	;are we the ncp?
+	if eq,<mov #s.ncp,r2>
+	else <mov #s.unk,r2>
+
+3$:	mov #s.sent,r3
+	movb (r2)+,(r3)+	;copy in the userid
+	movb (r2)+,(r3)+
+	movb (r2)+,(r3)+
+	mov ctlcmd,r2		;get the control command
+	if ge,<
+	  asl r2
+	  mov ncpmsg(r2),r2	;get the name ptr
+	>
+	else <
+	  mov #s.unk,r2
+	>
+	mov #s.sent+5,r3
+	movb (r2)+,(r3)+
+	movb (r2)+,(r3)+
+	movb (r2)+,(r3)+
+	call print,#s.sent
+	clr hhhdr		;no hhsnd in progress
+	dec hhlock		;OK for others now.
+	return
+
+;;; arstat (channel) ()
+;;; This routine returns with the carry bit set if the channel is closed or
+;;; has one or more messages already queued for transmission.
+arstat:	proc 1,0,r4
+
+	mov arg1(fp),r4		;get the channel
+	sub #sk.sts,r4		;convert to socket ptr
+	tst sk.nqm(r4)		;how many msgs queued?
+	bne 1$			; too many
+	bitb #n.rfnm,sk.nst(r4)	;is this socket waiting for rfnm?
+	bne 1$			; yes, not ready yet
+	cmpb sk.sts(r4),#s.open	;is the connection still open?
+	bne 1$			;nope
+	return
+1$:	rtnerr
+
+;;; agetse (channel) (error-message)
+;;; This routine returns an error code explaining the reason the channel was
+;;; closed.
+agetse:	proc 1,1,r4
+
+	mov arg1(fp),r4
+	sub #sk.sts,r4
+	mov sk.err(r4),out1(fp)
+	return
+
+;;; get32 () (hi-word, lo-word)
+;;; This routine knows that r4 points to a buffer and it reads two
+;;; 16-bit words out, incrementing r4 appropriately.  No alignment
+;;; is assumed.
+hget32:	proc 0,2
+
+	movb (r4)+,out1+1(fp)	;get the highest order 8-bits
+	movb (r4)+,out1(fp)
+	movb (r4)+,out2+1(fp)
+	movb (r4)+,out2(fp)
+	return
+
+;;; get16 () (word)
+;;; this is like get32 but only gets two bytes.
+hget16:	proc 0,1
+
+	movb (r4)+,out1+1(fp)
+	movb (r4)+,out1(fp)
+	return
+
+;;; hget8 () (byte)
+hget8:	proc 0,1
+
+	clr out1(fp)
+	movb (r4)+,out1(fp)
+	return
+
+;;; fndlnk (socket-ptr) (link-number)
+;;; This takes a socket number which must be even and allocates a link
+;;; for it.  The link number is returned or zero if none are available.
+fndlnk:	proc 1,1,r0
+
+	mov #lnktbl,r0		;get ready for link table search
+1$:	tst (r0)		;is link free?
+	beq 2$			;got one
+	tst (r0)+		;go on to next one
+	cmp r0,#lnkend
+	blo 1$
+	clr out1(fp)		;not link available!
+	rtnerr 			;punt.
+
+2$:	mov arg1(fp),(r0)	;fill it in.
+	sub #lnktbl,r0		;convert addr to link number
+	add #lnkbas,r0
+	asr r0
+	mov r0,out1(fp)
+3$:	return
+
+;;; fndskt (socket-number) (socket-ptr)
+;;; This routine takes a socket number and returns a socket table entry
+;;; ptr for it.
+fndskt:	proc 1,1,<r0,r1,r2>
+
+	clr out1(fp)
+	mov #sktble,r0
+	mov arg1(fp),r1		;get the socket number
+1$:	cmp r1,sk.mys(r0)
+ 	beq 2$			;found it.
+	cmpb #s.free,sk.sts(r0)	;is it free at least?
+	bne 3$			;no, keep looking
+	bitb #n.rfnm,sk.nst(r0)	;is it not rfnm waiting too?
+	bne 3$
+	mov sk.hst(r0),r2	;dec host ref count
+	if ne,<
+	  decb he.cnt(r2)
+	  >
+	bit #1,sk.mys(r0)	;free the link if receive socket
+	if eq,<			;zero link field just for fun.
+	  clr r2
+	  bisb sk.lnk(r0),r2	;and the link exists
+	  if ne,<
+	    asl r2		;convert link no. to table index
+	    sub #lnkbas,r2
+	    cmp r2,#nlinks*2
+	    bhis 6$		;too big a link no. for us
+	    cmp lnktbl(r2),r0	;does the link point to this socket?
+	    bne 6$
+	    clr lnktbl(r2)	;finally, free the link
+	    >
+	  >
+	tst sk.nqm(r0)		;and now for some consistancy checking...
+	bne 6$
+	tst sk.fqm(r0)
+	bne 6$
+	tst sk.lqm(r0)
+	bne 6$
+
+	clrb sk.lnk(r0)		;and zero the link field
+	clrb sk.nst(r0)		;flush all the other bits
+	clr sk.hst(r0)		;Now just clean things up a bit...
+	clr sk.mys(r0)
+	clr sk.ysh(r0)
+	clr sk.ysl(r0)
+	clr sk.nms(r0)
+	clr sk.bsh(r0)
+	clr sk.bsl(r0)
+	clr sk.err(r0)		;no error yet.
+
+	mov r0,out1(fp)		;save this in case there's no match
+3$:	add #skt.ln,r0
+	cmp r0,#sktend
+	blo 1$
+	tst out1(fp)
+	bne 7$			;return him a new one
+4$:	rtnerr 			;none found, nor any empties
+2$:	mov r0,out1(fp)
+7$:	return
+
+6$:	bpt
+	br 4$
+
+;;; filskt (local-socket, host-table-entry, foreign-socket-1, fs-2,
+;;;	   byte-size) (socket-ptr)
+filskt:	proc 5,1,<r0,r1>
+
+	call fndskt,arg1(fp),r1	;get the socket ptr
+	bcs fildun		;no sockets.
+	cmpb sk.sts(r1),#s.free	;was it in use?
+	bne fildun		;should be unused!
+	call fndskt,#0,r1	;get a new socket
+	bcs fildun		;no new socket to get. The user loses.
+	mov r1,out1(fp)		;return the socket
+	mov arg1(fp),sk.mys(r1)	;fill in the socket
+	mov arg2(fp),r0		;get the hte
+	if ne,<
+	  incb he.cnt(r0)		;another connection...
+	  >
+	mov r0,sk.hst(r1)	;connect the host and connection
+	mov arg3(fp),sk.ysh(r1)
+	mov arg4(fp),sk.ysl(r1)
+	clrb sk.lnk(r1)
+	movb arg5(fp),sk.siz(r1)	;byte size is 8
+	mov curtsk,sk.own(r1)
+	movb #s.used,sk.sts(r1)
+	mov clock,sk.ctm(r1)
+	clr sk.nqm(r1)
+	clr sk.fqm(r1)
+	clr sk.lqm(r1)
+	clr sk.lms(r1)
+	clr sk.nms(r1)
+	clr sk.bsh(r1)
+	clr sk.bsl(r1)
+	clr sk.err(r1)
+
+	bit #1,sk.mys(r1)	;if this is a receive socket then...
+	if eq,<
+	  mov #20,sk.mma(r1)	;set default minimum allocations
+	  mov #<pagsiz*3/4/2*8.>,sk.mba(r1)	;let him have at least half
+				;of what we normally will give him
+	  call getpag,<>,r0	;allocate a new newman page
+	  bcs fildn1		;error can't get a page!
+	  map r0		; map it in
+	  mov r0,sk.are(r1)	;fill it into the socket
+	  mov #maplo,r1		;init area for the SKTs
+	  mov #pagsiz,r0	;size of the area
+	  kcall makear
+	  >
+	return
+fildn1:	movb #s.free,sk.sts(r1)	;flush the socket
+fildun:	clr out1(fp)
+	rtnerr
+
+;;; sndalc (socket-ptr)
+;;; This routine takes a socket ptr and sends to the appropriate host
+;;; a reasonable amount of allocation.	The error return means that
+;;; allocation could not be sent for some reason.
+sndalc:	proc 1,0,<r0,r1,r2,r3>
+
+	mov arg1(fp),r1		;get socket
+	cmpb sk.sts(r1),#s.open	;make sure socket is open
+	bne 6$
+	bit #1,sk.mys(r1)	;a receive socket?
+	bne 4$			;only send allocation for receive side
+	tstb sk.lnk(r1)
+	beq 4$
+
+	cmp sk.nqm(r1),#2	;too many queued messages?
+	bgt 6$
+	tst sk.bsh(r1)		;is there more than 2**16 bits?
+	bne 6$			;yes, so don't send him more
+	mov #pagsiz/100.*75.,r2	;safety factor of 25%
+	promap <
+	  call mapmsg,sk.are(r1)	;get the area to see how much is used
+	  mov curare,r3
+	  sub ah.use(r3),r2	;the difference we send out to him
+	  >
+	cmp r2,#10		;too little to bother with?
+	blt 6$
+	call hhsend,<sk.hst(r1),#8.>	;send an allocate
+	call hhsnd8,#hh.all
+	movb sk.lnk(r1),r0
+	call hhsnd8,r0
+	mov sk.mma(r1),r0	;get the min msg allocation
+	asl r0			;double it
+	sub sk.nms(r1),r0	;how much to send?
+	if lt,<clr r0>		;only positive numbers need apply
+	call hhsd16,r0
+	add r0,sk.nms(r1)	;update our copy.
+	ash #3,r2		;convert what we should send to bits
+	sub sk.bsl(r1),r2	;subtract outstanding allocation
+	if lo,<clr r2>
+	call hhsd32,<#0,r2>
+	add r2,sk.bsl(r1)	;update ours.
+	ash #-3,r2		;convert to bytes for outalc
+	add r2,outalc		;update outstanding allocation
+	call hhdsnd
+	bcs 6$
+	return
+4$:	bpt 			;batshit for errors
+6$:	rtnerr 			;couldn't send allocation
+
+;;; Called by CAFACE to stimulate the emmision of allocation msgs
+aralc:	proc 1,0,<r0>		;send allocation on channel
+	pushp6
+	mov arg1(fp),r0		;get channel
+	sub #sk.sts,r0		;convert to skt pointer
+	call sndalc,r0		;send allocation.
+	popp6
+	bcs 1$			;return an error
+	return
+1$:	rtnerr
+
+
+	.sbttl Values and Constants
+
+ncphte:	.word
+hostnm:	.word
+cmdtyp:	.word
+impnum:	.word
+
+hhmsgs:	.rept 14.
+	.word 0
+	.endr
+s.nop:	.ascii /nop/
+s.rts:	.ascii /rts/
+s.str:	.ascii /str/
+s.cls:	.ascii /cls/
+s.all:	.ascii /all/
+s.gvb:	.ascii /gvb/
+s.ret:	.ascii /ret/
+s.inr:	.ascii /inr/
+s.ins:	.ascii /ins/
+s.eco:	.ascii /eco/
+s.erp:	.ascii /erp/
+s.err:	.ascii /err/
+s.rst:	.ascii /rst/
+s.rrp:	.ascii /rrp/
+
+s.ncp:	.ascii /ncp/
+s.unk:	.ascii /???/
+s.rcvd:	.asciz /ncp: XXX rcv'd ** /
+s.sent:	.asciz /XXX: XXX sent ** /
+
+;;; Messages describing reasons a socket can lose.
+;;; SCEM stands for Socket Closed Error Message.
+scemto:	.asciz /Host down, timed out [ARPA]/
+scemfh:	.asciz /Connection closed by foreign host [ARPA]/
+scemhd:	.asciz /Host down [ARPA]/
+scemlh:	.asciz /Connection closed by local host [ARPA]/
+scemrr:	.asciz /Host reset [ARPA]/
+scemil:	.asciz /Local host down, IMP connection gone [ARPA]/
+	.even
+
+hh.nop == 0
+hh.rts == 1
+hh.str == 2
+hh.cls == 3
+hh.all == 4
+hh.gvb == 5
+hh.ret == 6
+hh.inr == 7
+hh.ins == 10
+hh.eco == 11
+hh.erp == 12
+hh.err == 13
+hh.rst == 14
+hh.rrp == 15
+

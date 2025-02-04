@@ -1,0 +1,396 @@
+;;; -*-PALX-*-
+
+; This server is meant to provide a simple way for non-network machines
+; to use some network services.   It takes a simple flow controlled
+; serial line protocol and opens a CHAOS channel to transfer data from
+; the machine to the network server.
+
+; The protocol is basically the ETX/ACK protocol.
+; To request a service:
+;	1) Send NUL-DLE-SOH-chr  where chr=P for printer and chr=C for Canon
+;	   (Wait for ACK)  (NAK means service not available.)
+;   or	2) Send NUL-DLE-SOH-SP-service name-DLE-STX	[not yet implemented]
+;	   (Wait for ACK)  (NAK means service not available.)
+;	   Where "service name" is just the contact name for a CHAOS server.
+;	   (There is an assumption that CHAOS contact names do NOT start with
+;	    numbers.)
+;   or	3) Send NUL-DLE-SOH-contact string-DLE-STX
+;	   (Wait for ACK)  (NAK means connection not open.)
+;	   Where "contact string" is of the form :
+;	.ascii / nnnnnn contactname /
+;		nnnnnn is the octal destination number
+;		contactname is the contact name of the service
+;	(Note: The leading NUL is not required as part of the protocol but
+;	 recommended to avoid possible lossage from previous transmitters on
+;	 the channel. )
+; Data is sent:  chr-chr-...-chr-DLE-ETX  (wait for ACK)
+;	(note: due to unfortunateness in the way the LPT and Canon server
+;	protocol is defined, the first character of the data stream
+;	is not printed.  If the first char is a "~" a format command
+;	line is expected to follow; other characters are lost altogether.
+; These groups of data may be multiply buffered so long as the total number
+;	of characters sent without ACKs is smaller than the input buffer.
+;	(I think about 100 right now)
+; DLEs are sent within data groups as:  DLE-DLE
+; End of transmission is indicated:  DLE-EOT
+; Handlers for unexpected termination of the protocol transmitter should
+;	send NUL-DLE-EOT  to ensure the receiver gets a  DLE-EOT pair.
+
+; This serial line server will forward any replies from the CHAOS server
+; process to the non-network machine, terminating the message in a packet
+; with an ETX.  Users may ignore these messages.  NAK at any time would
+; mean the connection was broken (or could not be open originally).
+; There are no timeouts so the buffer of received characters will not be
+; transmitt/flushed unless an EOT is received (or, of course, the current
+; packet is full).
+
+; Call LSINIT with the line number and source/destination pointer
+;	(just as for a KINIT and command processor process)
+; to initialize.
+
+.sbttl	- Line Server creation
+
+;;; Create a task destination for a server conncted to a serial line.  Stack
+;;; arguments are port number, line source and destiation objects.
+
+lsinit:	push #lkobj,#ls,#lkstack,#100.	; TDINIT args: object size, initial
+					; PC, stack size, queue size
+	pcall tdinit		; create task destination object
+	mov #"LS,name(r0)	; we're a LS task, not just a TD
+	mov 6(sp),kport(r0)	; remember our port number
+	mov 2(sp),echod(r0)	; remember destination for echo
+	mov #177400,imask(r0)	; accept parity
+	mov #cosend,coobj+send(r0)
+	mov #cosndw,coobj+sendw(r0)
+	mov #cosnds,coobj+sends(r0)
+	mov #cobrk,coobj+break(r0)
+	mov #coforc,coobj+force(r0)
+	mov #coclos,coobj+close(r0)
+	mov #cpdesc,kusrob+udescr(r0)
+	mov #cpopnp,kusrob+uopenp(r0)
+	mov #cpunam,kusrob+uunam(r0)
+	mov #cpidle,kusrob+uidle(r0)
+	mov #cpkill,kusrob+usrdie(r0)
+
+	mov kport(r0),r1	; get our port #
+	asl r1			; make into index
+	mov r0,r1		; LINK arg: R1 = destination object (us)
+	mov 4(sp),r0		; R0: source object
+	pcall @link(r0)		; link source to this task
+	pop (sp),(sp),(sp)	; remove our arguments
+	preturn
+
+.sbttl	--- Line Server task
+
+DLE==020
+SOH==001
+STX==002
+ETX==003
+EOT==004
+ACK==006
+NAK==025
+ETB==027
+
+chcon==lbuf		; connection
+pktpt==chcon+2		; pointer to packet
+lscbuf==lbuf+4		; command parse buffer
+
+
+;;; Line input handler.
+
+ls:	mov ctask,r0		; get pointer to ourself
+	sub #tdtcb,r0		; ...
+
+	;; reinitailze queue pointers
+	mov qep(r0),r1
+	sub qsize(r0),r1
+	mov r1,qfp(r0)
+	mov r1,qrp(r0)
+
+	mov kport(r0),r2	; get our port #
+	asl r2			; make into index
+	add #kusrob,r0		; make into ptr to our user object
+	mov r0,wtab(r2)		; mark us as in use
+	mov r0,btab(r2)
+	sub #kusrob,r0		; restore r0
+	clrb kuser(r0)		; no user name yet
+	clr kdst(r0)		; no connection
+	clr ksrc(r0)		; ...
+
+	clr chcon(r0)		; no connection
+	clr pktpt(r0)		; no packet
+
+ls3:
+loop	<
+	  pcall getc		; GETC result: R1/ character
+	  cmpb r1,#DLE		; we are looking for an DLE-SOH
+	  rptl ne		; no, throw it away
+	  pcall getc		; got the first, try for the second
+	  cmpb r1,#SOH		; start of header ?
+	  rptl ne		; no, try for it
+	;	COME FROM  finding DLE-SOH  which basically signals EOF
+ls4:	  pcall getc		; which server?
+	  cmpb r1,#'P		; printer
+	  if eq,<
+	    mov #lsprt,r3
+	    exitl
+		>
+	  cmpb r1,#'C		; Canon
+	  if eq,<
+	    mov #lscan,r3
+	    exitl
+		>
+	  cmpb r1,#040		; space
+	  if eq,<
+	    jmp lsprse		; try parsing full command
+	   >
+	  mov #NAK,r1
+	  pcall echoc		;send back NAK
+	  rptl
+	>
+
+;;; Open network connection.
+
+ls5:	call chopen,<#lpthst,#1,#chchto,r3>,r4	;open connection
+				; CHOPEN result: connection or error packet
+	if cs,<			; if error
+	  tst r4
+	  if ne,<		; if error message
+	    push r4
+	    pcall typfre
+	    >
+	  mov #NAK,r1
+	  pcall echoc		;send back NAK
+	  br ls3		; try for another file
+	  >
+
+	mov r4,chcon(r0)	; store connection
+	mov #ACK,r1		; connection opened, acknowledge
+	pcall echoc
+
+ls6:
+loop <      pcall getc		; read character
+				; GETC result: R1/ character
+	    cmpb r1,#DLE	; line escape character?
+	    if eq,<
+	      pcall getc
+	      cmpb r1,#EOT	; exit this loop and close if EOT received
+	      exitl eq
+	      cmpb r1,#SOH	; try to open a channel?  again?
+	      if eq,<		; yes
+	        mov chcon(r0),r4	; we have a channel open?
+	        if ne,<			; (should always have one)
+		  jsr pc,lscls
+		  >
+		jmp ls4		;start a new one
+		>
+	      cmpb r1,#ETX	; acknowledge if ETX received
+	      if eq,<
+		mov #ACK,r1
+		pcall echoc
+		rptl
+		>
+	      cmpb r1,#ETB	; buffer flush
+	      if eq,<
+		jsr pc,lssnd2	; flush entry in sending subroutine
+		exitl cs	; punt if transmit failed ( br ls7 )
+		mov #ACK,r1	; send ACK back
+		pcall echoc
+		rptl
+		>
+	      cmpb r1,#DLE	; fall through and send if DLE, else ignore
+	      rptl ne
+	     >
+
+;; send the character.
+
+	    jsr pc,lssnd1
+
+	    rptl cc		; if no error, go for more characters
+	  >			; fall through on transmission fail
+
+
+	mov chcon(r0),r4
+	if ne,<
+	  jsr pc,lscls
+	  >
+	jmp ls3
+
+lscls:	mov pktpt(r0),r1
+	if ne,<
+	  clr pktpt(r0)
+	  call chdow,<r1,r4>
+	  bcs 1$
+	  >
+	call cheof,r4
+	bcs 1$
+	call chfini,r4
+1$:	call chcls,<r4,#0>
+	clr chcon(r0)		;no connection
+	rts pc
+
+.sbttl	--- Line Server command parser
+
+lsprse:
+	clr r4			; prepare for octal number
+	clr r3
+loop  <   pcall getc		; get a character
+	  cmpb r1,#040		; control char?
+	  rptl eq			; skip blanks
+	>
+loop  <	  mov r1,r2
+	  sub #'0,r2
+	  cmp r2,#7
+	  exitl hi
+	  inc r3
+	  ash #3,r4
+	  add r2,r4
+	  pcall getc
+	  rptl
+	>
+
+lsp1:	tst r3			; a number was entered?
+	ble lsp2		; no, go check for service name
+	cmp r1,#40		; what terminated the number?
+	bne lsplse		; should have been a space (then CONTACT)
+	clr r3
+	mov #lscbuf,r2
+	add r0,r2		; pointer to Contact name buffer
+loop  <	  pcall getc
+	  cmpb r1,#40
+	  blt lsplse
+	  rptl eq
+	>
+loop  <	  cmpb r1,#040
+	  exitl lt
+	  movb r1,(r2)+
+	  inc r3
+	  cmp r3,#50.		; arbitrary, must be less than lbufl-4
+	  exitl ge
+	  pcall getc
+	  rptl
+	>
+	clrb (r2)
+	sub r3,r2
+	cmpb r1,#dle
+	bne lsplse
+	pcall getc
+	cmpb r1,#stx
+	bne lsplse
+
+;;; open network connection.
+
+lspo:	call chopen,<r4,#1,#chchto,r2>,r4	;open connection
+				; chopen result: connection or error packet
+	if cs,<			; if error
+	  tst r4
+	  if ne,<		; if error message
+	    push r4
+	    pcall typfre
+	    >
+	  jmp lsplse		; send error and quit
+	  >
+	mov r4,chcon(r0)	; store connection
+	mov #ACK,r1		; connection opened, acknowledge
+	pcall echoc
+
+;for now, feature is just to transmit
+	jmp ls6			; see previous page after connection open
+	
+lsp2:				; service names not implemented
+
+lsplse:	mov #NAK,r1		; here when you've lost
+	pcall echoc		; send back NAK
+	jmp ls3			; continue looking for start of header
+
+.sbttl	--- Line Server utilities
+
+lpthst==lswit			; Printer machine
+lscan:	.asciz \CANON\		; Canon connect name
+	.asciz \     \		; patch space
+lsprt:	.asciz \PRINTER\	; Printer connect name
+	.asciz \     \		; patch space
+.even
+
+;;; Send a character.
+lssnd1:	mov chcon(r0),r4	;connection
+	mov pktpt(r0),r2	;R2: packet
+	if eq,<
+	  push r0
+	  mov #<120.+pkdat>/2,r3	;block size we are using
+	  kcall alcsiz			;allocate it
+	  mov r0,r2
+	  pop r0
+	  if cs,<
+	    mov #nak,r1
+	    pcall echoc			;send back NAK
+	    sec
+	    rts pc
+	   >
+	  movb #200,pkop(r2)		;set the data opcode
+	  clr pklen(r2)
+	  mov r2,pktpt(r0)		;say we have a packet to use
+	 >
+	mov r2,r3			;make ptr to data area
+	add #pkdat,r3			; by adding in the offset
+	add pklen(r2),r3
+	movb r1,(r3)+			;move the stuff in
+	inc pklen(r2)			;set the length of the data
+	cmp pklen(r2),#110.
+	bhis lssnd3
+	jsr pc,lslstn			;see if any data came in
+	clc
+	rts pc
+
+;;; Force packet out.
+lssnd2:	mov chcon(r0),r4
+	mov pktpt(r0),r2	; R2: packet
+	bne lssnd3		; if we have one ready, send it
+	clc
+	rts pc
+
+;;; Send packet.
+lssnd3:	clr pktpt(r0)
+	call chdow,<r2,r4>	; output packet
+	if cc,<			; win, connect is still open
+	  jsr pc,lslstn		; see if any data came in
+	  clc
+	  rts pc
+	  >	 
+	;; connection closed
+loop <	  call chdati,r4,r2	;try for reason for close
+	  exitl cs		;should have it here
+	  push r2
+	  kcall frepk		;still have left over data, chuck it
+	  cocall
+	  rptl			;go back and try again
+	  >
+	tst r2			;did we get a packet of some sort?
+	if ne,<			;no, just print msg and quit
+	  push r2
+	  pcall typfre
+	  >
+	mov #nak,r1
+	pcall echoc		;send back NAK
+	call chcls,<r4,#0>
+	clr chcon(r0)		;connection closed
+	sec
+	rts pc			;punt out
+
+; this is called from within LSSND1;  R4:connection
+lslstn:
+loop <	  call chdati,r4,r2	; type out received data
+	  exitl cs
+				; TYPPAK arg: R2/ packet
+	  pcall typpak		; type contents of packet
+	  push r2		; FREPK arg: pointer
+	  pcall frepk		; get rid of the packet
+	  rptl
+	  >
+	rts pc
+
+typfre:	push r2
+	mov 4(sp),r2
+	pcall typpak
+	pop r2
+	jcall frepk

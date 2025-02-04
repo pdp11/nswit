@@ -1,0 +1,48 @@
+; XSWIT machine chaos definition -*- Midas -*-
+
+pdp11===23			; LSI11/23
+
+.insrt chmacs
+;;; The Network Configuration and Definition for the CHAOS Net
+
+none===0
+newman===1
+interlan===2
+;pronet===4
+
+setf ^"Chaos interface (newman, interlan, pronet)?",whxcvr
+
+.if eq whxcvr-newman
+
+chaos===1
+nmaddr==177200
+
+inhst==5			; the host number of this machine
+innet==nmnet			; the host net number
+mxcilv==7			; maximum interrupt level of all the interfaces
+
+makcif nmnet,5,nmc
+
+.endc
+
+.if eq whxcvr-interlan
+
+chaos===1
+inhst==30			; the host number of this machine
+innet==ethnet			; the host net number
+mxcilv==7			; maximum interrupt level of all the interfaces
+
+makcif ethnet,30,eth,164000,270
+
+.endc
+
+.if eq whxcvr-pronet
+
+chaos===1
+inhst==4			; the host number of this machine
+innet==pronet			; the host net number
+mxcilv==7			; maximum interrupt level of all the interfaces
+
+makcif pronet,4,pro,175200,170
+
+.endc

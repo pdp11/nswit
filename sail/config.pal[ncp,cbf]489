@@ -1,0 +1,161 @@
+.sbttl Configuration		; -*-palx-*-
+
+setf ^"Configuration (1=Printer Server, 2=Simulator, 3=new machine)?",choice
+
+.ifz choice-2           ; Simulator
+ilct:
+; device  device flags  device   interrupt   unit   parameter
+;  type		       address    vector    number    word
+   dl,    %in+%ou+%us   177560,     60,        0,       0
+   0
+itct:
+;  Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q
+;   PC        PC     Link    Link    Size    Size    Size   Size
+   c1in,    c1out,   1,      1,	     40,     40,     40,    40
+   0
+ .endc
+
+.ifz choice-1	 	; Testbed
+ilct:
+; device  device flags  device  interrupt   unit  parameter
+;  type		       address   vector    number   word
+   dl,    %in+%ou,     177560,     60,      0,       0      ; 1
+   dzv,	  %in+%ou+%us, 170220,    420,	    0,	     17030  ; 2
+   dzv,   %in+%ou+%us, 170220,    420,	    1,	     17031  ; 3
+   dzv,	  %in+%ou,     170220,    420,	    2,	     17032  ; 4
+   dzv,	  %in+%ou,     170220,    420,	    3,	     17033  ; 5
+   chaos, %in+%ou,     0,	  0,	    0,	     0	    ; 6
+   chaos, %in+%ou,     0,	  0,	    1,	     0	    ; 7
+   0
+itct:
+;  Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q
+;   PC        PC     Link    Link    Size    Size    Size   Size
+  ttyin,   ttyout,   1,	     1,	     40,     40,     40,    40	; 1
+   c1in,    c1out,   2,      3,      40,     40,     40,    40  ; 2
+ sailin,   sailou,   3,	     2,     400,     40,     40,    40  ; 3
+ la120i,   la120o,   4,	     5,	     40,     40,     40,    40	; 4
+ normin,   normou,   5,	     4,      40,     40,     40,    40  ; 5
+ chgetd,   normou,   6,      4,      40,     40,     40,    40  ; 6
+ chsrvr,   normou,   4,	     6,	     40,     40,     40,    40	; 7
+   0
+.endc
+
+.ifz choice-3
+ilct:
+; device  device flags  device  interrupt   unit  parameter
+;  type		       address   vector    number   word
+   dl,    %in+%ou,     177560,     60,      0,       0      ; 1
+   dl,	  %in+%ou,     176500,	  300,	    0,	     0	    ; 2
+   dl,	  %in+%ou,     176510,	  310,	    0,	     0	    ; 3
+   chaos, %in+%ou,     0,	  0,	    0,	     0	    ; 4
+   chaos, %in+%ou,     0,	  0,	    1,	     0	    ; 5
+   0
+itct:
+;  Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q
+;   PC        PC     Link    Link    Size    Size    Size   Size
+  ttyin,   ttyout,   1,	     1,	     40,     40,     40,    40	; 1
+ la120i,   la120o,   4,	     5,	     40,     40,     40,    40	; 2
+   c1in,    c1out,   2,      3,      40,     40,     40,    40  ; 2
+ chgetd,   normou,   6,      4,      40,     40,     40,    40  ; 6
+ chsrvr,   normou,   4,	     6,	     40,     40,     40,    40	; 7
+ 0
+.endc
+
+.sbttl VTP Chaos Routing table
+
+.if ne asmchs
+
+	.insrt	macs
+
+.if eq <choice-1>*<choice-3>
+
+;;; The Network Configuration and Definition for the LPT server machine
+
+setf ^"Newman interface (Yes), or TTY? (No)",asmnmn
+
+.if ne asmnmn			; Newman interface
+
+inhst == 0			;the host number of this machine
+innet == 21			;the host net number
+mxcilv == 7			;maximum interrupt level of all the interfaces
+nmaddr == 177200		; new Newman addr
+twinfg == 1			; two windows
+
+;;; Describe the Chaos net interfaces connected to this machine
+
+	makcif 21,0,nmc
+
+;;; Define the routine table for this machine
+
+	route <21,4		;Net 1 9th floor Tech Square
+	,21,4			;Subnet 2 AI 9th floor eathernet
+	,21,4			;Subnet 3 MC IO 11 Pseudo net
+	,21,4			;Subnet 4 AI CHAOS 11 pseudo net
+	,21,4			;Subnet 5 XX Network 11 pseudo net
+	,21,4			;Subnet 6 unassigned
+	,21,4			;Subnet 7 unassigned
+	,21,4 			;Subnet 10 LCSnet
+	,21,4			;Subnet 11 Arpanet pseudo net
+	,0,0			;Subnet 12 (does not exist)
+	,0,0			;Subnet 13    "
+	,0,0			;Subnet 14    "
+	,0,0			;Subnet 15    "
+	,0,0			;Subnet 16    "
+	,0,0			;Subnet 17    "
+	,21,4			;Subnet 20 Arpa-11 Imp-11 TTY net
+	,0,1			;Subnet 21 NM-crock net (our interface)
+	,0,0			;Subnet 22 Arpa-11 Chaos-11 TTY net
+	,21,4			;Subnet 23 Arpa-11 Dev-6 TTY net
+	,21,4			;Subnet 24 Arpa-11 to Device-7 TTY test net
+	,21,4>			;Subnet 25 Arpa-11 to Dev-6 slower speed
+
+;;; Define what files contain the code to support the various types
+;;; of interfaces
+
+	rcvxmt <nmcvr>
+
+.iff				; else use TTY interface
+
+inhst == 2			;the host number of this machine
+innet == 22			;the host net number
+mxcilv == 7			;maximum interrupt level of all the interfaces
+
+;;; Describe the Chaos net interfaces connected to this machine
+
+	makcif 22,2,tty,176620,260
+
+;;; Define the routine table for this machine
+
+	route <22,1		;Net 1 9th floor Tech Square
+	,22,1			;Subnet 2 AI 9th floor eathernet
+	,22,1			;Subnet 3 MC IO 11 Pseudo net
+	,22,1			;Subnet 4 AI CHAOS 11 pseudo net
+	,22,1			;Subnet 5 XX Network 11 pseudo net
+	,22,1			;Subnet 6 unassigned
+	,22,1			;Subnet 7 unassigned
+	,22,1 			;Subnet 10 LCSnet
+	,22,1			;Subnet 11 Arpanet pseudo net
+	,0,0			;Subnet 12 (does not exist)
+	,0,0			;Subnet 13    "
+	,0,0			;Subnet 14    "
+	,0,0			;Subnet 15    "
+	,0,0			;Subnet 16    "
+	,0,0			;Subnet 17    "
+	,22,1			;Subnet 20 Arpa-11 Imp-11 TTY net
+	,22,1			;Subnet 21 NM-crock net (our interface)
+	,0,1			;Subnet 22 Arpa-11 Chaos-11 TTY net
+	,21,4			;Subnet 23 Arpa-11 Dev-6 TTY net
+	,21,4			;Subnet 24 Arpa-11 to Device-7 TTY test net
+	,21,4>			;Subnet 25 Arpa-11 to Dev-6 slower speed
+
+;;; Define what files contain the code to support the various types
+;;; of interfaces
+
+	rcvxmt <trncvr>
+.endc				; Newman conditional
+
+.endc				; choice-3 conditional
+
+.endc				; asmchs
+
+

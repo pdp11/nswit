@@ -1,0 +1,17 @@
+.macro foo bar,bar2
+.irpc char,bar
+  .if idn char,`
+    .ascii bar`
+    bar2
+    .endc
+  .mexit
+  .endr
+.endm
+
+foo 23
+foo `abcd,111
+foo `ABCD,222
+symb = 444
+foo symb,333
+.end
+

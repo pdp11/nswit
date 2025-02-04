@@ -1,0 +1,67 @@
+	PALX MID	04/08/81  14:17:37	Page 1
+	TEST PAL[SW,CBF]	Page 1 	
+
+		001000				.=1000
+						.insrt defs
+	PALX MID	04/08/81  14:17:37	Page 2
+	DEFS PAL[SW,CBF]	Page 1 	
+
+					; DEFS - Definitions and configuration data   -*-PALX-*-
+					
+	PALX MID	04/08/81  14:17:37	Page 3
+	TEST PAL[SW,CBF]	Page 1.1 	Literal macros
+
+					
+					.macro key name,value
+						.string ^name
+						.word value
+					.endm
+					
+						key ^"a",20
+						.string ^a
+	001002	000020				.word 20
+						key ^"foobar",300
+						.string ^foobar
+	001006	000300				.word 300
+					
+	001010	000121				%year
+	001012	000010				%day
+						.decim %year
+					.iif ne  %year/10., .decim %year/10.
+		000000			.iif ne  %year/10./10., .decim %year/10./10.
+	001014	   070				.byte %year/10.-<%year/10./10.*10.>+'0
+	001015	   061				.byte %year-<%year/10.*10.>+'0
+	001016	   040		
+	001017	   000		
+						.asciz " "
+	001020	000001				.word 1
+					
+						constants
+		000001				.end
+	PALX MID	04/08/81  14:17:37	Page 4
+	TEST PAL[SW,CBF]	Page 1 	***Symbol Table***      
+
+	CLKADR	160770H	
+	CONFIG	000001H	
+	PC	000007R	
+	PR0	000000H	
+	PR1	000040H	
+	PR2	000100H	
+	PR3	000140H	
+	PR4	000200H	
+	PR5	000240H	
+	PR6	000300H	
+	PR7	000340H	
+	R0	000000R	
+	R1	000001R	
+	R2	000002R	
+	R3	000003R	
+	R4	000004R	
+	R5	000005R	
+	SP	000006R	
+	TKB	177562H	
+	TKS	177560H	
+	TPB	177566H	
+	TPS	177564H	
+
+1 Seconds Runtime

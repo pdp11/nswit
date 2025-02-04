@@ -1,0 +1,517 @@
+; -*-MIDAS-*-
+.title	Auto dialer telnet
+
+.sbttl	Definitions
+
+.insrt defns
+.insrt rt11mc
+
+; Terminal
+tkv==60
+tks==177560
+tkb==177562
+tps==177564
+tpb==177566
+
+; Dialout line DL11E
+dlv==340
+dlrs==175610
+dlrb==175612
+dlxs==175614
+dlxb==175616
+
+; Autodialer
+adrs==176560
+adrb==176562
+adxs==176564
+adxb==176566
+
+.macro	call name
+	jsr pc,name
+.endm
+.macro	return
+	rts pc
+.endm
+
+; ASCIZ is like .STRING, but leaves an absolute pointer instead of a relative
+; one.
+.macro	asciz string
+.string ^string,%%temp
+	.word %%temp
+.endm
+
+.macro	saycr string
+.string ^string,%%temp
+	.prtx #%%temp
+.endm
+
+.=1000
+	jmp go			; for CBF
+.=1300				; start after Newman vectors
+
+start::	go::
+dial:	mov #1000,sp		; initialize stack
+	mov #300,r0		; init communication line vectors to trap
+loop < 	  mov r0,(r0)		; ...
+	  add #2,(r0)+		; ...
+	  mov #3,(r0)+		; ...
+	  cmp r0,#600		; ...
+	  rptl lo		; ...
+	  >
+	mov #dlv,r0		; R0: modem DL11 interrupt vectors
+	mov #dlrint,(r0)+	; set up
+	mov #pr4,(r0)+		; ...
+	mov #dlxint,(r0)+	; ...
+	mov #pr4,(r0)+		; ...
+	bit #2,@#dlrs		; connected?
+	if ne,<			; yes, say so
+	  saycr ^"[Already connected]"
+	  br 1$
+	  >
+
+	;; loop, switching from command processor to connection as
+	;; appropriate
+loop <				; back here when no connection
+	  spl 0			; low priority for RT11 operation
+  loop <    call cmd		; read and execute a command
+	    bit #2,@#dlrs	; connected?
+	    rptl eq		; no, stay in command processor
+	    >
+1$:	  ;; wait for printer interrupt enable to turn off, indicating RT11
+	  ;; has finished i/o.
+  loop <    bit #100,@#tps
+	    rptl ne
+	    >
+	  spl 4			; lock out terminal interrupts
+	  mov #tkv,r0		; R0: pointer to console interrupt vectors
+	  mov #save60,r1	; R1: pointer to save area
+	  mov (r0)+,(r1)+	; save RT11's console interrupt vector values
+	  mov (r0)+,(r1)+	; ...
+	  mov (r0)+,(r1)+	; ...
+	  mov (r0)+,(r1)+	; ...
+	  mov #tkv,r0		; R0: pointer to console interrupt vectors
+	  mov #kbdint,(r0)+	; set up our interrupt vector values
+	  mov #pr4,(r0)+	; ...
+	  mov #outint,(r0)+	; ...
+	  mov #pr4,(r0)+	; ...
+	  bis #100,@#tks	; enable keyboard interrupts (probably
+				; already on)
+	  tst @#dlrb		; forget garbage waiting to interrupt as soon
+				; as we set enable
+	  bis #140,@#dlrs	; enable DL11 receiver interrupts, data set
+				; interrupts
+	  clr cmdreq		; command character not typed
+	  ;; loop, waiting for interrupts and then checking whether to go to
+	  ;; command loop
+  loop <    clr -(sp)		; PS on stack for RTT to WAIT to lower
+				; priority and wait without intervening
+				; interrupt
+	    jsr pc,2$		; PC on stack for above
+	    wait		; wait for interrupt
+	    spl 4		; lock out terminal interrupts
+	    tst cmdreq		; command character typed?
+	    rptl eq		; no, wait some more
+	    >
+
+	  bic #140,@#dlrs	; disable DL11 receiver interrupts
+				; (but leave keyboard interrupts on for RT11)
+	  mov #tkv,r0		; R0: pointer to console interrupt vectors
+	  mov #save60,r1	; R1: pointer to RT11's saved values
+	  mov (r1)+,(r0)+	; restore RT11's console interrupt vector
+	  mov (r1)+,(r0)+	; ...
+	  mov (r1)+,(r0)+	; ...
+	  mov (r1)+,(r0)+	; ...
+	  rptl			; enter command loop
+	  >
+
+2$:	rtt			; RTT for priority lowering hack
+
+save60:	.blkw 4			; save area for RT11's interrupt vector values
+
+.sbttl	Command line reading/parsing
+
+cmd:	bis #40000,@#44		; bothcase input
+	.gtlin #cmdbuf,#prompt	; get command line
+	mov #cmdbuf,r1		; R1: pointer to command line
+	;; provide some way to send command character
+	cmpb (r1),cmdchr	; command character?
+	if eq,<			; yes
+	  movb (r1),@#dlxb	; send it
+	  return
+	  >
+	;; skip leading spaces on line
+loop <	  movb (r1)+,r0		; get next character of command line
+	  beq 1$		; if end of line, this is null command
+	  cmpb r0,#40		; space?
+	  rptl eq		; yes, skip it
+	  >
+	;; get command name
+	clr r2			; R2: number of characters in command name
+loop <	  inc r2		; count character as part of command name
+	  movb (r1)+,r0		; get next character of command name
+	  exitl eq		; NUL terminates command line and thus name
+	  cmpb r0,#40		; space?
+	  rptl ne		; no, keep reading command name
+	  >
+	mov r1,cmdp		; save pointer to next character of command
+	;; find name in table, and dispatch to routine
+	mov #cmdlst,r5		; R5: pointer to command name table
+loop <	  mov (r5)+,r0		; R0: length of next name in table
+	  if eq,<		; zero terminates table
+	    saycr ^"Unrecognized command name"
+1$:	    return
+	    >
+	  mov (r5)+,r3		; R3: pointer to next name in table
+	  mov (r5)+,r4		; R4: pointer to command routine
+	  cmp r0,r2		; same lengths?
+	  rptl ne		; no, try next name
+	  mov #cmdbuf,r1	; R1: pointer to typed command name
+2$:	    cmpb (r1)+,(r3)+	; compare character of names
+	    rptl ne		; if unequal, try next name in table
+	    sob r0,2$		; do whole name
+	  >
+	jmp (r4)		; match, call routine and return
+
+cmdp:	.blkw 1			; pointer into command line
+cmdbuf:	.blkb 81.		; command line buffer
+prompt:	.ascii "Command: "
+	.byte 200		; crufty RT11 will CRLF if terminated by 0
+	.even
+
+.macro	cmddef name,proc
+	.string ^name,%%name
+	.word <.length ^name,>,%%name,proc
+.endm
+
+cmdlst:	cmddef ^"?",listc
+cmdls1:	cmddef ^"dial",dial
+	cmddef ^"dialm",dialm
+	cmddef ^"dialw",dialw
+	cmddef ^"connect",dial	; for CBF
+	cmddef ^"hangup",hangup
+	cmddef ^"break",break
+	cmddef ^"quit",quit
+	cmddef ^"bpt",bptcmd
+	.word 0			; table terminator
+
+.sbttl	Commands
+
+listc:	saycr ^"Commands are:"
+	mov #cmdlst,r5		; R5: table of commands skipping ?
+loop <	  mov (r5)+,r2		; R2: length of name
+	  exitl eq		; zero terminates table
+	  mov (r5)+,r1		; R1: pointer to name
+	  tst (r5)+		; procedure
+  loop <    movb (r1)+,r0	; output name
+	    .ttyout r0		; ...
+	    sorl r2		; ...
+	    >
+	  .ttyout #15		; output CRLF
+	  .ttyout #12		; ...
+	  rptl			; next name
+	  >
+	return
+
+hangup:	bit #2,@#dlrs		; connected?
+	if eq,<			; no
+	  saycr ^"Not connected"
+	  return
+	  >
+	clr @#dlrs		; clear interrupt enables and data terminal
+				; ready, thus hanging up phone
+	return
+
+quit:	bit #2,@#dlrs		; connected?
+	if ne,<			; yes, remind user
+	  saycr ^"[Still connected]"
+	  >
+	mov #1,r0		; don't reset us
+	.exit
+	return			; in case there's ever a CONTINUE
+
+bptcmd:	bpt			; to RUG
+	return
+
+break:
+loop <	  tstb @#dlxs		; wait for transmiter ready
+	  rptl pl		; ...
+	  >
+	bis #1,@#dlxs		; put line into break state
+	;; maintain line break for 8 character times
+	mov #8.,r0		; R0: count
+loop <	  clrb @#dlxb		; count one character time by sending NUL
+  loop <    tstb @#dlxs		; and waiting for ready
+	    rptl pl		; ...
+	    >
+	  sorl r0
+	  >
+	bic #1,@#dlxs		; clear break
+	return
+
+dialw:	;; wait a while, then DIALM
+	mov #10.,r1		; roughly 10 seconds
+	clr r0
+loop <
+  loop <    sorl r0
+	    >
+	  sorl r1
+	  >
+	saycr ^"Dialing..."
+	;; fall through to DIALM
+
+dialm:	;; dial line connected to arbitrary modem, don't hack i/o (don't know
+	;; what interface address is, or even if it's on this machine).
+	movb @cmdp,modem	; get modem number in chassis from command line
+	inc cmdp		; ...
+	call dial1		; now dial phone
+	br quit			; then exit program
+
+
+dial:	bit #2,@#dlrs		; connected?
+	if ne,<			; yes
+	  saycr ^"Already connected"
+	  return
+	  >
+	movb #'0,modem		; use modem number 0, which is connected to
+				; DL11E that we do i/o to
+	mov #6,@#dlrs		; set request to send and data terminal ready.
+				; don't set interrupt enable to prevent
+				; garbage generated during call from being
+				; typed out
+dial1:	clr connp		; call not yet complete
+	tstb @#adrb		; clear receiver buffer if anything there
+	mov #1,r0		; SOH (^A) to abort (i.e. reset)
+	call adout		; ...
+	call adwait		; wait for reply
+	movb @#adrb,r0		; get reply
+	bic #177400,r0		; clear parity
+	cmpb r0,#'B		; B?
+	if ne,<			; no
+	  saycr ^"Unexpected reply to initialization"
+	  return
+	  >
+	mov #100000,r0		; about half a second
+loop <	  sorl r0		; seems to be needed after a reset
+	  >
+	mov #2,r0		; STX (^B) starts request
+	call adout		; ...
+	mov #'4,r0		; 103-type modem, chassis 0
+	call adout		; ...
+	movb modem,r0		; modem number in chassis
+	call adout		; ...
+	mov cmdp,r1		; R1: pointer to rest of command line
+	cmpb (r1),#'0		; if first character is not a digit
+	blo 1$
+	cmpb (r1),#'9
+	if hi,<
+1$:	  call x411		; then convert rest of command line from
+				; string to phone number
+	  >
+	
+	;; send rest of command line to autodialer.  In the phone number, "="
+	;; waits for another dial tone, and ">" passes control to the modem
+	;; before the call completes.
+loop <	  movb (r1)+,r0		; R0: next character from command line
+	  exitl eq		; NUL terminates line
+	  call adout		; output to autodialer
+	  rptl
+	  >
+	mov #17,r0		; SI (^O) completes phone number
+	call adout		; ...
+	mov #3,r0		; ETX (^C) dials it
+	call adout		; ...
+	tst connp		; if nothing from autodialer yet
+	if eq,<
+	  call adwait		; then wait for something
+	  call adrepl		; decode reply
+	  >
+	return
+
+adout:	tstb @#adrs		; received error indication?
+	bmi adrepl		; yes, process it
+	tstb @#adxs		; wait for transmitter ready
+	bpl adout		; ...
+	movb r0,@#adxb		; send character
+ret:	return
+
+adwait:	mov #30.,r1
+	clr r0
+loop <
+  loop <    tstb @#adrs
+	    bmi ret
+	    sorl r0
+	    >
+	  sorl r1
+	  >
+	saycr ^"Timeout"
+	br abort1
+
+adrepl:	movb @#adrb,r0
+	bic #177600,r0		; clear parity
+	sub #'A,r0		; reduce to 0-6
+	if eq,<			; A - call complete
+	  saycr ^"Call complete"
+	  mov #1,connp		; indicate call complete
+	  return		; return to DIAL
+	  >
+	cmp r0,#'G-'A		; outside range of B-G?
+	if hi,<			; yes
+	  .prtx errunk		; print error message
+	  >
+	else <
+	  asl r0		; *2 for word indexing
+	  .prtx errmsg-2(r0)	; print error message
+	  >
+	; fall through to ABORT
+
+abort:
+loop <	  tstb @#adxs		; wait for ready on line to autodialer
+	  rptl pl		; ...
+	  >
+	movb #1,@#adxb		; send abort
+loop <	  tstb @#adrs		; wait for reply
+	  rptl pl		; ...
+	  >
+	tstb @#adrb		; read and ignore it
+abort1:	tst (sp)+		; throw away return address into DIAL
+	clr @#dlrs		; turn off interrupt enable and data terminal
+				; ready
+	return			; return from DIAL
+
+
+errmsg:	asciz ^"Abandon call/retry"			; B
+errunk:	asciz ^"Unknown autodialer response"		; C
+	asciz ^"Format error"				; D
+	asciz ^"Parity error"				; E
+	asciz ^"RAM overflow"				; F
+	asciz ^"DLO (Modem, PBX, or Remote Busy)"	; G
+
+modem:	.blkw 1
+
+x411:	;; get length of name
+	mov #-1,r2		; R2: number of characters in command name
+loop <	  inc r2		; count character as part of command name
+	  movb (r1)+,r0		; get next character of command name
+	  rptl ne		; NUL terminates command line and thus name
+	  >
+	;; find name in table and substitute phone number
+	mov #tnolst,r5		; R5: pointer to name to phone number table
+loop <	  mov (r5)+,r0		; R0: length of next name in table
+	  if eq,<		; zero terminates table
+	    saycr ^"Name not in my directory"
+	    tst (sp)+		; remove DIAL's return PC
+	    return
+	    >
+	  mov (r5)+,r3		; R3: pointer to next name in table
+	  mov (r5)+,r4		; R4: pointer to phone number
+	  cmp r0,r2		; names same length?
+	  rptl ne		; no, try next name
+	  mov cmdp,r1		; R1: pointer to typed name
+2$:	    cmpb (r1)+,(r3)+	; compare character of names
+	    rptl ne		; if unequal, try next name in table
+	    sob r0,2$		; do whole name
+	  >
+	mov r4,r1		; return pointer to phone number
+	return
+
+
+.macro	telno name,no
+	.word <.length ^name,>
+	asciz ^name
+	asciz ^no
+.endm
+
+tnolst:	telno ^"mc",^"8=8356985"
+	telno ^"multics",^"8=6172588313"
+	telno ^"mit-tip",^"8=6172588604"	; ?
+	telno ^"pentagon",^"8=6972679"
+	telno ^"sai",^"8=6174913869"
+	telno ^"mitre",^"8=7038277285"
+	.word 0
+
+.sbttl	Interrupts
+
+; For now these routines do no buffering.
+
+kbdint:	push r0,r1		; save registers
+	movb @#tkb,r0		; R0: character typed
+	mov r0,r1		; R1: character typed without parity
+	bic #177600,r1		; ...
+	cmpb r1,cmdchr		; command character?
+	if eq,<			; yes
+	  mov #1,cmdreq		; request command processor invokation
+	  >
+	else <			; not command character
+	  movb r0,@#dlxb	; output to line
+	  >
+	pop r1,r0		; restore registers
+	rti			; return
+
+outint:	bic #100,@#tps		; disable interrupt
+	rti			; and ignore for now
+
+dlrint:	push r0			; save register
+	mov @#dlrs,r0		; R0: receiver status register
+	if pl,<			; not data set change interrupt
+	  movb @#dlrb,@#tpb	; copy character from line to terminal
+	  pop r0		; restore register
+	  rti
+	  >
+	call newcsr		; print change in data set status
+	pop r0			; restore register
+	rti
+
+dlxint:	bic #100,@#dlxs		; disable interrupt
+	rti			; and ignore for now
+
+.macro	print string
+	jsr r5,types
+	  asciz ^string
+.endm
+
+newcsr:	push r1
+	bit #40000,r0
+	if ne,<
+	  print ^"RNG "
+	  bic #40000,r0
+	  >
+	mov oldcsr,r1
+	mov r0,oldcsr
+	xor r0,r1
+	;; cbf didn't connect enough wires it so I won't continue
+	pop r1
+	return
+
+
+types:	push r0,r1
+	mov (r5)+,r1
+loop <	  movb (r1)+,r0
+	  exitl eq
+	  call typec
+	  rptl
+	  >
+	pop r1,r0
+	rts r5
+
+typec:
+loop <	  tstb @#tps
+	  rptl pl
+	  >
+	movb r0,@#tpb
+	return
+
+oldcsr:	.blkw 1
+
+.sbttl	End
+
+constants
+
+connp:	.blkw 1			; connected flag
+cmdreq:	.blkw 1			; set when command character typed
+cmdchr:	.byte 36		; command character - ^^
+	.even
+
+patch:				; patch area starts here
+
+.end dial
+

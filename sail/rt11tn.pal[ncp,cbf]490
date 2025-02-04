@@ -1,0 +1,2600 @@
+;;; -*-midas-*-
+.title Arpa User Telnet
+.sbttl Options and Preliminaries
+
+versio==%fnam2			; get version number
+
+.insrt dcls
+.insrt defns
+
+md===22
+setf ^"What Machine is this assembly for (7 = Dev-7, 6 = Dev-6, MD = Dev-22,
+      11 or 41 = standalone telnet machines)? ",devnum
+.if ne devnum-41
+.if ne devnum-22
+.if ne devnum-11
+.if ne devnum-7
+.if ne devnum-6
+.error	Improper Device Number, Device No. 7 Assumed
+devnum==7
+.endc
+.endc
+.endc
+.endc
+.endc
+
+setf ^"Debugging Assembly? ",debug
+
+asmrt1===1			;presume we're running under RT111
+asmsj===1			;presume SJ monitor
+.iif eq devnum-11,asmrt1===0	;unless we are device 11
+.iif eq devnum-41,asmrt1===0	;or device 41
+
+.if eq devnum-7
+	.insrt dv7mdf
+	sj===1
+	fb===0
+	setf ^"Is Device 7 running an SJ monitor?",asmsj
+.endc
+.if eq devnum-6
+	.insrt dv6mdf
+	setf ^"Version 2 assembly?",asmv2
+	.iif ne asmv2,rt11vn===2	;this assembly is for RT-11 version 2
+.endc
+.if eq devnum-md
+	.insrt mddef
+.endc
+
+.if eq asmrt1
+.=100				; set clock vector so don't lose on G
+	.word clkint,pr6+1	; (set again at initialization)
+.endc
+
+.=1300				; start after Newman interrupt vectors
+
+.if eq devnum-11
+	.insrt dvtmdf
+.endc
+.if eq devnum-41
+	.insrt d41mdf
+.endc
+
+.if ne asmrt1
+	.insrt rt11m
+.endc
+
+dsthst==21_8+4			;send to arpa-11
+
+.insrt ncptc
+.insrt cncp
+.insrt allint
+.insrt nutils
+
+
+.macro	print string
+	jsr pc,types
+	.string ^~string~ 
+.endm
+
+;	.block buf,bf
+dsect <
+bf.sze:: .blkw 1
+bf.bgn:: .blkw 1
+bf.end:: .blkw 1
+bf.put:: .blkw 1
+bf.npt:: .blkw 1
+bf.get:: .blkw 1
+bf.rng:: .blkw 0
+	>,buf.ln
+
+	deftcb <kbdtsk,outtsk,intsk>
+
+clock:	.blkw 2
+clkint:	inc clock+0
+	if eq,<
+	  inc clock+2
+	  >
+.if eq asmrt1
+	rti
+.iff
+	mtps @#106		;with RT'11s PS
+	jmp @104		;go to the addr of the RT-11 clock interrupt
+.endc
+
+start::	go::
+telnet:	spl 7			;No interruptions now
+	mov #1000,sp
+
+.if ne asmrt1
+	mov #300,r0		;do not interfere with RT-11
+.iff
+	mov #2,@#0
+	mov #3,@#2
+	mov #24,r0		;leave the rest for RUG
+.endc
+loop <	  mov r0,(r0)
+	  add #2,(r0)+
+	  mov #3,(r0)+		;BPT on spurious interrupt
+	  cmp r0,#500
+	  rptl lo
+	  >
+
+	mov #1200,r0		;Ignore spurious Newman interrupts
+loop <	  mov r0,(r0)
+	  add #2,(r0)+
+	  mov #2,(r0)+
+	  cmp r0,#1300
+	  rptl lo
+	  >
+
+	initcb
+
+.if ne asmrt1
+; set up save list for rt-11
+	tst havset
+	if eq,<			;if we haven't done this already
+	  save <60,70>,<tks,tkb>,<tps,tpb>,<100,104>
+	>
+.endc
+
+	clr clock+0
+	clr clock+2
+	tst havset		;have we set up the hack for RT-11 yet?
+	if eq,<			;we haven't
+	  mov @#100,@#104
+	  mov @#102,@#106
+	  >
+	mov #clkint,@#100
+	mov #341,@#102		; priority 7 + carry bit for ADC hack
+.if eq <devnum-7>*<devnum-11>*<devnum-41>	;machines on the newman
+	bis #1,@#nm.enb
+	call nmfrap
+.endc
+	mov chheap,r1
+	mov #hpsize,r0
+	jsr pc,makear
+	clr conect
+	call chinit
+
+.if ne asmrt1
+	tst havset		;have we setup yet
+	if eq,<
+	  savlst		;issue RT-11 save
+	  inc havset		;set it to one
+	  >
+.endc
+	mov #kbdint,@#60
+	mov #340,@#62
+	mov #outint,@#64
+	mov #340,@#66
+	mov #100,@#tks
+	clr @#tps
+
+;;; setup the input and output ring buffer
+
+	mov #inbuf+bf.rng,inbuf+bf.put
+	mov #inbuf+bf.rng+1,inbuf+bf.npt
+	mov #inbuf+bf.rng,inbuf+bf.get
+	mov #inbuf+bf.rng,inbuf+bf.bgn
+	mov #inbuf+bf.rng+pbufsz,inbuf+bf.end
+	mov #pbufsz,inbuf+bf.sze
+
+	mov #rubbuf+bf.rng,rubbuf+bf.put
+	mov #rubbuf+bf.rng+1,rubbuf+bf.npt
+	mov #rubbuf+bf.rng,rubbuf+bf.get
+	mov #rubbuf+bf.rng,rubbuf+bf.bgn
+	mov #rubbuf+bf.rng+rbufsz,rubbuf+bf.end
+	mov #rbufsz,rubbuf+bf.sze
+
+	mov #ttyibf+bf.rng,ttyibf+bf.put
+	mov #ttyibf+bf.rng+1,ttyibf+bf.npt
+	mov #ttyibf+bf.rng,ttyibf+bf.get
+	mov #ttyibf+bf.rng,ttyibf+bf.bgn
+	mov #ttyibf+bf.rng+pbufsz,ttyibf+bf.end
+	mov #pbufsz,ttyibf+bf.sze
+
+	mov #ttyobf+bf.rng,ttyobf+bf.put
+	mov #ttyobf+bf.rng+1,ttyobf+bf.npt
+	mov #ttyobf+bf.rng,ttyobf+bf.get
+	mov #ttyobf+bf.rng,ttyobf+bf.bgn
+	mov #ttyobf+bf.rng+pbufsz,ttyobf+bf.end
+	mov #pbufsz,ttyobf+bf.sze
+	clr lctrl		;turn off ^S/^Q mode initially
+	movb #36,comchr		;init escape character to ^^
+	movb #-1,echof		;echoing on
+	movb #-1,lecho		;initally we do local echo, however we endevour
+				;to turn it off immediatly
+	mov #-1,parity		;do not initially mask off the 8th bit
+	clrb negopr
+	clr hldout
+	clr cp60th		; no speed limitation
+
+;;; Line editor initialization
+
+	clr ed.cur
+	mov #-1,r0
+	mov #ed.prv,r1
+loop	< mov r0,(r1)+
+	  cmp r1,#ed.lst
+	  rptl lo
+	  >
+	clr ed.stk
+	clr ed.lst
+	mov ed.cur,edcurp
+	mov ed.cur,edoldp
+ 	mov ed.cur,edceol
+	clr edrept
+	clr edcurs
+	clr edmaxc
+
+	spl 0
+
+.lif eq  devnum-7
+	call chlsn,<#timest,#timtsk>,<r0,r0>
+
+	jmp manlop
+
+.if eq  devnum-7
+timest:	.asciz "TIME"
+	.even
+
+timeda:	.blkw 2
+
+clkadr==160770			; address of calendar clock card
+
+timtsk:	push r0,r1		; save RFC and connection
+	sub #6,sp		; room on stack for time from clock card
+	;; read time without timing screw
+loop <	  mov @#clkadr+0,(sp)
+	  mov @#clkadr+2,2(sp)
+	  mov @#clkadr+4,4(sp)
+	  cmp (sp),@#clkadr+0
+	  rptl ne
+	  cmp 2(sp),@#clkadr+2
+	  rptl ne
+	  cmp 4(sp),@#clkadr+4
+	  rptl ne
+	  >
+	;; convert time to seconds since January 1, 1900.  since the clock
+	;; card doesn't store the year, 1981 is built into the following
+	;; code!
+	mov #124600,timeda+0	; 1981 in seconds since 1900
+	mov #114133,timeda+2	; ...
+	add 4(sp),timeda+0	; add in seconds
+	adc timeda+0		; ...
+	movb 1(sp),r1		; month
+	asl r1			; *2 for word indexing
+	mov tindmt-2(r1),r1	; convert month to number of days since Jan 1
+.if eq  81.&3			; if leap year
+	cmpb 1(sp),#3		; and March or later
+	if his,<		; then
+	  inc r1		; increment day number to account for Feb 29
+	  >
+.endc
+	movb (sp),r0		; day of month
+	dec r0			; 1-based to 0-based
+	add r0,r1		; add to day in year
+	mul #24.,r1		; convert to hours
+	movb 3(sp),r0		; hours
+	add r1,r0		; add to hour in year
+	mul #60.*60.,r0		; convert hours to seconds
+	add r1,timeda+0		; add to time
+	adc timeda+2		; ...
+	add r0,timeda+2		; ...
+	movb 2(sp),r1		; minutes
+	mul #60.,r1		; convert to seconds
+	add r1,timeda+0		; add to time
+	adc timeda+2		; ...
+	;; 7 hours for PDT, 8 hours for PST.
+	add #7.*60.*60.,timeda+0	; convert to GMT
+	adc timeda+2			; ...
+	add #6,sp		; remove time from stack
+	pop r1,r0		; restore connection and RFC
+	call chans,<r0,r1,#timeda,#4>	; send ANS with 4 bytes of time
+	kcall logout		; and kill this process
+
+; Table of days preceeding current month in current year.
+tindmt:	.word 0.,31.,59.,90.,120.,151.,181.,212.,243.,273.,304.,334.
+
+.endc
+
+.sbttl Network input to terminal output
+
+outtsk:	proc 0,0,<>,<pakptr,datptr,datend>
+	mov sp,outcat		; save SP for throw
+
+tnbeg:	mov outcat,sp		; in case JMP here to abort
+
+	;; wait for an open connection.
+loop <	  cocall
+	  mov conect,r1		; connection exist?
+	  rptl eq		; no, keep waiting
+	  cmpb cnstat(r1),#%csopn	;connection open?
+	  rptl ne			;no, keep waiting
+	  >
+
+	clr pakptr(fp)		;initialize
+
+	kcall alc16		;get a 16 word packet for initial IAC
+	mov #istrng,r3		;get pointer to initial IAC string
+	mov r0,r4		;point to data area
+	add #pkdat,r4
+	clr pklen(r0)		;clear out the length
+	movb #200,pkop(r0)	;set the packet opcode
+
+loop <	  movb (r3)+,(r4)+	;move byte into packet
+	  exitl eq		;if zero then exit
+	  inc pklen(r0)		;bump up length
+	  rptl
+	  >
+	kcall outpak		;output the packet
+	bisb #1,uoptst+sga	;indicate we've requested SGA
+	bisb #1,soptst+sga	;in both directions
+	bisb #1,soptst+echo	;and remote echo
+	tstb negopr
+	if ne,<
+	  print ^"sent WILL 3 sent DO 3 sent DO 1 "
+	  >
+
+loop <	kcall readch		;read a char from the net (char in R2)
+	cmp r2,#iac		;is this an IAC?
+	if ne,<			;treat as a normal char
+1$:	tstb dtmc		; if outstanding DO TMs, then throw away
+	rptl gt			; output
+  loop <    tst hldout		; wait until output is no longer held
+	    exitl eq		; ...
+	    cocall		; ...
+	    rptl		; ...
+	    >
+	  call ttyout,r2	; output character
+	  rptl
+	  >
+	kcall readch		; get command byte
+	mov r2,r3		; save
+	cmp r3,#iac		; is it an IAC?
+	beq 1$			; yes, output IAC
+	cmp r3,#will		; WILL, WONT, DO, DONT?
+	rptl lt			; no, ignore anything else (NOP, SGA, IP, etc.)
+				; (WILL is least of the 4, and only IAC is
+				; higher, so a less than test suffices)
+	kcall readch		; get what option
+	tstb negopr		; print negotiations?
+	if ne,<			; yes
+	  print ^"received "
+	  cmp r3,#will
+	  if eq,<
+	    print ^"WILL "
+	    >
+	  cmp r3,#wont
+	  if eq,<
+	    print ^"WONT "
+	    >
+	  cmp r3,#do
+	  if eq,<
+	    print ^"DO "
+	    >
+	  cmp r3,#dont
+	  if eq,<
+	    print ^"DONT "
+	    >
+	  mov r2,r0
+	  kcall prnum
+	  mov #40,r0
+	  kcall prtch
+	  >
+	cmp r3,#do		; DO or DONT?
+	if ge,<			; yes
+	  sub #do+1,r3		; DO -) -2, DONT -) 0
+	  asl r3		; ...
+	  cmp r2,#optmax	; option number greater than our table?
+	  if hi,<		; yes, we don't support it then
+	    call uuopt
+	    >
+	  else <		; option number not too large
+	    mov r2,r0
+	    asl r0
+	    call @uopt(r0)	; call appropriate routine
+	    >
+	  rptl
+	  >
+	;; must be WILL or WONT
+	sub #will+1,r3		; WILL -) -2, WONT -) 0
+	asl r3			; ...
+	cmp r2,#optmax		; option number greater than our table?
+	if hi,<			; yes, we don't support it then
+	  call usopt
+	  >
+	else <			; option number not too large
+	  mov r2,r0
+	  asl r0
+	  call @sopt(r0)	; call appropriate routine
+	  >
+	rptl
+	>
+
+
+; Unknown option DO/DONT handler.
+uuopt:	tst r3			; DO?
+	if ne,<			; yes
+	  kcall swont		; reply WONT
+	  >			; no need to reply to DONT, as we're already
+	kretrn			; in that state (can't have accepted
+				; previously if we've never heard of the
+				; option!)
+
+; Simple supported user telnet option handler (invoked for received DO/DONT).
+; These options are preferred on, so a received DO or DONT just sets the
+; state (we have to honor a DONT according to protocol).
+suopt:	bitb #1,uoptst(r2)	; is this a reply to our request?
+	if eq,<			; no
+	  cmpb r3,uoptst(r2)	; already in requested state?
+	  if ne,<		; no
+	    push r3
+	    asr r3		; DO -) WILL, DONT -) WONT
+	    add #will+1,r3	; ...
+	    call sndiac		; reply, accepting request
+	    pop r3
+	    >
+	  >
+	movb r3,uoptst(r2)	; set option status to -2 for on, 0 for off
+	kretrn
+
+; Unknown option WILL/WONT handler.
+usopt:	tst r3			; WILL?
+	if ne,<			; yes
+	  kcall sdont		; reply DONT
+	  >			; no need to reply to WONT, as we're already
+	kretrn			; in that state (can't have accepted
+				; previously if we never heard of the
+				; option!)
+
+; Simple supported server telnet option handler (invoked for received
+; WILL/WONT). These options are preferred on, so a received WILL or WONT just
+; sets the state (we have to honor a WONT according to protocol).
+ssopt:	bitb #1,soptst(r2)	; is this a reply to our request?
+	if eq,<			; no
+	  cmpb r3,soptst(r2)	; already in requested state?
+	  if ne,<		; no
+	    push r3
+	    asr r3		; WILL -) DO, WONT -) DONT
+	    add #do+1,r3	; ...
+	    call sndiac		; reply, accepting request
+	    pop r3
+	    >
+	  >
+	movb r3,soptst(r2)	; set option status to -2 for on, 0 for off
+	kretrn
+
+; Server echo option handler (received WILL ECHO).
+secho:	tstb echof		; if user desires any echo at all, either
+	if ne,<			; remote or local, then let other side chose
+				; which
+	  movb r3,lecho		; -2 -) 0 (remote echo), 0 -) 1 (local echo)
+	  asrb lecho		; ...
+	  comb lecho		; ...
+	  >
+	br ssopt
+
+
+; DO/DONT timing mark.  Server sends a DO TM when it wants to synchronize
+; input with output (e.g. for flushing typeahead after an error).  We can
+; have sent ahead a WILL TM "response" at the user's request (e.g. if user
+; anticipated flushing, and wants to resume typeahead).  [Actually, there
+; currently isn't a command to do this.]
+dtm:	decb wtmc		; decrement count of "WILL TM"s sent and
+				; unack'd
+	if mi,<			; none
+	  clrb wtmc		; keep count at zero
+	  tstb r3		; DO?
+	  if mi,<		; yes
+	    ;; should wait for all character in output buffer to be sent.  oh well.
+	    call swill		; reply WILL, saying we're synch'd
+	    >			; (ignore DONTs)
+	  >
+	else <			; this is a reply to our WILL TM
+	  tstb r3		; DO?
+	  if pl,<		; no, DONT
+	    print ^"timing mark ignored
+"
+	    >
+	  >
+	kretrn
+
+; WILL/WONT timing mark.  Server sends WILL/WONT TM in reply to our DO TM.
+; Currently we never send DO TM.  Eventually there might be a command to
+; abort output, and this would be used to synchronize input and output to
+; know when to stop.
+wtm:	decb dtmc		; decrement count of "DO TM"s sent
+	if mi,<			; none were sent
+	  clrb dtmc		; keep count at zero
+	  tstb r3		; WILL?
+	  if mi,<		; yes
+	    call sdont		; reply DONT, meaning TM ignored
+	    >
+	  >
+	kretrn
+
+
+; WILL/WONT logout.
+wlogo:	tstb r3			; WILL?
+	if mi,<			; yes
+	  bitb #1,soptst+logo	; we requested it?
+	  if ne,<		; yes, so this is a reply
+	    bicb #1,soptst+logo	; request no longer pending
+	    call clscon		; close the connection
+	    jmp tnbeg
+	    >
+	  call sdont		; unrequested, so refuse
+	  kretrn
+	  >
+	bicb #1,soptst+logo	; request no longer pending
+	print ^"LOGOUT refused
+"
+	kretrn
+
+swont:	mov #wont,r3
+	br sndiac
+
+swill:	mov #will,r3
+	br sndiac
+
+sdont:	mov #dont,r3
+	br sndiac
+
+sdo:	mov #do,r3
+	; fall through to SNDIAC
+
+sndiac:	kcall alc16		;get a packet
+	movb #200,pkop(r0)	;set the packet opcode
+	mov #3,pklen(r0)	;set the length of the packet
+	movb #iac,pkdat(r0)	;set in IAC
+	movb r3,pkdat+1(r0)	;set in will/wont do/dont
+	movb r2,pkdat+2(r0)	;indicate what we are doing
+	kcall outpak		;output the packet
+	tstb negopr		; print negotiations?
+	if ne,<			; yes
+	  print ^"sent "
+	  cmp r3,#will
+	  if eq,<
+	    print ^"WILL "
+	    >
+	  cmp r3,#wont
+	  if eq,<
+	    print ^"WONT "
+	    >
+	  cmp r3,#do
+	  if eq,<
+	    print ^"DO "
+	    >
+	  cmp r3,#dont
+	  if eq,<
+	    print ^"DONT "
+	    >
+	  mov r2,r0
+	  kcall prnum
+	  mov #40,r0
+	  kcall prtch
+	  >
+	kretrn
+
+outcat:	.blkw 1
+
+;;; Read a character from the network.
+readch:	tst pakptr(fp)		;do we have a packet yet?
+	if eq,<
+loop <	  cocall		;give the other guy a chance
+	  mov conect,r1		;is connection still there?
+	  if eq,<
+	    jmp tnbeg
+	    >
+	  call chdati,r1,r0	;get a packet from the arpa net
+	  exitl cc		;got a packet
+	  cmpb cnstat(r1),#%csopn
+	  rptl eq		;connection open, no input data
+	  tst r0		;did we get an explanation back?
+	  if eq,<		;if no, try once again
+	    call chdati,r1,r0
+	    >
+	  tst r0		;any message yet?
+	  if ne,<
+	    mov r0,errpak	;save error packet for other task
+	    >
+	  jmp tnbeg		;restart this process
+	  >
+
+	  mov r0,pakptr(fp)	;save pointer to packet
+	  mov r0,datptr(fp)
+	  add #pkdat,datptr(fp)	;save pointer to data area
+	  mov pklen(r0),datend(fp)	;calc end of data
+	  bic #pkfcnt,datend(fp)	;clear out forwarding count
+	  add datptr(fp),datend(fp)
+	  >
+				
+	cmp datptr(fp),datend(fp)	;are we out of data
+	if eq,<
+	  mov pakptr(fp),r0	;free packet
+	  kcall frepck
+	  clr pakptr(fp)
+	  br readch		;start all over again
+	  >
+	movb @datptr(fp),r2	;return char in R2
+	bic #177400,r2		;clear high byte
+	inc datptr(fp)		;bump up the pointer
+	;; should really free packet here when done with in
+	kretrn			;return
+
+
+typpak:	proc 0,0,<r2,r3,r4>
+	mov pklen(r0),r2	;get size of data area
+	bic #pkfcnt,r2		;clear out the forwarding count
+	if ne,<
+	  mov r0,r3
+	  add #pkdat,r3		;point to data in packet
+  loop <    movb (r3)+,r4	;extract char
+	    call ttyout,r4	;print it
+	    sorl r2
+	    >
+	  >
+	return			;all done
+
+.sbttl Network output process
+
+;;; This process gets input from the keyboard process below and sends it to
+;;; the network.  Don't ask me why this layer of buffering is necessary.
+
+intsk:	proc 0,0
+
+loop <	  cocall		;reschedule
+	  mov conect,r1		;do we have a connection open?
+	  rptl eq
+	  call chstat,r1	;see if we can send a packet yet?
+	  rptl cs
+	  call numchr,#inbuf,r3	;any characters waiting?
+	  rptl eq
+	  mov r3,r4
+	  add #pkdat+1,r3
+	  asr r3
+	  kcall alcsiz
+	  rptl cs		;try again later if no memory
+	  mov r4,pklen(r0)
+	  movb #200,pkop(r0)	;set the packet opcode to 200
+	  mov r0,r2
+	  add #pkdat,r2
+
+  loop <    call getchr,#inbuf,r3
+	    movb r3,(r2)+
+	    sorl r4
+	    >
+
+	  kcall outpak		;output a packet
+	  rptl
+	  >
+
+.sbttl Telnet keyboard process
+
+kbdtsk:	proc 0,0
+	clr conect		;clear out conect
+	mov #1,eolflg		;set end of line flag initially
+
+vn2==versio/100.
+vn1==<versio-<100.*vn2>>/10.
+vn0==<versio-<100.*vn2>>-<10.*vn1>
+
+.litrl ^/ .ascii "
+
+ARPANET User Telnet."
+	.byte vn2+60,vn1+60,60+vn0
+	.asciz " type ? for help.
+
+"
+	.even
+/,%.ptmp
+	kcall types
+	.word %.ptmp-.
+
+cmdlop:	call flshln		;flush the remaining contents of a line
+cmdlp1:	mov conect,r1		;see if we have a connection open
+	if ne,<
+	  cmpb cnstat(r1),#%csopn	;connection open?
+	  if ne,<
+	    mov errpak,r0	;is there any error packet waiting?
+	    if ne,<
+	      kcall typpak
+	      kcall frepck	;get rid of the packet
+	      print ^"
+"
+	      clr errpak	;no more use for the error packet
+	      >
+	    print ^"Connection Closed
+"
+	    clr conect		;no connection open now.
+	    br cmdlop
+	    >
+	  >
+	inc hldout		;stop output while in command loop
+	print ^"CMD: "		;print prompt
+
+	call rdcmd,,r2		;read a command, type returned in r2
+	if cs,<			;if carry set then we have detected an error
+	  print ^"Unrecognized Command
+"
+	  br cmdend
+	  >
+
+	tst r1			;see if connection is open
+	if eq,<
+	  bitb #1,cmdflg(r2)	;is this command alllowed with no connection
+	  if eq,<
+	    print ^"No Connection Open - Command Ignored
+"
+	     jmp cmdend
+	    >
+	  >
+	else <
+	  bitb #2,cmdflg(r2)
+	  if eq,<
+	    print ^"Connection already open.  Command ignored.
+"
+	    br cmdlop
+	    >
+	  >
+	asl r2			;multiply command index by 2
+	jmp @dispat(r2)		;dispatch to command
+
+dispat:	.word donul,docon,doqit,dodis,dohel,dohel,doost,dopar,docup,doech
+	.word dobre,doesc,domon,dobpt,dologo,dospee,doupti,doayt,doip,domuzz
+	.word doccon,dobin,dofing
+
+cmdend:	mov conect,r1		;do we have a connection open?
+	beq cmdlop		;go to command loop
+	kcall flshln		;flush out any remaining chars on this line.
+	clr hldout
+	jmp mvchrs		;if we do, then resume sending chars.
+
+donul:	br cmdend		;null command
+
+doccon:	kcall cmdoct
+	;; R1/ host no.
+	kcall flshln
+	kcall alc16		;get a packet for the open
+	mov r0,r3
+	mov #"TE,(r3)+
+	mov #"LN,(r3)+
+	mov #"ET,(r3)+
+	clrb (r3)+		;insure a null at the end of the string
+	call chopen,<r1,#4,r0>,r1
+	br docon1
+
+
+docon:	kcall alc16		;get a packet for the open
+	mov r0,r3
+	call mvstrg,<#jcls1,r3>,r3	;start building JCL for the open
+	call rdstmv,r3,r3	;read a string from the cmd and move to packet
+	call mvstrg,<#jcls2,r3>,r3	;finish building jcl
+	clrb (r3)+		;insure a null at the end of the string
+	kcall flshln		;flush out the rest of the command line
+	call chopen,<#dsthst,#1,r0>,r1	;open connection
+docon1:	if cs,<
+	  kcall frepck		;free the JCL string
+	  mov r1,r0		;put packet into r0
+	  call typpak		;type contents of packet
+	  kcall frepck		;get rid of the packet
+	  print ^"
+
+"
+	  jmp cmdlop		;get another command
+	  >
+
+	kcall frepck		;no need for data area any more
+
+	;; initialize all options off
+	mov #optmax,r0
+loop <	  clrb uoptst(r0)
+	  clrb soptst(r0)
+	  dec r0
+	  rptl pl
+	  >
+
+	mov r1,conect		;save ptr to the connection
+	print ^"Connection Open
+
+"
+	jmp cmdend		;ok, send chars to and from user
+
+doqit:	kcall clscon
+loop	< cocall
+	  call numchr,#ttyobf,r0	;how many chars left in output buffer
+	  tst r0
+	  rptl ne		;loop until buffer is empty
+	  >
+	clr havset		;so we issue the .device if we are re-entered
+.if eq asmrt1
+	jmp start
+.iff
+	reslst			; restore saved values
+	mov #1,r0		;program is restartable
+	.exit			;return to RT-11 KMON
+.endc
+	jmp cmdlop
+
+dodis:				;disconnect from host
+	kcall clscon		;close the connection
+	jmp cmdlop
+
+clscon:
+	mov conect,r1		;do we have an open connection?
+	if ne,<
+	  call chcls,<r1,#0>	;close chaos connection
+	  print ^"Connection Closed
+"
+	  clr conect
+	  >
+	kretrn
+
+dobpt:	bpt
+	jmp cmdend
+
+dologo:	mov #logo,r2
+	kcall sdo
+	bisb #1,soptst+logo
+	jmp cmdend
+
+dobin:	mov #binary,r2
+	kcall swill
+	bisb #1,uoptst+binary
+	mov #binary,r2
+	kcall sdo
+	bisb #1,soptst+binary
+	jmp cmdend
+
+dohel:
+	print ^~Available Commands Are:
+
+help                    - Print this message
+connect {host/imp}      - Open connection to a host (numbers in octal)
+quit                    - Quit and return to RT-11
+disconnect              - Disconnect from host
+ostop                   - Toggle state of ^S/^Q mode (initially off)
+parity                  - Toggle state of parity mode (initially sent thru)
+echo                    - Toggle state of local echo mode
+break                   - Send a TELNET Interrupt Process
+escape {char}           - Set the command escape character to {char}
+monitor			- monitor telnet protocol negotiations
+bpt			- breakpoint to RUG
+logout			- logout from other side and close
+speed {bits/sec}	- limit the output rate to this (pins at 600 slowest)
+uptime			- time since last restart
+ayt			- send a telnet "are you there"
+ip			- send a telnet "interrupt process"
+muzzle			- throw away output from host until it processes input
+cconnect {host}		- chaos connect (host number in octal)
+binary			- negotiate binary
+finger {host} {jcl}	- list users at host
+
+All commands can be abbreviated to the first four characters.
+~
+	jmp cmdend
+
+doost:	com lctrl		;toggle state
+	if eq,<
+	  print ^"^S/^Q Mode Off
+"
+	  >
+	else <
+	  print ^"^S/^Q Mode On
+"
+	  >
+	jmp cmdend
+
+dopar:	com parity		;toggle state
+	if eq,<
+	  print ^"Mask Off Parity Bit
+"
+	  >
+	else <
+	  print ^"Don't Mask Off Parity Bit
+"
+	  >
+	jmp cmdend
+
+docup:
+loop <	movb comchr,r0
+	kcall telout
+	exitl cc
+	cocall
+	mov conect,r1		;see if we still have an open connection
+	if eq,<
+1$:	  jmp cmdlop
+	  >
+	cmpb #%csopn,cnstat(r1)	;check connection state
+	bne 1$			;if not open then return to the command loop
+	rptl
+	>
+	jmp cmdend
+
+doech:	comb echof		;toggle state
+	if eq,<
+	  print ^"Echoing off
+"
+	  clrb lecho
+	  >
+	else <
+	  print ^"Echoing on
+"
+	  movb soptst+echo,lecho	; local or remote echoing as
+	  asrb lecho			; appropriate
+	  comb lecho			; ...
+	  >
+	jmp cmdend
+
+domon:	comb negopr		;toggle state
+	if eq,<
+	  print ^"Negotiation monitoring off
+"
+	  >
+	else <
+	  print ^"Negotiation monitoring on
+"
+	  >
+	jmp cmdend
+
+dobre:	;; should send TELNET break command, but for upward compatibility,
+	;; still the same as IP command
+doip:	kcall alc16		;get a small packet
+	movb #202,pkop(r0)	;set opcode for INS
+	mov #4,pklen(r0)	;set the packet length
+	movb #iac,pkdat(r0)	;send IAC IP IAC DM
+	movb #ip,pkdat+1(r0)
+	movb #iac,pkdat+2(r0)
+	movb #dm,pkdat+3(r0)
+	kcall outpak		;send the packet
+	jmp cmdend		;all done, return to normal processing
+
+domuzz:	incb dtmc		;increment count of DO TMs
+	kcall alc16		;get a small packet
+	movb #200,pkop(r0)	;set opcode for INS
+	mov #3,pklen(r0)	;set the packet length
+	movb #iac,pkdat(r0)	;send IAC DO TM
+	movb #do,pkdat+1(r0)
+	movb #tm,pkdat+2(r0)
+	kcall outpak		;send the packet
+	jmp cmdend		;all done, return to normal processing
+
+doesc:				;set the escape char
+loop	< kcall readfc		;get a char
+	  cmpb r0,#40		;skip over spaces
+	  rptl eq
+	  >
+
+	cmpb r0,#15		;if we got just the CR ending the line
+	if eq,<			;the reset escape to ^^
+	  movb #36,comchr
+	  >
+	else <			;else set the escape to the char
+	  movb r0,comchr
+	  >
+	jmp cmdend		;all done return to normal processing
+
+
+doupti:	mov clock+0,r1
+	mov clock+2,r0
+	div #60.*60.,r0
+	kcall prnum
+	print ^" minutes "
+	clr r0
+	div #60.,r0
+	kcall prnum
+	print ^" seconds
+"
+	jmp cmdend
+
+doayt:	kcall alc16		;get a small packet
+	movb #200,pkop(r0)	;set opcode for data
+	mov #2,pklen(r0)	;set the packet length
+	movb #iac,pkdat+0(r0)	;send IAC AYT
+	movb #ayt,pkdat+1(r0)	;...
+	kcall outpak		;send the packet
+	jmp cmdend		;all done, return to normal processing
+
+
+dospee:	kcall cmdnum
+	clr r0
+	add #599.,r1
+	div #600.,r0
+	mov r0,cp60th		; no. of characters per 60th
+	mov r0,ct60th		; characters allowed this 60th
+	mov clock+0,lastct+0
+	mov clock+2,lastct+2
+	jmp cmdend
+
+
+cmdnum:
+loop <	  kcall readfc
+	  cmpb r0,#40
+	  rptl eq
+	  >
+	cmpb r0,#'0
+	blo 1$
+	cmpb r0,#'9
+	bhi 1$
+	movb r0,r1
+	sub #'0,r1
+loop <	  kcall readfc
+	  cmpb r0,#'0
+	  exitl lo
+	  cmpb r0,#'9
+	  exitl hi
+	  sub #'0,r0
+	  mul #10.,r1
+	  add r0,r1
+	  rptl
+	  >
+	kretrn
+1$:	print ^"Numeric argument expected"
+	clr r1			; ???
+	kretrn
+
+cmdoct:
+loop <	  kcall readfc
+	  cmpb r0,#40
+	  rptl eq
+	  >
+	cmpb r0,#'0
+	blo 1$
+	cmpb r0,#'7
+	bhi 1$
+	movb r0,r1
+	sub #'0,r1
+loop <	  kcall readfc
+	  cmpb r0,#'0
+	  exitl lo
+	  cmpb r0,#'7
+	  exitl hi
+	  sub #'0,r0
+	  mul #8,r1
+	  add r0,r1
+	  rptl
+	  >
+	kretrn
+1$:	print ^"Octal argument expected"
+	clr r1			; ???
+	kretrn
+
+
+dofing:	kcall alc16
+	mov r0,r3
+	call mvstrg,<#jcls1,r3>,r3
+	call rdstmv,r3,r3
+	call mvstrg,<#jcls3,r3>,r3
+	clrb (r3)
+	mov #dsthst,r1
+
+dofin1:	call chopen,<r1,#1,r0>,r1	;open connection
+	if cs,<
+	  kcall frepck		;free the JCL string
+	  mov r1,r0		;put packet into r0
+	  call typpak		;type contents of packet
+	  kcall frepck		;get rid of the packet
+	  print ^"
+
+"
+	  jmp cmdlop		;get another command
+	  >
+
+	kcall frepck		;no need for data area any more
+
+	;; copy rest of command line to packet for sending
+	kcall alc64
+	bcs 2$
+	movb #200,pkop(r0)
+	mov #2,pklen(r0)
+	mov r0,r2
+	add #pkdat,r2
+	mov r0,r3
+loop <	  kcall pkchfc
+	  cmpb r0,#40
+	  exitl ne
+	  kcall readfc
+	  rptl
+	  >
+loop <	  kcall readfc
+	  cmpb r0,#15
+	  exitl eq
+	  movb r0,(r2)+
+	  inc pklen(r3)
+	  rptl
+	  >
+	movb #15,(r2)+
+	movb #12,(r2)+
+	mov r3,r0
+	;; send command line
+loop <	  call chdato,<r0,r1>
+	  exitl cc
+	  cmpb cnstat(r1),#%csopn
+	  bne 1$
+	  cocall
+	  rptl
+1$:	  kcall frepck
+	  >
+	;; copy input to terminal
+loop <	  cocall
+	  call chdati,r1,r0
+	  tst r0
+	  if ne,<
+	    kcall typpak
+	    kcall frepck
+	    >
+	  cmpb cnstat(r1),#%csopn
+	  rptl eq
+	  >
+	print ^"
+"
+2$:	call chcls,<r1,#0>
+3$:	jmp cmdend
+
+cmdlo1:	jmp cmdlop
+
+;;; Read chars from the tty and pass them on to the telnet conection.
+;;; Different action is taken if local echoing is turned on.  The
+;;; telnet excape char ^^ is also scanned for.  If it is found in the
+;;; input stream, then the command loop is invoked.
+
+mvchrs:	cocall			;give the other tasks a chance
+
+	mov conect,r1		;do we still have a connection
+	beq cmdlo1		;no, go to command loop (CMDLOP)
+	cmpb cnstat(r1),#%csopn	;connection open?
+	bne cmdlo1		;no, go to command loop (CMDLOP)
+
+	tstb lecho		;is local echo on?
+	if eq,<			;no, just pass it through
+	  ;; local echo is off
+	  call numchr,#ttyibf,r3	;how many input chars?
+	  tst r3			;...
+	  beq mvchrs			;none, try later
+loop <	    call pkbuf,#ttyibf,r0	;read a char
+	    cmpb r0,comchr		;ctrl-^ ?
+	    if eq,<
+	      call getchr,#ttyibf,r0	;flush out the char
+	      jmp cmdlp1		;enter command loop w/o flushing buffer
+	      >
+	    kcall telout		; put in buffer for network
+	    bcs mvchrs			; no room, try later
+	    call getchr,#ttyibf,r0	; flush char from the buffer
+	    sorl r3
+	    >
+	  br mvchrs
+	  >
+
+	;; local echo is on
+	call remchr,#rubbuf,r0	;get last char in rubout buffer
+	if cc,<			;to see if we have a complete line read yet
+	  call putchr,<#rubbuf,r0>	;put the char back into buffer
+	  cmpb r0,#15		;is it a cr?
+	  beq 1$		;ok, then finish output line to tn
+	  >
+	kcall readln		;buffer not terminated, so read a line
+	bcs mvchrs		;line not finished, check for tn output
+	cmpb r0,comchr		;last char the control escape char
+	if eq,<
+	  jmp cmdlp1		;goto the command loop
+	  >
+1$:	call numchr,#rubbuf,r3	;if we have any chars in the rubbuf
+	tst r3			;then we output them to the tn connection
+	beq mvchrs
+loop <	  call pkbuf,#rubbuf,r0	;get a char from the rubout buffer
+	  kcall telout		; output character
+	  exitl cs		; if no room, then we have to wait
+	  call getchr,#rubbuf,r0	;read the char out of the buffer
+	  sorl r3		;loop until buffer is empty
+	  >
+	br mvchrs
+
+
+;;; Output data character obeying TELNET protocol.
+telout:	call putchr,<#inbuf,r0>	; output character
+	bcs 1$			; no room
+	tstb uoptst+binary	;are we in binary mode perchance?
+	if pl,<			;no, then follow NVT standard
+	  cmpb r0,#15		;did we just output the CR?
+	  if eq,<		;if so, then we must output a LF to conform
+	    call putchr,<#inbuf,#12>	;to telnet protocol
+	    if cs,<		;if the buffer happens to be full, then we
+	      call remchr,#inbuf,r0	;remove the CR we output
+				;and try again
+	      br 1$		;later
+	      >
+	    >
+	  >
+	cmpb r0,#377		;did we just output an IAC
+	if eq,<
+	  call putchr,<#inbuf,#377>	;double IACs
+	  if cs,<			;won't fit
+	    call remchr,#inbuf,r0	;so remove the first IAC
+	    br 1$
+	    >
+	  >
+	clc
+1$:	kretrn
+
+;;; Read chars from the tty until a blank or CR is found.  The first
+;;; four chars are a command name which are looked up in the command
+;;; table.  The error return is taken if the command is not in the 
+;;; command list and the input is scanned until a CR.
+
+rdcmd:	proc 0,1,<r0,r1,r2,parity>
+	clr out1(fp)		;initialize the return value
+	clr parity		;kludgey: rebind parity while in RDCMD
+
+	call pkcw,#ttyibf,r0	;check first char received to special cmd
+	cmpb r0,comchr		;is it the escape char
+	if eq,<
+	  call getchr,#ttyibf,r0	;flush out the char
+	  mov #cupcmd,out1(fp)	;special command for ^^
+	  br 1$
+	  >
+
+loop  <	kcall readfc		;scan for first non blank.
+	cmpb r0,#40		;is it a space?
+	rptl eq
+	>
+	cmpb r0,#15		;is it a CR
+	if eq,<
+	  clr out1(fp)		;null command
+1$:	  return 
+	  >
+
+	cmpb r0,#'A		; if upper case
+	if ge,<
+	  cmpb r0,#'Z
+	  if le,<
+	    add #'a-'A,r0	; make it lower case
+	    >
+	  >
+	mov #cmdnam,r1		;make pointer to command name
+	movb r0,(r1)+		;move in first char
+	mov #3,r2		;There are three more chars in name
+loop <	kcall pkchfc		;read a char from the console tty
+	cmpb r0,#15		;did we hit the end of the line?
+	if eq,<
+spocrl:
+  loop	  < movb #40,(r1)+	;move in a space into the command name
+	    sorl r2>
+	  exitl
+	  >
+	cmpb #40,r0		;is it a space?
+	beq spocrl		;space or cr loop
+	kcall readfc		;now actually remove the char from the buffer
+	cmpb r0,#'A		; if upper case
+	if ge,<
+	  cmpb r0,#'Z
+	  if le,<
+	    add #'a-'A,r0	;make it lower case
+	    >
+	  >
+	movb r0,(r1)+		;move in byte of command
+	sorl r2>		;continue
+
+loop  <	kcall pkchfc		;peak at the next char in the buffer
+	cmpb r0,#40		;if it is a space then exit.
+	exitl eq
+	cmpb r0,#15		;is it a CR
+	exitl eq		;if so, then exit
+	kcall readfc		;now read out the char and through it away.
+	rptl			;we search for the first blank.
+	>
+
+	mov #cmdsze,r2		;move size of command table to r2
+	mov #cmdtbl,r1		;point to command table in r1
+
+loop  <	cmp cmdnam,(r1)+	;is first half of the name equal
+	if ne,<
+	  add #2,r1		;bump the pointer
+	  >
+	else <
+	  cmp cmdnam+2,(r1)+	;compare second half
+	  if eq,<
+	    sub #cmdsze+1,r2	; -(R2 - cmdsze + 1) is the index of the cmd
+	    neg r2		;in zero origin indexing, with 0 as null cmd
+	    mov r2,out1(fp)	;return arg.
+	    return		;we are done, return
+	    >
+	  >
+	sorl r2
+	>
+
+	rtnerr			;return an error
+
+; flush the line from the console until a CR is read
+
+flshln:	push r0
+	call numchr,#rubbuf,r0	;any chars in buffer?
+	tst r0
+	if ne,<
+loop	  < tst eolflg		;end of line flag set
+	    exitl ne
+	    kcall readfc	;read a char
+	    rptl
+	    >
+	  >
+	clr eolflg		;obviously we are no longer at end of a line
+	pop r0
+	kretrn			;flush if error
+
+readfc:
+	push r3
+	call numchr,#rubbuf,r3	;see if there are any chars in the rubout buf
+	tst r3			;are there zero?
+	if eq,<			;if zero then read a line
+	  kcall rdline		;read line from the terminal
+	  >
+	call getchr,#rubbuf,r0	;must be char here since we made sure above.
+	cmpb r0,#15		;is it a CR
+	if eq,<
+	  mov #1,eolflg		;set the eol flag
+	  >
+	else <
+	  clr eolflg		;clear the end of line flag
+	  >
+	pop r3
+	kretrn
+
+
+rdline:				;read a line from the console
+loop  <
+	  call getcw,#ttyibf,r0	;read char of cmd
+	  cmpb r0,#177		;rubout?
+	  if eq,<
+	    call remchr,#rubbuf,r3	;remove char at end of buffer
+	    rptl cs		;no char to rubout
+	    kcall erasch	;erase this char
+	    rptl		;get another char
+	    >
+	  cmpb r0,#25		;^U?
+	  if eq,<
+  loop	    < call remchr,#rubbuf,r3
+	      exitl cs		;if no more chars then we are done
+	      kcall erasch	;wipe out the char
+	      rptl
+	      >
+	    rptl		;back to main loop
+	    >
+	  kcall prtch
+	  call putchr,<#rubbuf,r0>	;put char into rubout buffer.
+	  cmpb r0,#15		;is it a CR?
+	  rptl ne
+	  >
+	kretrn			;return we are done
+
+;readln:
+;loop  <
+;	  call getchr,#ttyibf,r0	;read char of cmd
+;	  if cs,<
+;;	    sec			;not done yet
+;	    kretrn		;exit if no char there
+;	    >
+;	  cmpb r0,comchr	;is it the escape character?
+;	  if eq,<
+;	    clc			;clear the carry bit
+;	    kretrn
+;	    >
+;	  cmpb r0,#177		;rubout?
+;	  if eq,<
+;	    call remchr,#rubbuf,r3	;remove char at end of buffer
+;	    rptl cs		;no char to rubout
+;	    kcall erasch	;erase this char
+;	    rptl		;get another char
+;	    >
+;	  cmpb r0,#25		;^U?
+;	  if eq,<
+;  loop	    < call remchr,#rubbuf,r3
+;	      exitl cs		;if no more chars then we are done
+;	      kcall erasch	;wipe out the char
+;	      rptl
+;	      >
+;	    rptl		;back to main loop
+;	    >
+;	  call putchr,<#rubbuf,r0>	;put char into rubout buffer.
+;	  if cs,<		;we hve a buffer full condition, tell user
+;	    mov #7,r0		;send the user a bell quit
+;	    kcall prtchr	;raw print it
+;	    >
+;	  else <
+;	    kcall prtch
+;	    >
+;	  cmpb r0,#15		;is it a CR?
+;	  rptl ne
+;	  >
+;	clc			;we have a complete line
+;	kretrn			;return we are done
+
+erasch:				;erase a char from the screen, char is in r3
+	mov #10,r0		;output a BS
+	kcall prtchr
+	mov #40,r0		;output a space
+	kcall prtchr
+	mov #10,r0		;BS again
+	kcall prtchr
+	cmpb r3,#40		;is the char a cntl char?
+	if lt,<			;read another char if not
+	  mov #10,r0		;output a BS
+	  kcall prtchr
+	  mov #40,r0		;output a space
+	  kcall prtchr
+	  mov #10,r0		;BS again
+	  kcall prtchr
+	  >
+	kretrn
+
+pkchfc:	push r3
+	call numchr,#rubbuf,r3	;see if there are any chars in the rubout buf
+	tst r3			;are there zero?
+	if eq,<			;if zero then read a line
+	  kcall rdline		;read line from the terminal
+	  >
+	call pkbuf,#rubbuf,r0	;peek into buffer to get char
+	pop r3			;end of line
+	kretrn
+
+mvstrg:	proc 2,1,<r0,r1>	;move an asciz string
+	mov arg1(fp),r0		;get source of string
+	mov arg2(fp),r1		;get destination of string
+
+loop  <	tstb (r0)		;is this a zero byte?
+	exitl eq		;then exit loop
+	movb (r0)+,(r1)+	;move a byte
+	rptl
+	>
+	mov r1,out1(fp)		;output the updated pointer
+	return
+
+rdstmv:	proc 1,1,<r0,r1>	;read string from tty until a blank or other
+				;delimeter and insert
+				;into the string pointed to by arg1. The blamk
+				;is not included.
+
+
+	mov arg1(fp),r1		;get arg into r1
+loop  <	kcall pkchfc		;search for first non-blank.
+	cmpb r0,#40		;is it a blank?
+	if eq,<
+	  kcall readfc		;read out char from buffer to flush it
+	  rptl
+	  >
+	cmpb r0,#15		;is it a CR
+	if eq,<
+	  mov r1,out1(fp)	;return the input argument
+	  rtnerr		;no argument found
+	  >
+	kcall readfc		;fetch the char out of the buffer
+	cmpb r0,#42		;is it a double quote?
+	if eq,<			;then read a quoted string
+  loop    < kcall pkchfc	;read a char
+	    cmpb r0,#42		;double quote yet?
+	    if eq,<
+	      kcall readfc	;flush out the char
+	      exitl
+	      >
+	    cmpb r0,#15		;is it a CR
+	    if eq,<
+	      mov r1,out1(fp)
+	      rtnerr		;bad syntax
+	      >
+	    kcall readfc	;flush char from buffer
+	    movb r0,(r1)+	;keep going
+	    rptl
+	    >
+	  mov r1,out1(fp)	;return pointer
+	  return
+	  >
+
+	movb r0,(r1)+		;move into string
+	>
+
+loop  <	kcall pkchfc		;Bad command, loop until CR
+	cmpb r0,#40		;is it a blank?
+	exitl eq
+	cmpb r0,#15		;is it a CR
+	exitl eq		;if so we are done
+	kcall readfc		;flush out the char
+	movb r0,(r1)+		;mov into string
+	rptl
+	>
+
+	mov r1,out1(fp)		;return the pointer
+	return
+
+types:	push r0,r1		;save r0
+	mov @4(sp),r0		;get pointer to string
+	add 4(sp),r0		;convert from relative
+	add #2,4(sp)		;bump return pointer
+loop <	movb (r0)+,r1		;get char
+	exitl eq
+	call ttyout,r1
+	rptl
+	>
+	pop r1,r0
+	rts pc
+
+
+prtch:	push r0
+	cmpb r0,#40
+	if lt,<
+	  cmpb r0,#15
+	  if ne,<
+	    mov #136,r0		;output an uparrow
+	    kcall prtchr
+	    mov (sp),r0
+	    add #100,r0
+	    >
+	  else <
+	    kcall prtchr
+	    mov #12,r0
+	    >
+	  >
+	kcall prtchr
+	pop r0
+	kretrn
+
+
+prnum:	push r1
+	mov r0,r1
+	clr r0
+	div #10.,r0
+	if ne,<
+	  kcall prnum
+	  >
+	mov r1,r0
+	pop r1
+	add #'0,r0
+;	jcall prtchr
+
+
+prtchr:				;print a raw character on tty, no conversion
+	call ttyout,r0		;print a char on console tty
+	kretrn
+
+
+ttyout:	proc 1,0
+	tst cp60th		; speed limited?
+	if ne,<			; yes
+  loop <    cmp lastct+0,clock+0	; if still same clock tick as last
+	    exitl ne			; character output
+	    cmp lastct+2,clock+2	; ...
+	    exitl ne			; ...
+	    dec ct60th		; decrement count of characters this tick
+	    bpl 1$		; nonnegative, another character is allowed
+				; this tick
+	    clr ct60th		; random: set back to 0 so can't wrap
+	    cocall		; wait a little
+	    rptl		; and see if new tick yet
+	    >
+	  mov clock+0,lastct+0	; !!! can be screwed by clock interrupt
+	  mov clock+2,lastct+2	; !!! between these two instructions
+	  mov cp60th,ct60th	; set count to no. of characters allowed per 60th
+	  dec ct60th		; account for one we're about to send
+	  >
+1$:	call putcw,<#ttyobf,arg1(fp)>	; put character in buffer for
+					; interrupt level to output
+	bis #100,@#tps		; insure interrupts are on
+	return
+
+.sbttl Line Editor
+
+edalon===0
+.if ne edalon		;stand alone stuff.
+.insrt defns[grn,cbf]
+.macro kcall foo
+	jsr pc,foo
+.endm
+.macro kretrn
+	rts pc
+.endm
+
+	.=1000
+	jmp start
+	
+comchr:	.word 30.
+
+prtch:	cmpb r0,#15
+	if eq,<
+	  push r0
+	  kcall prtchr
+	  movb #12,r0
+	  kcall prtchr
+	  pop r0
+	  kretrn
+	  >
+
+prtchr:	tstb @#177564
+	bpl prtchr
+	movb r0,@#177566
+	kretrn
+
+getchr:	tstb @#177560
+	bpl getchr
+	movb @#177562,r0
+	kretrn
+
+start:	mov #1000,sp
+	spl 7
+
+;;; Line editor initialization
+
+	clr ed.cur
+	mov #-1,r0
+	mov #ed.prv,r1
+loop	< mov r0,(r1)+
+	  cmp r1,#ed.lst
+	  rptl lo
+	  >
+	clr ed.stk
+	clr ed.lst
+	mov ed.cur,edcurp
+	mov ed.cur,edoldp
+ 	mov ed.cur,edceol
+	clr edrept
+	clr edcurs
+	clr edmaxc
+
+1$:	kcall readln
+	if cs,<mov #123,r0>
+	else <mov #103,r0>
+	kcall prtchr
+	br 1$
+.endc
+
+;;; This routine implements the line editor.  It does so by maintaining a
+;;; buffer of characters which are divided into lines.  It keeps track of
+;;; the current line and a number of previous lines, whose number is
+;;; determined by the size of the buffer and the size of the lines. 
+;;; Communication with the rest of the telnet program is through a buffer
+;;; call the rubbuf (for probably histeric reasons).  When carriage return
+;;; is typed (or the command character) the current line is copied to the
+;;; rubbuf and the routine returns.
+
+;;; The structure of the editing buffer is given below.
+;;; The line pointers are signed indexes into the character buffer (ed.txt).
+;;; The current line is pointed to by ed.cur and continues to the offset
+;;; specified by ed.lst.  When it reaches this point the text of the line it
+;;; is about to run into is deleted and ed.lst moves forward to the new last
+;;; line.  A negative index means that no such line exists.
+
+ed.cur: .blkw 1	        ;This is the character index of the current line
+ed.prv: .blkw 25.	;Index of the previous lines
+ed.lst: .blkw 1	        ;This is the index of the last line and is a duplicate
+			; of one of the line indexes above.
+ed.stk: .blkw 1	        ;This points to the previous line that ^P and ^N use
+ed.txt: .blkb 512.	;This is where the characters are kept
+ed.end:: .blkw 0
+
+.macro edincp a
+	inc a
+	cmp a,#<ed.end-ed.txt>
+	if ge,<clr a>
+.endm
+
+.macro eddecp a
+	dec a
+	if lt,<mov #<ed.end-ed.txt-1>,a>
+.endm
+
+edgetc:
+.if ne edalon
+	  kcall getchr
+	  clc
+.iff
+	push r1
+loop	< cocall
+	  call getchr,#ttyibf,r0
+	  exitl cc
+	  tstb lecho
+	  beq 1$
+	  mov conect,r1
+	  beq 1$
+	  cmpb cnstat(r1),#%csopn
+	  rptl eq
+1$:	  sec
+	  >
+	pop r1
+.endc
+	kretrn
+
+edcurp:	.word
+edoldp:	.word
+edceol:	.word
+edrept:	.word
+edcurs:	.word
+edmaxc:	.word
+edlsch:	.word 0			; the last chracter searched for
+
+readln:	push r1,r2,r3,r4
+;	mov ed.cur,edcurp
+;	mov ed.cur,edceol
+;	clr edrept      ;initialize repeat count
+loop	< kcall edgetc		;get a char from the terminal.
+	  if cs,<
+	    pop r4,r3,r2,r1
+	    kretrn		;carry is set, connection gone
+	    >
+	  cmpb r0,comchr
+	  if eq,<jmp eddone>
+	  cmpb r0,#40		;Check for control char.
+	  if lo,<
+	    mov r0,r1
+	    asl r1		;convert to word index
+	    kcall @edcmds(r1)	;dispatch to correct command
+	    >
+	  else <
+	    cmpb r0,#177
+	    if eq,<kcall ecrubc>
+	    else <
+	      if hi,<kcall edmeta>
+	      else <kcall ecinsc>	;insert the character (self insert).
+	      >
+	    >
+	  rptl
+	  >
+
+edcmds:	.word ecundf    ;^@
+	.word ecbegl    ;^A
+	.word ecbckc	;^B
+	.word ecundf    ;^C
+	.word ecdelc    ;^D
+	.word ecendl	;^E
+	.word ecfwdc	;^F
+	.word ecundf	;^G
+	.word ecbckc	;^H
+	.word ecinsc	;^I
+	.word ecinsc	;^J
+	.word eckill	;^K
+	.word ecrdsp	;^L
+	.word ecretn	;^M
+	.word ecnext	;^N
+	.word ecundf	;^O
+	.word ecprev	;^P
+	.word ecquot	;^Q
+	.word ecrsch	;^R
+	.word ecsrch	;^S
+	.word ectwdl	;^T
+	.word ecmult	;^U
+	.word ecundf	;^V
+	.word ecrubw	;^W
+	.word ecundf	;^X
+	.word ecyank	;^Y
+	.word ecundf	;^Z
+	.word edmeta	;altmode
+	.word ecundf	;^\
+	.word ecundf	;^]
+	.word ecundf	;^^
+	.word ecundf	;^_
+
+;;; Here is a general redisplay update routine.  It assumes that min (edcurp,
+;;; edoldp) and r1 bracket the text
+;;; needing to be output.  The algorithm starts at the
+;;; beginning of the line and counts chars forward until it gets to the min
+;;; of edcurp and edoldp.  Then it moves the cursor back to that position and
+;;; outputs chars until it gets to r1.  Any deletion or insertion
+;;; operation should
+;;; set r1 to edceol.  Any moving operation should set r1 to edcurp.
+;;; A combination of insertions and deletions
+;;; may require a full redisplay.  This accomplished by setting edcurs to
+;;; -1.  This will be specially checked and r1 will be ignored.  In addition
+;;; the routine also maintains the position of the right most character
+;;; it printed, allowing blanking to work correctly.
+
+edrdsp:	push r0,r1,r2,r3
+	mov ed.cur,r2   ;First loop over line until we get to edoldp or edcurp
+	clr r3
+	tst edcurs      ;if this is -1 then reset to lmar
+	if lt,<
+	  mov #15,r0
+	  kcall prtchr
+	  clr edcurs
+	  mov #79.,edmaxc
+	  mov edceol,r1
+	  mov ed.cur,edoldp
+	  >
+	else <
+loop	  < cmp r2,edoldp
+	    exitl eq
+	    cmp r2,edcurp
+	    exitl eq
+	    movb ed.txt(r2),r0
+	    inc r3
+	    cmp r0,#40
+	    if lt,<inc r3>
+	    edincp r2
+	    rptl
+	    >
+	  sub edcurs,r3   ;where are we relative to where we should be
+	  add r3,edcurs   ;update the current cursor position
+	  neg r3
+	  if lt,<bpt>     ;cursor should never be behind changed to the line
+	  if gt,<
+	    mov #10,r0
+loop	    < kcall prtchr
+	      sorl r3
+	      >	;NB r3 is zero when this falls through
+	    >
+	  >
+loop	< cmp r2,edcurp
+	  if eq,<
+	    add r3,edcurs
+	    clr r3
+	    >
+	  cmp r2,r1
+	  exitl eq
+	  movb ed.txt(r2),r0
+	  kcall prtch
+	  inc r3
+	  cmp r0,#40
+	  if lt,<inc r3>
+	  edincp r2
+	  rptl
+	  >	;at this point r3 is current offset from edcurp
+	mov edcurs,r1
+	add r3,r1
+	cmp r2,edceol   ;if at the end of the line, possible blanking
+	if eq,<
+	  sub edmaxc,r1
+	  add r1,edmaxc
+	  neg r1
+	  if gt,<
+	    add r1,r3   ;will have to back up over this stuff
+	    mov #40,r0
+loop	    < kcall prtchr
+	      sorl r1
+	      >
+	    >
+	  >
+	mov #10,r0
+loop	< dec r3
+	  exitl lt
+	  kcall prtchr
+	  rptl
+	  >
+	mov edcurp,edoldp
+	pop r3,r2,r1,r0
+	kretrn
+
+;;; Insert the character in R0.
+
+ecinsc:	kcall edinsc
+	if cs,<kcall ecundf>
+	dec edrept
+	bgt ecinsc
+	clr edrept
+	mov edceol,r1
+	kcall edrdsp
+	kretrn
+
+edinsc:	mov edceol,r3
+	edincp r3
+	cmp r3,ed.lst   ;have we run into the end?
+	if eq,<
+	  kcall edflsl  ;flush the last line.
+	  if cs,<
+	    sec	;fail if no more room.
+	    kretrn
+	    >
+	  >
+	mov edceol,r1
+	mov r1,r2
+	eddecp r2
+loop	< cmp r1,edcurp
+	  exitl eq
+	  movb ed.txt(r2),ed.txt(r1)
+	  mov r2,r1
+	  eddecp r2
+	  rptl
+	  >
+	movb r0,ed.txt(r1)	;insert the character
+	mov r3,edceol
+	edincp edcurp   ;line one char longer
+	clc
+	kretrn
+
+;;; Flush the last line in the ring buffer to make room for more text in the
+;;; current line.
+
+edflsl:	push r0
+	mov #ed.cur,r0	;get ptr to the line array
+loop	< tst (r0)+     ;tst for negative index
+	  exitl lt
+	  cmp r0,#ed.lst
+	  rptl lo
+	  tst (r0)+
+	  >
+	tst -(r0)       ;back up over first non-existant line
+loop	< cmp r0,#ed.prv
+	  if los,<
+	    pop r0      ;only remaining line is current line
+	    sec
+	    kretrn
+	    >
+	  mov #-1,-(r0) ;zap this line
+	  cmp -2(r0),ed.lst
+	  exitl ne
+	  rptl
+	  >
+	mov -(r0),ed.lst
+	pop r0
+	clc
+	kretrn
+
+;;; Return to the caller of the line editor.  This means "push"ing onto the
+;;; line buffer stack the current line, and to copy the current line into
+;;; the rubbuf.
+
+ecretn:	mov ed.cur,r0
+	mov edceol,edcurp	;control-E
+	clr ed.stk      	;reset ^P and ^N stack
+	cmp edceol,r0		;if line is empty
+	beq 1$			;don't push it.
+	mov #ed.lst,r0
+	clr r1
+loop	< tst -(r0)     ;find last line
+	  if lt,<mov r0,r1>	;save addr of first non-existant one
+	  mov -2(r0),(r0)	;copy it down one line
+	  cmp r0,#ed.prv
+	  rptl hi
+	  >
+	tst r1
+	if eq,<
+	  mov ed.lst-2,ed.lst	;all the slots are full
+	  >
+	else <
+	  mov -(r1),ed.lst
+	  >
+	mov edceol,ed.cur	;start the new line at end of current one
+	mov ed.prv,r0
+1$:
+loop	< cmp r0,edceol
+	  exitl eq
+	  movb ed.txt(r0),r1	;copy line to rubbuf
+.iif eq edalon,	  call putchr,<#rubbuf,r1>
+	  edincp r0
+	  rptl
+	  >
+	mov #15,r0		;stuff the CR on the end
+	kcall prtch
+	clr edcurs      ;we are now at the beginning of the line
+	clr edmaxc      ;also a new line
+	mov edcurp,edoldp
+
+.iif eq edalon,	call putchr,<#rubbuf,r0>
+	pop *	;flush my return address and return for readln
+eddone:	clc
+	pop r4,r3,r2,r1
+	kretrn
+
+edmeta:	jmp ecundf      ;No meta commands defined now.
+
+;;; Rubout the character just before the cursor.
+
+ecrubc:
+1$:	kcall edrubc
+	dec edrept      ;check the repeat count
+	bgt 1$
+	clr edrept
+	mov edceol,r1
+	kcall edrdsp
+	kretrn
+
+edrubc:	cmp edcurp,ed.cur
+	if ne,<
+	  mov edceol,r1 ;get ptr to end of line
+	  eddecp r1
+	  mov r1,edceol
+	  mov edcurp,r2 ;get ptr to current position
+	  mov r2,r3     ;get next forward char
+	  eddecp r2     ;backup one
+	  movb ed.txt(r2),r4	;save rubbed out char for redisplay
+	  mov r2,edcurp
+loop	  < cmp r1,r2
+	    exitl eq
+	    movb ed.txt(r3),ed.txt(r2)
+	    mov r3,r2
+	    edincp r3
+	    rptl
+	    >
+	  >
+	kretrn
+
+;;; This command moved the cursor forward one char
+
+ecfwdc:
+1$:	kcall edfwdc
+	dec edrept      ;check the repeat count
+	bgt 1$
+	clr edrept
+	mov edcurp,r1
+	kcall edrdsp
+	kretrn
+
+edfwdc:	cmp edcurp,edceol
+	if ne,<edincp edcurp>
+	kretrn
+
+;;; This command moves the cursor backward one char
+
+ecbckc:
+1$:	kcall edbckc
+	dec edrept      ;check the repeat count
+	bgt 1$
+	clr edrept
+	mov edcurp,r1
+	kcall edrdsp
+	kretrn
+
+edbckc:	cmp edcurp,ed.cur
+	if ne,<eddecp edcurp>
+	kretrn
+
+;;; This command deletes the next character in the line.
+
+ecdelc:
+1$:	kcall eddelc
+	dec edrept      ;check the repeat count
+	bgt 1$
+	clr edrept
+	mov edceol,r1
+	kcall edrdsp
+	kretrn
+
+eddelc:	cmp edcurp,edceol
+	if ne,<
+	  kcall edfwdc
+	  kcall edrubc
+	  >
+	kretrn
+
+;;; This command inserts the Nth previous line at the current point in the
+;;; line.  N := log4(edrept)+1;
+
+ecyank:	mov #1,r0       ;count distance back to yank from.
+loop	< asr edrept
+	  asr edrept
+	  exitl eq
+	  inc r0
+	  rptl
+	  >
+	kcall edyank
+	clr edrept
+	mov edceol,r1
+	kcall edrdsp
+	kretrn
+
+edyank:	asl r0
+	if le,<jmp ecundf>
+	cmp r0,#<ed.lst-ed.cur>
+	if ge,<jmp ecundf>
+	mov ed.cur(r0),r1	;get ptr to line he wants
+	if lt,<jmp ecundf>
+	tst -(r0)
+	mov ed.cur(r0),r2	;get ptr to end of line.
+loop	< cmp r1,r2
+	  exitl eq
+	  movb ed.txt(r1),r0
+	  push r1,r2
+	  kcall edinsc
+	  pop r2,r1
+	  if cs,<jmp ecundf>
+	  edincp r1
+	  rptl
+	  >
+	kretrn
+
+ecprev:	clr edrept
+	inc ed.stk      ;go to the previous line
+	kcall ecbegl
+	kcall eckill
+	mov ed.stk,r0
+	kcall edyank
+	mov ed.cur,edoldp
+	mov edceol,r1
+	kcall edrdsp
+	kretrn
+
+ecnext:	sub #2,ed.stk
+	br ecprev
+
+ecquot:	kcall edgetc
+1$:	push r0
+	kcall edinsc
+	pop r0
+	if cs,<jmp ecundf>
+	dec edrept
+	bgt 1$
+	clr edrept
+	mov edceol,r1
+	kcall edrdsp
+	kretrn
+
+ecrdsp:	clr edrept
+	mov #-1,edcurs
+	kcall edrdsp
+	kretrn
+
+;;; This command erases the previous word
+
+ecrubw:
+1$:
+loop	< cmp edcurp,ed.cur
+	  exitl eq
+	  kcall edbckc
+	  mov edcurp,r1
+	  movb ed.txt(r1),r0
+	  push r0
+	  kcall eddelc
+	  pop r0
+	  kcall edalph
+	  rptl cc
+	  >
+loop	< cmp edcurp,ed.cur
+	  exitl eq
+	  kcall edbckc
+	  mov edcurp,r1
+	  movb ed.txt(r1),r0
+	  kcall edalph
+	  if cc,<
+	    kcall edfwdc
+	    exitl
+	    >
+	  kcall eddelc
+	  rptl
+	  >
+	dec edrept
+	bgt 1$
+	clr edrept
+	mov edceol,r1
+	kcall edrdsp
+	kretrn
+
+;;; Returns with carry set if the character in R0 is an alphabetic.
+;;; (actually if its a word constituent).
+edalph:	push r0
+	sub #'z+1,r0		; check if character is in range a-z
+	add #26.,r0		; set carry if a-z
+	if cc,<
+	  add #'a-'Z,r0		; check range A-Z
+	  add #26.,r0		; set carry if A-Z
+	  if cc,<
+	    add #'A-'9,r0
+	    add #10.,r0		; set carry if 0-9
+	    >
+	  >
+	pop r0
+	kretrn
+
+ecmult:	tst edrept
+	if eq,<mov #4,edrept>
+	else <
+	  mov edrept,r0
+	  asl r0
+	  asl r0
+	  mov r0,edrept
+	  >
+	kretrn
+
+ecbegl:
+loop	< cmp edcurp,ed.cur
+	  exitl eq
+	  kcall edbckc
+	  rptl
+	  >
+	clr edrept
+	mov edcurp,r1
+	kcall edrdsp
+	kretrn
+
+ecendl:
+loop	< cmp edcurp,edceol
+	  exitl eq
+	  kcall edfwdc
+	  rptl
+	  >
+	clr edrept
+	mov edcurp,r1
+	kcall edrdsp
+	kretrn
+
+eckill:
+loop	< cmp edcurp,edceol
+	  exitl eq
+	  kcall eddelc
+	  rptl
+	  >
+	clr edrept
+	mov edceol,r1
+	kcall edrdsp
+	kretrn
+
+;;; Internal routine to read a search character
+;;; depends on R1 being the 2*value of the search command being used
+edgets:	kcall edgetc		; get character to search for.	
+	cmpb r0,#037&'Q		; is it ^Q?
+	if eq,<kcall edgetc>	; yes, quote char
+	else <			; not quoted
+	  asr r1		; restore the value of R1
+	  cmpb r0,r1		; is this the search command itself repeated?
+	  if eq,<movb edlsch,r0>	; yes, repeat last search
+	  else < movb r0,edlsch>	; no, remember this search char
+	  >
+	kretrn
+
+;;; Reverse character search command
+ecrsch:	kcall edgets		; get a character to search for in R0
+	push edcurp		; save cursor in case search fails.
+loop	< cmp edcurp,ed.cur	; at beginning of line?
+	  if eq,<		; yes,
+	    pop edcurp		; search failed, restore the cursor
+	    jmp ecundf
+	    >
+	  push r0		; save r0 cause edbckc smashes it
+	  kcall edbckc		; move back one character
+	  pop r0
+	  mov edcurp,r1		; cursor
+	  cmpb r0,ed.txt(r1)	; is the cursor pointing at our search char
+	  rptl ne
+	  >
+	pop *			; search succeeded, throw old cursor away
+	clr edrept		; zero the repeat count
+	mov edcurp,r1
+	kcall edrdsp
+	kretrn
+
+;;; Forward character search command
+ecsrch:	kcall edgets		; get character to search for in R0.
+	push edcurp		; save cursor in case search fails
+loop	< cmp edcurp,edceol	; are we at end of line?
+	  if eq,<		; yes, 
+	    pop edcurp		; search failed, restore the cursor
+	    jmp ecundf		; punt the command
+	    >
+	  mov edcurp,r1		; current cursor
+	  cmpb r0,ed.txt(r1)	; is the cursor pointing to our search char ?
+	  exitl eq		; yes, we've found it
+	  push r0		; no, save R0 cause edfwdc smashes it
+	  kcall edfwdc		; move forward a character
+	  pop r0
+	  rptl
+	  >
+	pop *			; search succeeded, throw old cursor away
+	kcall edfwdc		; leave cursor one char beyond one searched for
+	clr edrept		; zero repeat count
+	mov edcurp,r1		; edrdsp arg: current cursor
+	kcall edrdsp		; call redisplay
+	kretrn
+
+ectwdl:
+	jmp ecundf
+
+ecundf:	mov #7,r0
+	kcall prtchr
+	clr edrept
+	kretrn
+
+.iif ne edalon,	.end start
+.sbttl Console interrupt handler
+
+kbdint:	push r0
+	movb @#tkb,r0
+	cmpb r0,#'`		;backquote for debugging
+	beq 2$
+	cmpb r0,#200+'`		;test it in both parities
+	if eq,<
+2$:
+.if ne debug
+	  bpt
+.iff
+	  nop			; leave place to patch to BPT
+.endc
+	  >
+	tst parity		;mask off parity?
+	if ne,<
+1$:	  bic #177400,r0	;don't mask off parity
+	  >
+	else <
+	  tstb uoptst+binary	;are we in binary mode?
+	  bmi 1$		;yes, don't mask the bit off
+	  bic #177600,r0	;mask off the parity bit
+	  >
+	tst lctrl		;are we in ^S/^Q mode?
+	if ne,<
+	  cmpb r0,#23		;ctrl-s?
+	  if eq,<		;then stop typing
+	    mov #1,ttystp	;stop output
+	    bic #100,@#tps	;turn off interrupts from the xmtr
+	    pop r0
+	    rti
+	    >
+	  cmpb r0,#21		;ctrl-Q?
+	  if eq,<
+	    bis #100,@#tps	;give interupt if ready
+	    clr ttystp
+	    pop r0
+	    rti
+	    >
+	  >
+	call putchr,<#ttyibf,r0>
+	pop r0
+	rti
+
+outint:	push r0
+	tst ttystp		;is output blocked?
+	bne 1$
+	call getchr,#ttyobf,r0
+	bcs 1$
+	movb r0,@#tpb
+2$:	pop r0
+	rti
+1$:	bic #100,@#tps
+	br 2$
+
+getcw:	proc 1,1,<>
+loop <	  call getchr,arg1(fp),out1(fp)
+	  exitl cc
+	  cocall
+	  rptl
+	  >
+	return
+
+pkcw:	proc 1,1,<>
+loop <	  call pkbuf,arg1(fp),out1(fp)
+	  exitl cc
+	  cocall
+	  rptl
+	  >
+	return
+
+putcw:	proc 2,0,<>
+loop <	  call putchr,<arg1(fp),arg2(fp)>
+	  exitl cc
+	  cocall
+	  rptl
+	  >
+	return
+
+; Remove next byte from buffer.
+getchr:	proc 1,1,<r0,r1>
+        mov arg1(fp),r1
+        cmp bf.get(r1),bf.put(r1)
+        beq 1$
+        movb @bf.get(r1),r0	;get the character
+	bic #177400,r0
+	inc bf.get(r1)		;bump the pointer
+        mov r0,out1(fp)
+	cmp bf.get(r1),bf.end(r1)	;do we have to wrap?
+        blo 2$
+        mov bf.bgn(r1),bf.get(r1)
+2$:	return
+1$:     mov #-1,out1(fp)	;no characters in buffer.
+	rtnerr
+
+; Peek at next byte in buffer.
+pkbuf:	proc 1,1,<r0,r1>
+        mov arg1(fp),r1
+        cmp bf.get(r1),bf.put(r1)
+        beq 1$
+        movb @bf.get(r1),r0	;get the character
+	bic #177400,r0
+        mov r0,out1(fp)
+	return
+1$:     mov #-1,out1(fp)	;no characters in buffer.
+	rtnerr
+
+; Insert byte in buffer.
+putchr:	proc 2,0,<r1,r2>
+	mov arg1(fp),r1
+	mov bf.npt(r1),r2
+	cmp bf.get(r1),r2
+	beq 2$
+	 movb arg2(fp),@bf.put(r1)
+	 mov r2,bf.put(r1)
+	 inc r2
+	 cmp r2,bf.end(r1)
+	 blo 1$
+	  mov bf.bgn(r1),r2
+1$:	 mov r2,bf.npt(r1)
+	 return
+2$:	rtnerr
+
+; Remove most recently put byte from buffer.  I.e. undo a putchr.
+remchr:	proc 1,1,<r0,r1>
+	mov arg1(fp),r1		;get pointer to buffer
+	cmp bf.get(r1),bf.put(r1)	;any chars in buffer?
+	if ne,<			;if there are then do
+	  mov bf.put(r1),bf.npt(r1)	;back up input
+	  dec bf.put(r1)	;decrement put
+	  cmp bf.put(r1),bf.bgn(r1)	;are we before the beginning?
+	  if lo,<
+	    mov bf.end(r1),bf.put(r1)	;point to end of the buffer
+	    dec bf.put(r1)
+	    >
+	  movb @bf.put(r1),r0	;get char to return to luser
+	  bic #177400,r0	;turn off high bits
+	  mov r0,out1(fp)	;return value
+	  return
+	  >
+	clr out1(fp)
+	rtnerr
+
+; Return number of bytes waiting to be read from buffer.
+numchr:	proc 1,1,<r0,r1>
+        mov arg1(fp),r1
+	mov bf.put(r1),r0
+        sub bf.get(r1),r0
+	if lo,<			;have to hack wrapping
+	  add bf.sze(r1),r0	;just add in buffer size if put less than get
+	  >
+	mov r0,out1(fp)
+	return
+
+;;; Send a chaosnet packet out over our telnet connection.
+outpak:
+	mov conect,r1
+loop <	  call chdato,<r0,r1>
+	  exitl cc
+	  cmpb cnstat(r1),#%csopn	;open?
+	  if eq,<
+	    cocall		;wait
+	    mov conect,r1	;fetch connection
+	    rptl ne
+	    >
+	  kcall frepck
+	  >
+	kretrn			;back to the users
+
+havset:	0
+conect:	0
+eolflg:	0
+hldout:	0
+lastct:	.blkw 2
+cp60th:	.blkw 1
+ct60th:	.blkw 1
+
+;;; now allocate the TCB stuff
+
+	alctcb
+
+hpsize==17000
+chheap:	1$
+tcheap==chheap
+1$:	.blkb hpsize
+
+pbufsz === 150.
+rbufsz === 250.
+inbuf:	.blkb buf.ln
+	.blkb pbufsz
+	.even
+
+ttyibf:	.blkb buf.ln
+	.blkb pbufsz
+	.even
+
+ttyobf:	.blkb buf.ln
+	.blkb pbufsz
+	.even
+
+rubbuf:	.blkb buf.ln
+	.blkb rbufsz
+	.even
+
+iac==377
+will==373
+wont==374
+do==375
+dont==376
+tnnop==361
+dm==362
+ip==364
+ayt==366
+
+binary==0
+echo==1
+sga==3
+tm==6
+logo==18.
+optmax==18.
+
+uopt:	.word suopt		; binary
+	.word uuopt		; echo
+	.word uuopt		; rcp
+	.word suopt		; supress-ga
+	.word uuopt		; nams
+	.word uuopt		; status
+	.word dtm		; timing-mark
+.rept optmax-tm
+	.word uuopt
+.endr
+.iif ne  <.-uopt>/2-optmax-1,	.err UOPT table wrong size
+sopt:	.word ssopt		; binary
+	.word secho		; echo
+	.word usopt		; rcp
+	.word ssopt		; supress-ga
+	.word usopt		; nams
+	.word usopt		; status
+	.word wtm		; timing-mark
+.rept logo-tm-1
+	.word usopt
+.endr
+	.word wlogo		; logout
+.iif ne  <.-sopt>/2-optmax-1,	.err SOPT table wrong size
+
+
+; Comment goes here.
+uoptst:	.blkb optmax+1
+soptst:	.blkb optmax+1
+wtmc==uoptst+tm			; unack'd WILL TM count
+dtmc==soptst+tm			; unack'd DO TM count
+
+
+cmdtbl:	.ascii "conn"		;connect to host
+	.ascii "quit"		;close connection and exit program
+	.ascii "disc"		;the disconnect command
+	.ascii "help"		;type out help message to user
+	.ascii "?   "		;type out help message to user
+	.ascii "osto"		;toggle ^S/^Q mode
+	.ascii "pari"		;toggle parity bit masking
+	.word 0,0		;telnet escape command (not lookup up in table)
+	.ascii "echo"		;toggle state of local echo
+	.ascii "brea"		;send break to host
+	.ascii "esca"		;set the command excape char
+	.ascii "moni"		;monitor negotations
+	.ascii "bpt "		;execute a BPT
+	.ascii "logo"		;logout
+	.ascii "spee"		;limit terminal output rate
+	.ascii "upti"		;display time since last restart
+	.ascii "ayt "		;send telnet "are you there?" command
+	.ascii "ip  "		;send telnet "interrupt process" command
+	.ascii "muzz"		;throw away output
+	.ascii "ccon"		;chaos connect
+	.ascii "bina"		;negotiate binary
+	.ascii "fing"		;finger
+cmdsze==<.-cmdtbl>/4		;number of entries in the table
+
+cmdflg:				;command flags, low bit means cmd allowed 
+				;before the connection has been opened.
+	.byte 3,1,1,2,3,3,3,3,2,3,2,3,3,3,2,3,3,2,2,2,1,2,3
+	.even
+
+nulcmd==0
+concmd==1
+qitcmd==2
+discmd==3
+helcmd==4
+quecmd==4			;cmd 5, the "?" command is the same as "help"
+ostcmd==6
+parcmd==7
+cupcmd==10
+echcmd==11
+brecmd==12
+
+cmdnam:	.word 0,0		;reserve 2 words for the command name
+
+negopr:	0			;print negotiations flag
+lctrl:	0			;^S/^Q Flag
+lecho:	.byte -1		;local echo flag
+echof:	.byte -1
+parity:	0			;the parity flag, initially off
+comchr:	36			;initial escape char for telnet
+errpak:	0			;error packet from the Chaos net
+ttystp:	0			;flag to indicate output blocked
+
+eolstr:	.asciz "
+"				;CR/LF
+jcls1:	.asciz "ARPA "
+jcls2:	.asciz " 27 2"		;ICP to socket 27, reserve 2 sockets
+jcls3:	.asciz " 117 2"		;ICP to socket 117, reserve 2 sockets
+istrng:	.byte iac,will,sga,iac,do,sga,iac,do,echo,0
+	.even
+
+.lif ne asmrt1
+	putlst
+	constants
+patch:
+
+.end telnet
+

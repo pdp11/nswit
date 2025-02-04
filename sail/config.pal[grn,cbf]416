@@ -1,0 +1,127 @@
+.sbttl Configuration
+
+setf ^"Configuration (1=Simulator, 2=Development Config,
+               3=Service machine, 4=Grinell service)?",choice
+
+.ifz choice-1           ; Simulator
+ilct:
+; device   device    interrupt   unit   input  output  parameter
+;  type    address    vector    number  speed   speed    word
+   dl,     177560,     60,      0,      9600,   9600,	 0
+   0
+itct:
+;  Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q
+;   PC        PC     Link    Link    Size    Size    Size   Size
+   c1in,    c1out,   1,      1,	     40,     40,     40,    40
+   0
+.endc
+
+.ifz choice-2           ; Development config
+ilct:   ; Initial Line Configuration Table
+; device   device    interrupt   unit   input  output  parameter
+;  type    address    vector    number  speed   speed    word
+
+   dzv,    170200,    330,      0,      9600,   9600,    17030
+   dzv,    170200,    330,      1,      9600,   9600,    17031
+   dzv,    170200,    330,      2,      9600,   9600,    17032
+   dzv,    170200,    330,      3,      9600,   9600,    17033
+   dl,     170010,    140,      0,      9600,   9600,    0
+;   dl,     176540,    340,      0,         0,      0,    0
+;   dl,     176550,    350,      0,         0,      0,    0
+;   dl,     176560,    360,      0,         0,      0,    0
+;   dl,     176570,    370,      0,         0,      0,    0
+   0  ; end Line Configuration Table
+
+itct:   ; Initial Terminal Configuration Table
+;  Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q
+;   PC        PC     Link    Link    Size    Size    Size   Size
+   c1in,    c1out,   1,      3,	      40,    40,     40,    40
+   c1in,    c1out,   2,      4,	      40,    40,     40,    40
+   sailin,  sailou,  3,      1,	    1000,    40,     40,    40
+   sailin,  sailou,  4,      2,	    1000,    40,     40,    40
+   s1kbd,   s1kbdo,  1,      3,	      20,     0,      0,     0
+;   c1in,    c1out,   5,      7,       40,    40,     40,    40
+;   c1in,    c1out,   6,      8.,      40,    40,     40,    40
+;   sailin, sailou,   7,      5,     1000,    40,     40,    40
+;   sailin, sailou,   8.,     6,     1000,    40,     40,    40
+   0
+.endc
+
+.ifz choice-3                   ; service config
+ilct:   ; Initial Line Configuration Table
+; device   device    interrupt   unit   input  output  parameter
+;  type    address    vector    number  speed   speed    word
+
+   dzv,    170200,    330,      0,      9600,   9600,    17030
+   dzv,    170200,    330,      1,      9600,   9600,    17031
+   dzv,    170200,    330,      2,      9600,   9600,    17032
+   dzv,    170200,    330,      3,      9600,   9600,    17033
+   dl,     170010,    140,      0,      9600,   9600,    0
+   dl,     176540,    340,      0,         0,      0,    0
+   dl,     176550,    350,      0,         0,      0,    0
+   dl,     176560,    360,      0,         0,      0,    0
+   dl,     176570,    370,      0,         0,      0,    0
+   0  ; end Line Configuration Table
+
+itct:   ; Initial Terminal Configuration Table
+;  Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q
+;   PC        PC     Link    Link    Size    Size    Size   Size
+   c1in,    c1out,   1,      3,	      40,    40,     40,    40    ; 1
+   c1in,    c1out,   2,      4,	      40,    40,     40,    40    ; 2
+   sailin,  sailou,  3,      1,	    1000,    40,     40,    40    ; 3
+   sailin,  sailou,  4,      2,	    1000,    40,     40,    40    ; 4
+   s1kbd,   s1kbdo,  1,      3,	      20,     0,      0,     0    ; 5
+   c1in,    c1out,   6,      8.,      40,    40,     40,    40    ; 6
+   c1in,    c1out,   7,      9.,      40,    40,     40,    40    ; 7
+   sailin, sailou,   8.,     6,     1000,    40,     40,    40    ; 8
+   sailin, sailou,   9.,     7,     1000,    40,     40,    40    ; 9
+   0
+.endc
+
+.ifz choice-4                   ; grinnell config
+ilct:   ; Initial Line Configuration Table
+; device   device    interrupt   unit   input  output  parameter
+;  type    address    vector    number  speed   speed    word
+
+   dzv,    170200,    330,      0,      9600,   9600,    17030	  ; 1
+   dzv,    170200,    330,      1,      9600,   9600,    17031	  ; 2
+   dzv,    170200,    330,      2,      9600,   9600,    17032    ; 3
+   dzv,    170200,    330,      3,      9600,   9600,    17033    ; 4
+   dl,     170010,    140,      0,      9600,   9600,    0	  ; 5
+   dl,     176540,    340,      0,         0,      0,    0	  ; 6
+   dl,     176550,    350,      0,         0,      0,    0        ; 7
+   dl,     176560,    360,      0,         0,      0,    0        ; 8
+   dl,     176570,    370,      0,         0,      0,    0        ; 9
+   grn,    172410,    124,      0,         0,      0,   16.       ; 10
+   grn,	   172410,    124,	0,	   0,	   0,	14.	  ; 11
+   grn,	   172410,    124,	0,	   0,	   0,	15.	  ; 12
+   grn,	   172410,    124,	0,	   0,	   0,	17.	  ; 13
+   dl,	   177560,     60,      0,         0,      0,    0	  ; 14
+   dl,     170040,    240,	0,	   0,	   0,    0	  ; 15
+   dl,     170050,    250,	0,	   0,	   0,    0	  ; 16
+   dl,     170060,    260,	0,	   0,	   0,    0	  ; 17
+   0  ; end Line Configuration Table
+
+itct:   ; Initial Terminal Configuration Table
+;  Input    Output   Echo   Output   In Q   O.I Q   Echo Q  Out Q
+;   PC        PC     Link    Link    Size    Size    Size   Size
+   sailin, sailou,   1.,    12.,    4000,    40,     40,    40    ; 1
+   sailin, sailou,   2.,    13.,    4000,    40,     40,    40    ; 2
+   c1in,    c1out,   3,      4,	      40,    40,     40,    40    ; 3
+   sailin,  sailou,  4,      3,	     600,    40,     40,    40    ; 4
+   s1kbd,   s1kbdo, 10.,     9.,      20,     0,      0,     0    ; 5
+   c1in,    c1out,   6,      8.,      40,    40,     40,    40    ; 6
+   c1in,    c1out,   7,      9.,      40,    40,     40,    40    ; 7
+   sailin, sailou,   8.,    11.,    4000,    40,     40,    40    ; 8
+   sailin, sailou,   9.,    10.,    4000,    40,     40,    40    ; 9
+   grnin,  grnout,   0,      0,        0,   100,     40,     0	  ; 10
+   grnin,  grnout,   0,      0,        0,   100,     40,     0	  ; 11
+   grnin,  grnout,   0,      0,        0,   100,     40,     0	  ; 12
+   grnin,  grnout,   0,      0,        0,   100,     40,     0	  ; 13
+   ttyin,  ttyout,  12.,     0,       40,    40,     40,    40    ; 14 console
+   s1kbd,  s1kbdo,  15.,     8.,      20,     0,      0,     0    ; 15
+   s1kbd,  s1kbdo,  16.,     1.,      20,     0,      0,     0    ; 16
+   s1kbd,  s1kbdo,  17.,     2.,      20,     0,      0,     0    ; 17
+   0
+.endc
+

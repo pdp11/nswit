@@ -1,0 +1,1482 @@
+
+.MAIN.	MACRO V03.02B22-JUL-80 05:50:51
+TABLE OF CONTENTS
+
+    1-   1	TS DATA BASES
+    3-   3	Terminal Switcher
+    4-   1	drvlod
+    5-   1	Maintenance Mode
+    5- 378	Status and Metering
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 1
+TS DATA BASES
+
+      1						.SBTTL	TS DATA BASES
+      2						.NLIST	TTM
+     42
+     43					;  These data blocks are for the traffic controller
+     44					;	to control tasks and stuff
+     45
+     46					; TCB - Task Control Block
+     47	000000					.block	tcb,tc
+     48	000000					tcb	urg,16.		;reg save area
+     49	000000					tcb	jid,2	;job ID, as indx into joblst gives addr(TCB)
+     50	000000					tcb	ste,2		;stack warn limit
+     51	000000					tcb	stk,200.	;stack area for task
+     52	000000					tcb	gar,2		;stack guard work for pop check
+     53	000000					tcb	nxt,2		;chain to next task blk
+     54	000000					tcb	wqu,2		;ptr to wait queue to use (on wait call)
+     55	000000					tcb	stt,2		;status of task
+     56	000000					tcb	use,2		;PS for task
+     57	000000					tcb	wat,2		;wait code: >0 for timer, <0 for wakeup
+     58	000000					tcb	wtm,2		;time spent in wait queue
+     59	000000					tcb	chg,2		;ptr to accounting word
+     60	000000					tcb	xxx,20.		;reserved for expansion
+     61
+     62					;  BUF - IO Buffer Block
+     63	000000					.block	buf,bf
+     64	000000					buf	tsk,2		;task id to wake up (if any)
+     65	000000					buf	brk,2		;character to wake task on
+     66	000000					buf	wct,2		;nbr of chars before waking task
+     67	000000					buf	siz,2		;size of buffer in bytes
+     68	000000					buf	cnt,2		;nbr of chars in buffer
+     69	000000					buf	fst,2		;ptr to before first char in buf
+     70	000000					buf	lst,2		;ptr to before last chr in buf (=FST if none)
+     71	000000					buf	ben,2		;ptr to end of buffer
+     72	000000					buf	adr,2		;addr of device
+     73	000000					buf	hdl,2		;adr of output handler
+     74	000000					buf	inp,2		; source of stuff
+     75	000000					buf	dta,2		;data block ptr for special device info
+     76	000000					buf	flg,2		;control flags
+     77	000000					buf	bfp,2		;holder for entire buffer area
+     78
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3
+TS DATA BASES
+
+      1						.title	Switcher
+      2	000000					.csect
+      3						.sbttl	Terminal Switcher
+      4						.enabl	lc
+      5						.mcall	.regdef
+      6	000000					.regdef
+      7
+      8						.globl	tip,hndlnw,runsys
+      9						.globl	bfcrat,getchr,getchs,putchr,putchs,rlsedv,getdv
+     10						.globl	ibftbl,binptr,botptr,nidevs,nodevs,inbtbl,dvownr
+     11						.globl	otdvtb,devtyp,chrclr,dvdesc,dftdsc,dlvhdl
+     12
+     13					;rt11s = 1	;assemble RT11 stuff
+     14
+     15		000015 			cr = 015
+     16		000012 			lf = 012
+     17		000040 			spce = 040	;space
+     18		000177 			del = 177	;delete char
+     19		000134 			eschr = '\	;default escape char
+     20		000044 			up = 44
+     21		100000 			iscnsl = 100000
+     22		040000 			rmcnsl =  40000
+     23		000001 			lecho  =  1
+     24		000002 			hndshk =  2
+     25		000004 			tparty =  4
+     26
+     27		000005 			ap = r5		;automatic storage ptr
+     28	000000					.block	ato,ap		;shape of automatic storage
+     29	000000					ato	tsk,2		;my task id (pointer)
+     30	000000					ato	jid,2		; task index
+     31	000000					ato	myd,2		;my console index
+     32	000000					ato	myp,2		;my printer channel
+     33	000000					ato	myk,2		;my keyboard channel
+     34	000000					ato	rmo,2		;xmit channel to remote
+     35	000000					ato	rmi,2		;rcv channel from remote
+     36	000000					ato	esc,1		;the escape char in use
+     37	000000					ato	flg,1		;some flags for control
+     38
+     39	000000	162706 	000020 		runsys:	sub	#ato.ln,sp	;setup auto area
+     40	000004	010605 				mov	sp,ap
+     41	000006	016765 	000000G	000006 		mov	botptr,ap.myp(ap)	;output dev
+     42	000014	012767 	000044 	002564 		mov	#up,swtstt	;set marker saying system alive
+     43	000022	005067 	012036 			clr	metrlk		;enable call to meterer
+     44	000026	005067 	012030 			clr	mantlk		;enable maintenance
+     45	000032	012700 	002654'			mov	#sysmsg,r0
+     46	000036	004767 	005644 			jsr	pc,outlin	;print msg
+     47					; send messages to console devices
+     48	000042	012703 	000000G			mov	#otdvtb,r3
+     49	000046	012704 	000000G			mov	#nodevs,r4
+     50	000052	012702 	000000G			mov	#devtyp,r2
+     51	000056	012365 	000006 		1$:	mov	(r3)+,ap.myp(ap)	;maybe ouput
+     52	000062	001416 				beq	2$		;if zero do nothing
+     53	000064	032722 	100000 			bit	#iscnsl,(r2)+	;if console bit on
+     54	000070	001413 				beq	2$
+     55	000072	032762 	040000 	177776 		bit	#rmcnsl,-2(r2)	;see if it is remote thing
+     56	000100	001403 				beq	3$
+     57	000102	012700 	004612'			mov	#belmsg,r0
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-1
+TERMINAL SWITCHER
+
+     58	000106	000402 				br	4$
+     59	000110	012700 	003170'		3$:	mov	#frems,r0
+     60	000114	004767 	005566 		4$:	jsr	pc,outlin	;print msg
+     61	000120	077422 			2$:	sob	r4,1$
+     62	000122					$exit			;go away after initialization
+     63
+     64	000124	010402 			hndlnw:	mov	r4,r2		;move interrupter index to r2
+     65	000126	016203 	000000G			mov	inbtbl(r2),r3	;get inbuf adr of interrupter
+     66	000132	032762 	100000 	000000G	ntcnsl:	bit	#iscnsl,devtyp(r2)	;is this a console?
+     67	000140	001001 				bne	2$
+     68	000142					$exit			;ignore if not console
+     69	000144				2$:	$mask			;mask while setting up
+     70	000146	111304 				movb	(r3),r4		;get wakeup char
+     71	000150	026727 	002432 	000044 		cmp	swtstt,#up	;is system active?
+     72	000156	001401 				beq	1$		;yes, go on
+     73	000160					$exit			;no, just vanish
+     74	000162				1$:
+     75	000162	016204 	000000G		tip:	mov	binptr(r2),r4	;get system buffer ptr for this dev
+     76	000166	004767 	000000G			jsr	pc,bfcrat	;make it input buffer
+     77	000172	010462 	000000G			mov	r4,ibftbl(r2)	;set up for input
+     78	000176	010162 	000000G			mov	r1,dvownr(r2)	;tag device owner
+     79	000202	010064 	000000 			mov	r0,bf.tsk(r4)	;this is the task to wakeup
+     80	000206	162706 	000020 			sub	#ato.ln,sp	;setup auto ptr
+     81	000212	010605 				mov	sp,ap
+     82	000214	010465 	000010 			mov	r4,ap.myk(ap)	;my keyboard channel
+     83	000220	010265 	000004 			mov	r2,ap.myd(ap)	;save console index
+     84	000224	010065 	000000 			mov	r0,ap.tsk(ap)	;save task id
+     85	000230	010165 	000002 			mov	r1,ap.jid(ap)	;save task index
+     86	000234	112765 	000134 	000016 		movb	#eschr,ap.esc(ap)	;set default escape cahr
+     87	000242	105065 	000017 			clrb	ap.flg(ap)	;initialize flags to zero
+     88	000246	016203 	000000G			mov	botptr(r2),r3
+     89	000252	010365 	000006 			mov	r3,ap.myp(ap)	;my printer channel
+U    90	000256	042763 	000000 	000030 		bic	#otrt1b+otrt1c,bf.flg(r3)
+     91	000264	005065 	000012 			clr	ap.rmo(ap)	;no active output
+     92	000270	005065 	000014 			clr	ap.rmi(ap)	;no active input
+     93	000274	012700 	002745'			mov	#stmsg,r0	;get ptr to start msg
+     94	000300	004767 	005402 			jsr	pc,outlin	;print it
+     95					;
+     96	000304	032762 	040000 	000000G		bit	#rmcnsl,devtyp(r2)	;remote console?
+     97	000312	001434 				beq	loop		;treat is as local
+     98	000314	012700 	000004 			mov	#4,r0		;wait a short time
+     99	000320					$wait			;make sure it is a considered attempt
+    100	000322	012703 	000017 			mov	#15.,r3		;ready to throw characters away
+    101	000326	016500 	000010 			mov	ap.myk(ap),r0	;get input buf ptr
+    102	000332	005303 			1$:	dec	r3		;count chars to discard
+    103	000334	003001 				bgt	2$
+    104	000336	000420 				br	3$		;too many garbage chars
+    105	000340	004767 	000000G		2$:	jsr	pc,getchs	;check on input status
+    106	000344	103372 				bcc	1$		;loop back after discarding char
+    107	000346	012700 	000120 			mov	#80.,r0		;time to wait
+    108	000352					$wait			;must repeat start char within that time
+    109	000354	016500 	000010 			mov	ap.myk(ap),r0	;to read char
+    110	000360	004767 	000000G			jsr	pc,getchs	;read if any
+    111	000364	103405 				bcs	3$		;go and clean up
+    112	000366	042701 	177600 			bic	#177600,r1	;only check 7 bits
+    113	000372	120127 	000134 			cmpb	r1,#eschr	;is it the escape char?
+    114	000376	001474 				beq	hdlesc		;tak it and go
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-2
+TERMINAL SWITCHER
+
+    115	000400	000167 	001134 		3$:	jmp	qabrt		;forget this
+    116
+    117	000404	016500 	000010 		loop:	mov	ap.myk(ap),r0	;get kb chanel
+    118	000410	004767 	000000G			jsr	pc,getchr	;read chr
+    119	000414	010103 				mov	r1,r3		;don't change output char
+    120	000416	042703 	177600 			bic	#177600,r3	;only check 7 bits
+    121	000422	120365 	000016 			cmpb	r3,ap.esc(ap)	;escape char?
+    122	000426	001460 				beq	hdlesc		;yes, go handle
+    123	000430	016500 	000012 		schr:	mov	ap.rmo(ap),r0	;channel for output?
+    124	000434	001013 				bne	11$		;check if output active
+    125	000436	120327 	000077 			cmpb	r3,#'?		;random ? mark
+    126	000442	001003 				bne	13$
+    127	000444	012700 	003525'			mov	#helpms,r0
+    128	000450	000402 				br	12$
+    129	000452	012700 	002720'		13$:	mov	#nocon,r0	;get ptr for error msg
+    130	000456	004767 	005224 		12$:	jsr	pc,outlin	;print it
+    131	000462	000750 				br	loop		;more chars
+    132	000464	132765 	000002 	000017 	11$:	bitb	#hndshk,ap.flg(ap)	;are we handshaking
+    133	000472	001417 				beq	2$		;no
+    134	000474	016502 	000006 			mov	ap.myp(ap),r2	;get ptr to output buf
+    135	000500	120327 	000021 			cmpb	r3,#021		;ctrl Q
+    136	000504	001004 				bne	3$
+U   137	000506	052762 	000000 	000030 		bis	#otrt1b,bf.flg(r2)	;reenable automatics
+    138	000514	000406 				br	2$
+    139	000516	120327 	000023 		3$:	cmpb	r3,#023		;ctrl s
+    140	000522	001003 				bne	2$
+U   141	000524	042762 	000000 	000030 		bic	#otrt1b+otrt1c,bf.flg(r2)	;take over
+    142	000532	132765 	000004 	000017 	2$:	bitb	#tparty,ap.flg(ap)	;clear parity bit?
+    143	000540	001402 				beq	4$		;skip if do nothing
+    144	000542	042701 	000200 			bic	#200,r1		;clear high order bit
+    145	000546	004767 	000000G		4$:	jsr	pc,putchr	;output the char to remote
+    146	000552	132765 	000001 	000017 		bitb	#lecho,ap.flg(ap)	;local echo?
+    147	000560	001711 				beq	loop
+    148	000562	004767 	005220 			jsr	pc,putpr	;echo it locally
+    149	000566	000706 				br	loop
+    150
+    151	000570	004767 	005212 		hdlesc:	jsr	pc,putpr	;echo char
+    152	000574	016500 	000010 			mov	ap.myk(ap),r0
+    153	000600	004767 	000000G			jsr	pc,getchr	;get chr from keyboard
+    154	000604	110103 				movb	r1,r3		;for checking low order bits
+    155	000606	042703 	177600 			bic	#177600,r3	;7 bits
+    156	000612	120365 	000016 			cmpb	r3,ap.esc(ap)	;repeat of escape char?
+    157	000616	001704 				beq	schr		;go send it (good char still in r1)
+    158	000620	042701 	177600 			bic	#177600,r1	;only need check low order bits
+    159	000624	004767 	005156 			jsr	pc,putpr	;echo it
+    160	000630	120127 	000177 			cmpb	r1,#del		;ignore?
+    161	000634	001005 				bne	2$
+    162	000636	012700 	004605'			mov	#crlf,r0
+    163	000642	004767 	005040 			jsr	pc,outlin	;newline and go on
+    164	000646	000656 				br	loop
+    165	000650	120127 	000077 		2$:	cmpb	r1,#'?		;help?
+    166	000654	001003 				bne	3$
+    167	000656	112701 	000110 			movb	#'H,r1		;make it H
+    168	000662	001410 				beq	cmds
+    169	000664	120127 	000015 		3$:	cmpb	r1,#cr		;carriage return?
+    170	000670	001005 				bne	cmds		;no, it is a cmd
+    171	000672	012701 	000012 			mov	#lf,r1		;echo linefeed
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-3
+TERMINAL SWITCHER
+
+    172	000676	004767 	005104 			jsr	pc,putpr
+    173	000702	000640 				br	loop
+    174	000704	120127 	000040 		cmds:	cmpb	r1,#spce	;allow leading spaces
+    175	000710	001003 				bne	1$
+    176	000712	004767 	005054 			jsr	pc,getkb
+    177	000716	000772 				br	cmds
+    178	000720	042701 	000040 		1$:	bic	#040,r1		;here to handle commands
+    179	000724	120127 	000103 			cmpb	r1,#'C		;is it to Close connection?
+    180	000730	001045 				bne	30$		;no, check if next cmd
+    181	000732	005765 	000012 			tst	ap.rmo(ap)	;any connection at all?
+    182	000736	001434 				beq	21$		;no, go complain
+    183	000740	004767 	005054 			jsr	pc,cline	;wait for cr
+    184	000744	103617 				bcs	loop		;he thought better of it
+    185	000746	005065 	000012 			clr	ap.rmo(ap)	;clear output channel
+    186	000752	016502 	000014 			mov	ap.rmi(ap),r2	;get index of remote stuff
+    187	000756	006202 				asr	r2
+    188	000760	004767 	010634 			jsr	pc,bindec	;output dev no.
+    189	000764	016502 	000014 			mov	ap.rmi(ap),r2
+    190	000770	016200 	000000G			mov	dvdesc(r2),r0	;get remote discription
+    191	000774	004767 	004706 			jsr	pc,outlin	;output dev closed
+    192	001000	016500 	000014 			mov	ap.rmi(ap),r0	;get remote index again
+    193	001004	004767 	000000G			jsr	pc,rlsedv	;release it
+    194	001010	005065 	000014 			clr	ap.rmi(ap)
+    195	001014	012700 	003012'			mov	#clmsg,r0	;closed msg
+    196	001020	004767 	004662 			jsr	pc,outlin
+    197	001024	000167 	177354 			jmp	loop
+    198	001030	012700 	002720'		21$:	mov	#nocon,r0	;errmsg
+    199	001034	004767 	004646 			jsr	pc,outlin
+    200	001040	000167 	177340 			jmp	loop
+    201
+    202	001044				30$:
+    203	001044	120127 	000117 		doopen:	cmpb	r1,#'O		;is it to Open connection?
+    204	001050	001175 				bne	doclse
+    205	001052	005765 	000012 			tst	ap.rmo(ap)	;any connection open?
+    206	001056	001125 				bne	32$		;yes, go complain
+    207	001060	004767 	010614 			jsr	pc,getdec	;get dev nbr to open
+    208	001064	103060 				bcc	4$		;a number was gotten
+    209	001066	042701 	000040 			bic	#40,r1		;(accept lower case)
+    210	001072	120127 	000123 			cmpb	r1,#'S		;no number, was it a SAIL?
+    211	001076	001112 				bne	36$		;they did not say SAIL
+    212	001100	004767 	004714 			jsr	pc,cline
+    213	001104	103507 				bcs	36$		;they didn't mean it
+    214	001106	016501 	000006 			mov	ap.myp(ap),r1	;my ptr
+    215	001112	016704 	001534 			mov	sallnp,r4	;list of sail lines
+    216	001116	012400 			1$:	mov	(r4)+,r0	;let's try a line
+    217	001120	010002 				mov	r0,r2
+    218	001122	001405 				beq	2$
+    219	001124	006300 				asl	r0
+    220	001126	004767 	000000G			jsr	pc,getdv
+    221	001132	103007 				bcc	3$
+    222	001134	000770 				br	1$
+    223	001136	012767 	002610'	001506 	2$:	mov	#sallst,sallnp
+    224	001144	012700 	003355'			mov	#nslms,r0	;send message of lossage
+    225	001150	000461 				br	35$
+    226	001152	010467 	001474 		3$:	mov	r4,sallnp
+    227	001156	020427 	002630'			cmp	r4,#salls1
+    228	001162	103403 				blo	5$
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-4
+TERMINAL SWITCHER
+
+    229	001164	012767 	002610'	001460 		mov	#sallst,sallnp
+    230	001172	010204 			5$:	mov	r2,r4
+    231	001174	012700 	003451'			mov	#gotsal,r0
+    232	001200	004767 	004502 			jsr	pc,outlin
+    233	001204	004767 	010410 			jsr	pc,bindec
+    234	001210	012700 	004605'			mov	#crlf,r0
+    235	001214	004767 	004466 			jsr	pc,outlin
+    236	001220	010403 				mov	r4,r3
+    237	001222	006303 				asl	r3
+    238	001224	000424 				br	38$
+    239	001226	010003 			4$:	mov	r0,r3		;get the value
+    240	001230	020327 	000000G			cmp	r3,#nidevs	;is it legal
+    241	001234	103041 				bhis	33$		;if too big it is bad
+    242	001236	020127 	000015 			cmp	r1,#15		;was it terminated by CR
+    243	001242	001403 				beq	31$		;yes, good
+    244	001244	004767 	004550 			jsr	pc,cline	;no, make sure they really want it
+    245	001250	103421 				bcs	35$		;if carry, quit
+    246	001252	006303 			31$:	asl	r3		;double for byte offset
+    247	001254	005763 	000000G			tst	otdvtb(r3)	;see that it exists
+    248	001260	001427 				beq	33$		;if zero bad
+    249	001262	016501 	000006 			mov	ap.myp(ap),r1	;grab it, send chars to my printer
+    250	001266	010300 				mov	r3,r0		;to go get it
+    251	001270	004767 	000000G			jsr	pc,getdv
+    252	001274	103424 				bcs	34$		;someone else has it, lose
+    253	001276	010365 	000014 		38$:	mov	r3,ap.rmi(ap)	;set internal table
+    254	001302	016365 	000000G	000012 		mov	otdvtb(r3),ap.rmo(ap)	;set my remote out to this device
+    255	001310	012700 	003141'			mov	#opnmsg,r0
+    256	001314	004767 	004366 		35$:	jsr	pc,outlin
+    257	001320	000167 	177060 			jmp	loop
+    258	001324	012700 	004605'		36$:	mov	#crlf,r0
+    259	001330	000771 				br	35$
+    260	001332	012700 	003024'		32$:	mov	#alropn,r0
+    261	001336	000766 				br	35$
+    262	001340	012700 	003056'		33$:	mov	#badopn,r0
+    263	001344	000763 				br	35$
+    264	001346	012700 	003111'		34$:	mov	#notfre,r0
+    265	001352	004767 	004330 			jsr	pc,outlin
+    266	001356	010304 				mov	r3,r4
+    267	001360	016402 	000000G			mov	dvownr(r4),r2	;get job index of owner
+U   268	001364	016204 	000000 			mov	joblst(r2),r4	;get job ptr
+    269	001370	006202 				asr	r2
+    270	001372	004767 	010222 			jsr	pc,bindec	;print job nbr
+    271	001376	016403 	000012 			mov	10.(r4),r3	;HACK! use HIS auto ptr
+    272	001402	016302 	000004 			mov	ap.myd(r3),r2	;get his console nbr
+    273	001406	006202 				asr	r2
+    274	001410	004767 	010204 			jsr	pc,bindec
+    275	001414	005002 				clr	r2
+U   276	001416	026427 	000346 	000000 		cmp	tc.wat(r4),#w.iowt	;is he waiting on I/O
+    277	001424	001002 				bne	39$			;no
+    278	001426	016402 	000350 			mov	tc.wtm(r4),r2	;get idle time
+    279	001432	004767 	010162 		39$:	jsr	pc,bindec	;print it
+    280	001436	012700 	004605'			mov	#crlf,r0
+    281	001442	000724 				br	35$
+    282
+    283	001444	120127 	000121 		doclse:	cmpb	r1,#'Q		;to quit and reset?
+    284	001450	001042 				bne	t1		;try next
+    285	001452	004767 	004342 			jsr	pc,cline	;wait for confirmation
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-5
+TERMINAL SWITCHER
+
+    286	001456	103002 				bcc	qclse		;skip if really to do it
+    287	001460	000167 	176720 			jmp	loop		;he didn't mean it
+    288	001464	016502 	000012 		qclse:	mov	ap.rmo(ap),r2	;connection open?
+    289	001470	001417 				beq	41$		;no, just exit
+    290	001472	016502 	000014 			mov	ap.rmi(ap),r2	;get index of remote input
+    291	001476	006202 				asr	r2
+    292	001500	004767 	010114 			jsr	pc,bindec
+    293	001504	016502 	000014 			mov	ap.rmi(ap),r2
+    294	001510	016200 	000000G			mov	dvdesc(r2),r0	;get device discription
+    295	001514	004767 	004166 			jsr	pc,outlin	;print remote discription
+    296	001520	016500 	000014 			mov	ap.rmi(ap),r0	;get index of remote input
+    297	001524	004767 	000000G			jsr	pc,rlsedv
+    298	001530	012700 	003151'		41$:	mov	#quitms,r0
+    299	001534	004767 	004146 			jsr	pc,outlin
+    300	001540	016502 	000004 		qabrt:	mov	ap.myd(ap),r2	;get index of my device
+    301	001544	005062 	000000G			clr	ibftbl(r2)	;close my console
+    302	001550	005062 	000000G			clr	dvownr(r2)
+    303	001554					$exit
+    304
+    305	001556				t1:
+    306	001556	120127 	000111 		60$:	cmpb	r1,#'I		;to change escape char?
+    307	001562	001025 				bne	70$		;next
+    308	001564	004767 	004202 			jsr	pc,getkb	;get character
+    309	001570	020127 	000041 			cmp	r1,#41		;make sure it is reasonable
+    310	001574	002412 				blt	62$		;put msg
+    311	001576	020127 	000177 			cmp	r1,#177
+    312	001602	002007 				bge	62$
+    313	001604	010103 				mov	r1,r3
+    314	001606	004767 	004206 			jsr	pc,cline
+    315	001612	103407 				bcs	63$
+    316	001614	110365 	000016 			movb	r3,ap.esc(ap)	;change the escape
+    317	001620	000404 				br	63$
+    318	001622	012700 	003224'		62$:	mov	#badesc,r0
+    319	001626	004767 	004054 			jsr	pc,outlin
+    320	001632	000167 	176546 		63$:	jmp	loop
+    321
+    322	001636	120127 	000105 		70$:	cmpb	r1,#'E		;echo control?
+    323	001642	001014 			t2:	bne	80$		;next
+    324	001644	004767 	004150 			jsr	pc,cline	;confirm?
+    325	001650	103407 				bcs	71$
+    326	001652	012703 	000001 			mov	#lecho,r3
+    327	001656	116504 	000017 			movb	ap.flg(ap),r4
+    328	001662	074304 				xor	r3,r4
+    329	001664	110465 	000017 			movb	r4,ap.flg(ap)	;complement it
+    330	001670	000167 	176510 		71$:	jmp	loop
+    331
+    332	001674				80$:
+    333	001674	120127 	000123 		sbrk:	cmpb	r1,#'S		;send something?
+    334	001700	001402 				beq	1$
+    335	001702	000167 	000424 			jmp	help
+    336	001706	004767 	004060 		1$:	jsr	pc,getkb
+    337	001712	042701 	000040 			bic	#40,r1		;ro regularize case
+    338	001716	120127 	000102 			cmpb	r1,#'B		;for break char
+    339	001722	001030 				bne	82$		;not break
+    340	001724	016503 	000012 			mov	ap.rmo(ap),r3	;get buffer addr
+    341	001730	001422 				beq	83$
+    342	001732	016302 	000020 			mov	bf.adr(r3),r2	;get dev addr
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-6
+TERMINAL SWITCHER
+
+    343	001736	001417 				beq	83$
+    344	001740	004767 	004054 			jsr	pc,cline
+    345	001744	103407 				bcs	89$
+    346	001746	052712 	000001 			bis	#1,(r2)		;set break bit
+    347	001752	012700 	000036 			mov	#30.,r0		;wait for a time
+    348	001756					$wait
+    349	001760	042712 	000001 			bic	#1.,(r2)	;clear it again
+    350	001764	000167 	176414 		89$:	jmp	loop
+    351
+    352	001770	004767 	003712 		81$:	jsr	pc,outlin
+    353	001774	000773 				br	89$
+    354
+    355	001776	012700 	002720'		83$:	mov	#nocon,r0	;no connection ready
+    356	002002	000772 				br	81$
+    357	002004	120127 	000115 		82$:	cmpb	r1,#'M		;for messages
+    358	002010	001431 				beq	smsg
+    359	002012	120127 	000104 			cmpb	r1,#'D		;send Boot to GDP?
+    360	002016	001403 				beq	sgboot
+    361	002020	012700 	002706'			mov	#watcmd,r0	;bad send spec
+    362	002024	000761 				br	81$
+    363	002026	004767 	003766 		sgboot:	jsr	pc,cline
+    364	002032	103416 				bcs	1$
+    365	002034	004767 	004034 		2$:	jsr	pc,drvnxt
+    366	002040	103406 				bcs	3$
+    367	002042	010001 				mov	r0,r1
+    368	002044	016700 	000044G			mov	botptr+36.,r0
+    369	002050	004767 	000000G			jsr	pc,putchr
+    370	002054	000767 				br	2$
+    371	002056	010001 			3$:	mov	r0,r1
+    372	002060	016700 	000044G			mov	botptr+36.,r0
+    373	002064	004767 	000000G			jsr	pc,putchr
+    374	002070	000167 	176310 		1$:	jmp	loop
+    375
+    376
+    377	002074	004767 	007600 		smsg:	jsr	pc,getdec	;get destination
+    378	002100	103500 				bcs	10$
+    379	002102	020027 	000000G			cmp	r0,#nodevs
+    380	002106	103103 				bhis	11$		;bad spec
+    381	002110	006300 				asl	r0		;mak it byte offset
+    382	002112	016002 	000000G			mov	otdvtb(r0),r2	;get outbuf ptr
+    383	002116	001477 				beq	11$		;if zero, no good
+    384	002120	016504 	000002 			mov	ap.jid(ap),r4	;get job index
+    385	002124	016404 	012264'			mov	lnbfs(r4),r4	;get a buffer pointer (how crude)
+    386	002130	010403 				mov	r4,r3
+    387	002132	112724 	000007 			movb	#7,(r4)+
+    388	002136	110124 				movb	r1,(r4)+
+    389	002140	112714 	000200 			movb	#200,(r4)
+    390	002144	004767 	003622 		1$:	jsr	pc,getkb	;get a character
+    391	002150	120127 	000177 			cmpb	r1,#177		;delete?
+    392	002154	001011 				bne	2$
+    393	002156	005304 				dec	r4
+    394	002160	020403 				cmp	r4,r3
+    395	002162	103447 				blo	10$
+    396	002164	010400 				mov	r4,r0
+    397	002166	004767 	003514 			jsr	pc,outlin
+    398	002172	112714 	000200 			movb	#200,(r4)
+    399	002176	000762 				br	1$
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-7
+TERMINAL SWITCHER
+
+    400	002200	120127 	000015 		2$:	cmpb	r1,#15		;eom
+    401	002204	001027 				bne	3$
+    402	002206	112724 	000007 			movb	#7,(r4)+
+    403	002212	005014 				clr	(r4)
+    404	002214	010304 				mov	r3,r4
+    405	002216	016546 	000006 			mov	ap.myp(ap),-(sp)
+    406	002222	010265 	000006 			mov	r2,ap.myp(ap)
+    407	002226	012700 	003513'			mov	#frmtty,r0
+    408	002232	004767 	003450 			jsr	pc,outlin
+    409	002236	016502 	000004 			mov	ap.myd(ap),r2
+    410	002242	006202 				asr	r2
+    411	002244	004767 	007350 			jsr	pc,bindec
+    412	002250	010400 				mov	r4,r0
+    413	002252	004767 	003430 			jsr	pc,outlin
+    414	002256	012665 	000006 			mov	(sp)+,ap.myp(ap)
+    415	002262	000407 				br	10$
+    416	002264	120127 	000012 		3$:	cmpb	r1,#12		;if line feed cancel
+    417	002270	001404 				beq	10$
+    418	002272	110124 				movb	r1,(r4)+
+    419	002274	112714 	000200 			movb	#200,(r4)
+    420	002300	000721 				br	1$
+    421	002302	012700 	004605'		10$:	mov	#crlf,r0
+    422	002306	004767 	003374 			jsr	pc,outlin
+    423	002312	000167 	176066 			jmp	loop
+    424	002316	012700 	003056'		11$:	mov	#badopn,r0
+    425	002322	004767 	003360 			jsr	pc,outlin
+    426	002326	000167 	176052 			jmp	loop
+    427
+    428	002332	120127 	000110 		help:	cmpb	r1,#'H		;help them
+    429	002336	001011 				bne	20$
+    430	002340	004767 	003454 			jsr	pc,cline
+    431	002344	103404 				bcs	12$
+    432	002346	012700 	003525'			mov	#helpms,r0
+    433	002352	004767 	003330 			jsr	pc,outlin
+    434	002356	000167 	176022 		12$:	jmp	loop
+    435	002362				20$:
+    436
+    437	002362	120127 	000113 		shaker:	cmpb	r1,#'K		;hand shake
+    438	002366	001036 				bne	30$
+    439	002370	004767 	003424 			jsr	pc,cline
+    440	002374	103431 				bcs	21$
+    441	002376	116504 	000017 			movb	ap.flg(ap),r4	;get current flags
+    442	002402	012703 	000002 			mov	#hndshk,r3
+    443	002406	074304 				xor	r3,r4
+    444	002410	110465 	000017 			movb	r4,ap.flg(ap)	;complement it
+    445	002414	016503 	000006 			mov	ap.myp(ap),r3
+U   446	002420	042763 	000000 	000030 		bic	#otrt1b+otrt1c,bf.flg(r3)
+    447	002426	012700 	003250'			mov	#shkno,r0
+    448	002432	132765 	000002 	000017 		bitb	#hndshk,ap.flg(ap)
+    449	002440	001405 				beq	22$
+U   450	002442	052763 	000000 	000030 		bis	#otrt1b,bf.flg(r3)
+    451	002450	012700 	003271'			mov	#shkyes,r0
+    452	002454	004767 	003226 		22$:	jsr	pc,outlin
+    453	002460	000167 	175720 		21$:	jmp	loop
+    454	002464				30$:
+    455	002464	120127 	000120 		parity:	cmpb	r1,#'P		;parity bit clearling
+    456	002470	001026 				bne	30$
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-8
+TERMINAL SWITCHER
+
+    457	002472	004767 	003322 			jsr	pc,cline
+    458	002476	103421 				bcs	21$
+    459	002500	116504 	000017 			movb	ap.flg(ap),r4	;get current flags
+    460	002504	012703 	000004 			mov	#tparty,r3
+    461	002510	074304 				xor	r3,r4
+    462	002512	110465 	000017 			movb	r4,ap.flg(ap)	;complement it
+    463	002516	012700 	003311'			mov	#parno,r0
+    464	002522	132765 	000004 	000017 		bitb	#tparty,ap.flg(ap)
+    465	002530	001402 				beq	22$
+    466	002532	012700 	003335'			mov	#paryes,r0
+    467	002536	004767 	003144 		22$:	jsr	pc,outlin
+    468	002542	000167 	175636 		21$:	jmp	loop
+    469	002546				30$:
+    470	002546	120127 	000115 			cmpb	r1,#'M		;to maintenance
+    471	002552	001007 				bne	40$
+    472	002554	004767 	003240 			jsr	pc,cline
+    473	002560	103402 				bcs	31$
+    474	002562	000167 	003652 			jmp	mancsl
+    475	002566	000167 	175612 		31$:	jmp	loop
+    476	002572				40$:
+    477	002572	012700 	002706'		badcmd:	mov	#watcmd,r0
+    478	002576	004767 	003104 			jsr	pc,outlin
+    479	002602	000167 	175576 			jmp	loop
+    480
+    481	002606	000000 			swtstt:	.word	0		;word for status and so on
+    482
+    483	002610	000002 	000016 	000017 	sallst:	.word	2.,14.,15.,16.,25.,26.,27.,28.
+	002616	000020 	000031 	000032
+	002624	000033 	000034
+    484	002630	000002 	000016 	000017 	salls1:	.word	2.,14.,15.,16.,25.,26.,27.,28.,0
+	002636	000020 	000031 	000032
+	002644	000033 	000034 	000000
+    485	002652	002610'			sallnp:	.word	sallst
+    486
+    487						.nlist	bex
+    488	002654	   015 	   012 	   123 	sysmsg:	.asciz	<15><12>/System up and available/
+    489	002706	   007 	   040 	   110 	watcmd:	.asciz	<7>/ HUH?/
+    490	002715	   040 	   077 	   000 	qmark:	.asciz	/ ?/
+    491	002720	   007 	   040 	   116 	nocon:	.asciz	<7>/ No connection open/
+    492	002745	   040 	   117 	   055 	stmsg:	.asciz	/ O-Group Switch - Use ? cmd for help/
+    493	003012	   040 	   117 	   040 	clmsg:	.asciz	/ O Closed/
+    494	003024	   007 	   040 	   103 	alropn:	.asciz	<7>/ Connection already open/
+    495	003056	   007 	   040 	   102 	badopn:	.asciz	<7>/ Bad remote specification/
+    496	003111	   040 	   111 	   156 	notfre:	.ascii	\ In use: Job/tty/Idle -\<200>
+    497	003141	   040 	   117 	   040 	opnmsg:	.asciz	/ O Open/
+    498	003151	   040 	   103 	   157 	quitms:	.ascii	/ Console free/<15><12>
+    499	003170	   124 	   171 	   160 	frems:	.asciz	/Type "/<eschr>/" to grab terminal./<7>
+    500	003224	   007 	   040 	   104 	badesc:	.asciz	<7>/ Disallowed escape/
+    501	003250	   040 	   110 	   141 	shkno:	.asciz	/ Handshaking off/
+    502	003271	   040 	   110 	   141 	shkyes:	.asciz	/ Handshaking on/
+    503	003311	   040 	   120 	   141 	parno:	.asciz	/ Parity transmitted/
+    504	003335	   040 	   120 	   141 	paryes:	.asciz	/ Parity cleared/
+    505	003355	   040 	   123 	   160 	nslms:	.asciz	/ Special SAIL lines in use. Try XPATCH through Devs 7 or 6./
+    506	003451	   040 	   131 	   157 	gotsal:	.ascii	/ You have a SAIL line through Dev/<200>
+    507	003513	   015 	   012 	   106 	frmtty:	.ascii	<15><12>/From/<200>
+    508	003522	   037 	   035 	   200 	nwscrn:	.byte	37,35,200
+    509	003525	   015 	   012 		helpms:	.byte	15,12
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-9
+TERMINAL SWITCHER
+
+    510	003527	   104 	   105 	   114 		.ascii	\DEL before CR cancels command.  \
+    511	003567	   103 	   122 	   040 		.ascii	\CR alone is null command.\<15><12>
+    512	003622	   040 	   117 	   156 		.ascii	\ On opens connection to device n.\<15><12>
+    513	003665	   040 	   117 	   123 		.ascii	\ OS looks for and opens a line to SAIL.\<15><12>
+    514	003736	   040 	   103 	   040 		.ascii	\ C closes the open connection.\<15><12>
+    515	003776	   040 	   121 	   040 		.ascii	\ Q closes any connection and frees console and job.\
+    516	004061	   015 	   012 	   040 		.ascii	<15><12>\ E toggles local echo flag. \
+    517	004117	   050 	   144 	   145 		.ascii	\(default off)\<15><12>
+    518	004136	   040 	   115 	   040 		.ascii	\ M makes local console maintenance console.\<15><12>
+    519	004213	   040 	   111 	   170 		.ascii	\ Ix sets escape character to x.\<15><12>
+    520	004254	   040 	   120 	   040 		.ascii	\ P toggles masking to zero fo parity bit.\<15><12>
+    521	004327	   040 	   113 	   040 		.ascii	\ K toggles RT11 console handshaking.\<15><12>
+    522	004375	   040 	   123 	   115 		.ascii	/ SMn sends msg to dev n; DEL deletes char, /
+    523	004450	   114 	   106 	   040 		  .ascii	/LF cancels./<15><12>
+    524	004465	   040 	   123 	   102 		.ascii	/ SB sends BREAK through connection./<15><12>
+    525	004532	   040 	   123 	   104 		.asciz	/ SD sends a boot routine to the GDP LSI./<15><12>
+    526	004605	   015 	   012 	   200 	crlf:	.byte	15,12,200
+    527	004610	   015 	   200 		cronl:	.byte	15,200
+    528	004612	   007 	   200 		belmsg:	.byte	7,200
+    529	004614	   057 	   200 		slshsp:	.ascii	\/\<200>
+    530	004616	   106 	   165 	   156 	badrmt:	.asciz	/Function not allowed from remote console/
+    531	004667	   115 	   141 	   151 	otrmnt:	.asciz	/Maintenance function already assigned./
+    532	004736	   116 	   157 	   164 	nfjbs:	.asciz	/Not enough job slots for FIDO, remember to close this/
+    533	005024	   123 	   167 	   151 	mntcsl:	.asciz	/Switch Maintenance Console - Type ? for help/
+    534	005101	   040 	   105 	   040 	mhepms:	.ascii	/ E start meter, F stop meter/<15><12>
+    535	005137	   040 	   127 	   040 		.ascii	/ W displays assignments, Knn kills job nn/<15><12>
+    536	005212	   040 	   121 	   040 		.ascii	/ Q quits this mode/
+    537	005234	   015 	   012 			.byte	15,12
+    538	005236	   040 	   117 	   104 		.ascii	\ ODT style:  / _ @ ^ LF CR\<15><12>
+    539	005272	   040 	   117 	   164 		.ascii	/ Other: nB sets BASE to n, B reset/<15><12>
+    540	005336	   011 	   040 	   156 		.ascii	/	 nT use task n; opens TCB/<15><12>
+    541	005372	   011 	   040 	   156 		.ascii	/	 nR reg n of task of offset in TCB/<15><12>
+    542	005437	   011 	   040 	   040 		.asciz	/	  S PS of task/
+    543	005457	   015 	   012 	   104 	whohdr:	.asciz	<15><12>/Dev no               Job  Idle       Dev no               Job  Idle
+    544	005565	   112 	   157 	   142 	kilmsg:	.asciz	/Job killed/
+    545	005600	   112 	   157 	   142 	notelg:	.asciz	/Job not eligible to be killed/
+    546	005636	   102 	   141 	   144 	badjid:	.asciz	/Bad job ID/
+    547	005651	   040 	   122 	   145 	qmtmsg:	.asciz	/ Return to switch functions/
+    548						.list bex
+    549
+    550						.even
+    551
+    552	005706	010046 			outlin:	mov	r0,-(sp)
+    553	005710	010146 				mov	r1,-(sp)
+    554	005712	010246 				mov	r2,-(sp)
+    555	005714	010002 				mov	r0,r2
+    556	005716	016500 	000006 			mov	ap.myp(ap),r0
+    557	005722	112201 			1$:	movb	(r2)+,r1
+    558	005724	001406 				beq	2$
+    559	005726	120127 	000200 			cmpb	r1,#200
+    560	005732	001413 				beq	outdn
+    561	005734	004767 	000000G			jsr	pc,putchr
+    562	005740	000770 				br	1$
+    563	005742	012701 	000015 		2$:	mov	#15,r1
+    564	005746	004767 	000000G			jsr	pc,putchr
+    565	005752	112701 	000012 			movb	#12,r1
+    566	005756	004767 	000000G			jsr	pc,putchr
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 3-10
+TERMINAL SWITCHER
+
+    567	005762	012602 			outdn:	mov	(sp)+,r2
+    568	005764	012601 				mov	(sp)+,r1
+    569	005766	012600 				mov	(sp)+,r0
+    570	005770	000207 				rts	pc
+    571
+    572	005772	016500 	000010 		getkb:	mov	ap.myk(ap),r0
+    573	005776	004767 	000000G			jsr	pc,getchr
+    574	006002	042701 	177600 			bic	#177600,r1
+    575	006006	016500 	000006 		putpr:	mov	ap.myp(ap),r0
+    576	006012	004767 	000000G			jsr	pc,putchr
+    577	006016	000207 				rts	pc
+    578
+    579	006020	004767 	177746 		cline:	jsr	pc,getkb	;just wait for CR
+    580	006024	120127 	000015 			cmpb	r1,#CR		;is it?
+    581	006030	001006 				bne	1$		;no, keep going
+    582	006032	012701 	000012 			mov	#LF,r1
+    583	006036	004767 	177744 			jsr	pc,putpr
+    584	006042	000241 				clc			;clear carry to say all is well
+    585	006044	000207 				rts	pc
+    586	006046	120127 	000177 		1$:	cmpb	r1,#del		;delete the command?
+    587	006052	001362 				bne	cline		;no, loop
+    588	006054	012700 	004605'			mov	#crlf,r0	;just newline
+    589	006060	004767 	177622 			jsr	pc,outlin
+    590	006064	000261 				sec			;set code
+    591	006066	000207 				rts	pc
+    592					;
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 4
+DRVLOD
+
+      1					.sbttl drvlod
+      2
+      3	006070	000000 			drvcks:	0
+      4	006072	006216'			drvpnt:	drvtab
+      5
+      6	006074	026727 	177772 	006430'	drvnxt:	cmp drvpnt,#drvend
+      7	006102	103012 				bhis 1$
+      8	006104	117700 	177762 		3$:	movb @drvpnt,r0
+      9	006110	042700 	177400 			bic #177400,r0
+     10	006114	160067 	177750 			sub r0,drvcks
+     11	006120	005267 	177746 			inc drvpnt
+     12	006124	000241 				clc
+     13	006126	000207 				rts pc
+     14
+     15	006130	001013 			1$:	bne 2$
+     16	006132	016700 	177732 			mov drvcks,r0
+     17	006136	042700 	177400 			bic #177400,r0
+     18	006142	005067 	177722 			clr drvcks
+     19	006146	062767 	000002 	177716 		add #2,drvpnt
+     20	006154	000241 				clc
+     21	006156	000207 				rts pc
+     22
+     23	006160	026727 	177706 	006440'	2$:	cmp drvpnt,#drven2
+     24	006166	103746 				blo 3$
+     25	006170	016700 	177674 			mov drvcks,r0
+     26	006174	042700 	177400 			bic #177400,r0
+     27	006200	005067 	177664 			clr drvcks
+     28	006204	012767 	006216'	177660 		mov #drvtab,drvpnt
+     29	006212	000261 				sec
+     30	006214	000207 				rts pc
+     31
+     32					;This is an absolute loader that loads a funny kind of BIN file.  Each
+     33					;block in the BIN file must have an even number of bytes and the checksum
+     34					;must be followed by a null byte so that the next block begins on a word
+     35					;boundary
+     36
+     37		177100 			drvcsr=177100
+     38		177102 			drvtdb=drvcsr+2
+     39		177104 			drvrdb=drvcsr+4
+     40
+     41		000100 			drvpdl=100
+     42
+     43	006216	000001 	000212 	000200 	drvtab:	1,drvsiz,200		;header,size,starting load address
+     44	006224	012706 	000100 		drvgo:	mov #drvpdl,sp
+     45	006230	012700 	177100 			mov #drvcsr,r0
+     46	006234	005010 				clr (r0)		;clear csr
+     47	006236	010001 				mov r0,r1
+     48	006240	022121 				cmp (r1)+,(r1)+		;advance pointer to read buffer
+     49	006242	005711 				tst (r1)		;reference read buffer to clear it out
+     50	006244	012702 	001000 			mov #1000,r2
+     51	006250	012703 	067400 			mov #<70000-400>,r3	;div by two done by hand to avoid minus lossage
+     52	006254	005022 			4$:	clr (r2)+
+     53	006256	077302 				sob r3,4$
+     54	006260	004767 	000124 		5$:	jsr pc,drvrdw
+     55	006264	020227 	000001 			cmp r2,#1
+     56	006270	001373 				bne 5$
+     57	006272	012705 	000001 			mov #1,r5		;checksum
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 4-1
+DRVLOD
+
+     58	006276	004767 	000106 			jsr pc,drvrdw
+     59	006302	010203 				mov r2,r3		;byte count
+     60	006304	032703 	000001 			bit #1,r3
+     61	006310	001401 				beq 1$
+     62	006312	000000 				halt
+     63	006314	004767 	000070 		1$:	jsr pc,drvrdw
+     64	006320	010204 				mov r2,r4		;address
+     65	006322	032704 	000001 			bit #1,r4
+     66	006326	001401 				beq 2$
+     67	006330	000000 				halt
+     68	006332	162703 	000006 		2$:	sub #6,r3		;remaining byte count
+     69	006336	001417 				beq drvstb		;branch if start block
+     70	006340	000241 				clc
+     71	006342	006003 				ror r3			;convert to word count
+     72	006344	005710 			3$:	tst (r0)
+     73	006346	100376 				bpl 3$
+     74	006350	011102 				mov (r1),r2		;get next word
+     75	006352	010224 				mov r2,(r4)+		;store wherever
+     76	006354	060205 				add r2,r5
+     77	006356	000302 				swab r2
+     78	006360	060205 				add r2,r5
+     79	006362	077310 				sob r3,3$
+     80	006364	004767 	000020 			jsr pc,drvrdw		;read checksum
+     81	006370	105705 				tstb r5			;test checksum
+     82	006372	001732 				beq 5$			;ok, get another block
+     83	006374	000000 			drverr:	halt
+     84
+     85	006376	004767 	000006 		drvstb:	jsr pc,drvrdw		;read checksum
+     86	006402	105705 				tstb r5			;test checksum
+     87	006404	001373 				bne drverr
+     88	006406	000114 				jmp (r4)
+     89
+     90	006410	005710 			drvrdw:	tst (r0)		;wait for a word
+     91	006412	100376 				bpl drvrdw
+     92	006414	011102 				mov (r1),r2
+     93	006416	060205 				add r2,r5
+     94	006420	000302 				swab r2
+     95	006422	060205 				add r2,r5
+     96	006424	000302 				swab r2
+     97	006426	000207 				rts pc
+     98		000212 			drvsiz=.-drvtab
+     99	006430	000000 			drvend:	0
+    100	006432	000001 	000006 	000200 		1,6,200			;header,count,start address
+    101	006440				drven2:
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 5
+MAINTENANCE MODE
+
+      1						.sbttl	Maintenance Mode
+      2	006440				mancsl:
+      3	006440	016502 	000004 			mov	ap.myd(ap),r2
+      4	006444	032762 	040000 	000000G		bit	#rmcnsl,devtyp(r2)	;is this local console
+      5	006452	000406 				br	okcnsl			;allow anyone for now
+      6					;	beq	okcnsl			;yes, good
+      7	006454	012700 	004616'			mov	#badrmt,r0		;print msg
+      8	006460	004767 	177222 			jsr	pc,outlin
+      9	006464	000167 	171714 			jmp	loop
+     10	006470				okcnsl:	$mask		;check on lock
+     11	006472	005767 	003364 			tst	mantlk
+     12	006476	001406 				beq	okmain	;got it
+     13	006500	012700 	004667'			mov	#otrmnt,r0
+     14	006504	004767 	177176 			jsr	pc,outlin
+     15	006510	000167 	171670 			jmp	loop
+     16	006514	016504 	000000 		okmain:	mov	ap.tsk(ap),r4
+     17	006520	010467 	003336 			mov	r4,mantlk
+     18	006524	010603 				mov	sp,r3
+     19	006526	012700 	010602'			mov	#fido,r0
+     20	006532					$task
+     21	006534	010067 	003322 			mov	r0,mantlk		;mark it with FIDO id
+     22	006540	001004 				bne	1$
+     23	006542	012700 	004736'			mov	#nfjbs,r0
+     24	006546	004767 	177134 			jsr	pc,outlin
+     25	006552	012700 	005024'		1$:	mov	#mntcsl,r0
+     26	006556	004767 	177124 			jsr	pc,outlin
+     27
+     28	006562	012700 	004605'		odt:	mov	#crlf,r0		;would you believe
+     29	006566	004767 	177114 			jsr	pc,outlin
+     30	006572	005067 	002124 			clr	opntag			;whether location is open
+     31	006576	005067 	002126 			clr	utask			;whether task has been specified
+     32	006602	005067 	002132 			clr	ofset			;base for examines
+     33	006606				mtloop:
+     34	006606	004767 	003076 		odtlop:	jsr	pc,getoct		;get value
+     35	006612	103002 				bcc	1$			;we got a value
+     36	006614	000167 	000654 			jmp	chkodt			;go see about valueless cmds
+     37	006620	120127 	000057 		1$:	cmpb	r1,#'/			;open
+     38	006624	001070 				bne	nxt1
+     39	006626	010067 	002072 			mov	r0,opnwrd
+     40	006632	005767 	002102 			tst	ofset			;apply offset?
+     41	006636	001405 				beq	exword			;no, just print it
+     42	006640	066767 	002074 	002056 		add	ofset,opnwrd
+     43	006646	000167 	000406 			jmp	neword			;print out addr
+     44	006652	000241 			exword:	clc
+     45	006654					$mask
+     46	006656	013767 	000004 	002050 		mov	@#4,temp4
+     47	006664	013767 	000006 	002044 		mov	@#6,temp6
+     48	006672	106737 	000006 			mfps	@#6
+     49	006676	012737 	007142'	000004 		mov	#bhndr,@#4
+     50	006704	017702 	002014 			mov	@opnwrd,r2
+     51	006710	016737 	002020 	000004 		mov	temp4,@#4
+     52	006716	016737 	002014 	000006 		mov	temp6,@#6
+     53	006724	103420 				bcs	badwrd			;did error occur
+     54	006726	010267 	001774 			mov	r2,opnval
+     55	006732	052767 	000001 	001762 		bis	#1,opntag
+     56	006740	012700 	012122'			mov	#spac10+9.,r0
+     57	006744	004767 	176736 			jsr	pc,outlin
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 5-1
+MAINTENANCE MODE
+
+     58	006750	004767 	002636 			jsr	pc,binoct
+     59	006754	012700 	012121'			mov	#spac10+8.,r0
+     60	006760	004767 	176722 			jsr	pc,outlin
+     61	006764	000710 				br	odtlop
+     62	006766	042767 	000001 	001726 	badwrd:	bic	#1,opntag
+     63	006774	012700 	002715'			mov	#qmark,r0
+     64	007000	004767 	176702 			jsr	pc,outlin
+     65	007004	000700 				br	odtlop
+     66	007006	120127 	000015 		nxt1:	cmpb	r1,#15			;to write and close location
+     67	007012	001016 				bne	21$
+     68	007014	032767 	000001 	001700 		bit	#1,opntag		;was locatio open
+     69	007022	001406 				beq	1$
+     70	007024	042767 	000001 	001670 		bic	#1,opntag
+     71	007032	004767 	000114 			jsr	pc,putwrd		;to store the word
+     72	007036	103402 				bcs	2$
+     73	007040	000167 	177542 		1$:	jmp	odtlop
+     74	007044	000167 	177716 		2$:	jmp	badwrd
+     75	007050				21$:
+     76	007050	120127 	000012 		lfed:	cmpb	r1,#12
+     77	007054	001064 				bne	nxt3
+     78	007056	032767 	000001 	001636 		bit	#1,opntag
+     79	007064	001424 				beq	a1
+     80	007066	004767 	000060 			jsr	pc,putwrd
+     81	007072	103421 				bcs	a1
+     82	007074	062767 	000002 	001622 		add	#2,opnwrd
+     83	007102	012700 	004610'		nwrd0:	mov	#cronl,r0
+     84	007106	004767 	176574 		nwrd1:	jsr	pc,outlin
+     85	007112	016702 	001606 			mov	opnwrd,r2
+     86	007116	004767 	002470 			jsr	pc,binoct
+     87	007122	012700 	004614'			mov	#slshsp,r0
+     88	007126	004767 	176554 			jsr	pc,outlin
+     89	007132	000167 	177514 			jmp	exword
+     90	007136	000167 	177624 		a1:	jmp	badwrd
+     91
+     92	007142	052766 	000001 	000002 	bhndr:	bis	#1,2(sp)
+     93	007150	000002 				rti			;set corry to be and return
+     94
+     95	007152	000241 			putwrd:	clc
+     96	007154					$mask
+     97	007156	013767 	000004 	001550 		mov	@#4,temp4
+     98	007164	013767 	000006 	001544 		mov	@#6,temp6
+     99	007172	106737 	000006 			mfps	@#6
+    100	007176	012737 	007142'	000004 		mov	#bhndr,@#4
+    101	007204	010077 	001514 			mov	r0,@opnwrd
+    102	007210	016737 	001520 	000004 		mov	temp4,@#4
+    103	007216	016737 	001514 	000006 		mov	temp6,@#6
+    104	007224	000207 				rts	pc
+    105
+    106	007226	120127 	000136 		nxt3:	cmpb	r1,#'^
+    107	007232	001020 				bne	nxt4
+    108	007234	032767 	000001 	001460 		bit	#1,opntag
+    109	007242	001412 				beq	b1
+    110	007244	004767 	177702 			jsr	pc,putwrd
+    111	007250	103407 				bcs	b1
+    112	007252	162767 	000002 	001444 	supar:	sub	#2,opnwrd
+    113	007260	012700 	004605'		neword:	mov	#crlf,r0
+    114	007264	000167 	177616 			jmp	nwrd1
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 5-2
+MAINTENANCE MODE
+
+    115	007270	000167 	177472 		b1:	jmp	badwrd
+    116	007274	120127 	000124 		nxt4:	cmpb	r1,#'T
+    117	007300	001020 				bne	23$
+U   118	007302	020027 	000000 			cmp	r0,#mxjobs
+    119	007306	101013 				bhi	1$
+    120	007310	006300 				asl	r0
+    121	007312	010067 	001412 			mov	r0,utask
+U   122	007316	016000 	000000 			mov	joblst(r0),r0
+    123	007322	010067 	001376 			mov	r0,opnwrd
+    124	007326	010067 	001400 			mov	r0,utaskp
+    125	007332	000167 	177722 			jmp	neword
+    126	007336	000167 	177424 		1$:	jmp	badwrd
+    127
+    128	007342				23$:
+    129	007342	120127 	000122 		regs:	cmpb	r1,#'R
+    130	007346	001025 				bne	24$
+    131	007350	005767 	001354 			tst	utask
+    132	007354	001420 				beq	2$
+    133	007356	020027 	000007 			cmp	r0,#7
+    134	007362	101007 				bhi	1$
+    135	007364	006300 				asl	r0
+    136	007366	066700 	001340 			add	utaskp,r0
+    137	007372	010067 	001326 			mov	r0,opnwrd
+    138	007376	000167 	177250 			jmp	exword
+    139	007402	066700 	001324 		1$:	add	utaskp,r0
+    140	007406	010067 	001312 			mov	r0,opnwrd
+    141	007412	000167 	177642 			jmp	neword
+    142	007416	000167 	177344 		2$:	jmp	badwrd
+    143	007422				24$:
+    144	007422	120127 	000102 		basel:	cmpb	r1,#'B
+    145	007426	001004 				bne	25$
+    146	007430	010067 	001304 			mov	r0,ofset
+    147	007434	000167 	000026 			jmp	odtlpr
+    148	007440				25$:
+    149	007440	120127 	000177 			cmpb	r1,#177
+    150	007444	001002 				bne	badodt
+    151	007446	000167 	177314 			jmp	badwrd
+    152
+    153	007452	012700 	002706'		badodt:	mov	#watcmd,r0
+    154	007456	004767 	176224 		odpret:	jsr	pc,outlin
+    155	007462	000167 	177120 			jmp	odtlop
+    156
+    157	007466	012700 	004605'		odtlpr:	mov	#crlf,r0
+    158	007472	000771 				br	odpret
+    159
+    160	007474				chkodt:
+    161	007474	120127 	000136 			cmpb	r1,#'^
+    162	007500	001006 				bne	32$
+    163	007502	032767 	000001 	001212 		bit	#1,opntag
+    164	007510	001411 				beq	10$
+    165	007512	000167 	177534 			jmp	supar
+    166	007516				32$:
+    167	007516	120127 	000012 			cmpb	r1,#12
+    168	007522	001013 				bne	base0
+    169	007524	032767 	000001 	001170 		bit	#1,opntag
+    170	007532	001002 				bne	11$
+    171	007534	000167 	177226 		10$:	jmp	badwrd
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 5-3
+MAINTENANCE MODE
+
+    172	007540	062767 	000002 	001156 	11$:	add	#2,opnwrd
+    173	007546	000167 	177330 			jmp	nwrd0
+    174	007552	120127 	000102 		base0:	cmpb	r1,#'B
+    175	007556	001004 				bne	32$
+    176	007560	005067 	001154 			clr	ofset
+    177	007564	000167 	177676 			jmp	odtlpr
+    178	007570	120127 	000015 		32$:	cmpb	r1,#15
+    179	007574	001005 				bne	33$
+    180	007576	042767 	000001 	001116 		bic	#1,opntag
+    181	007604	000167 	176776 			jmp	odtlop
+    182	007610	120127 	000057 		33$:	cmpb	r1,#'/
+    183	007614	001004 				bne	34$
+    184	007616	000167 	177030 		1$:	jmp	exword
+    185	007622	000167 	177140 		2$:	jmp	badwrd
+    186	007626				34$:
+    187	007626	120127 	000123 			cmpb	r1,#'S
+    188	007632	001013 				bne	35$
+    189	007634	005767 	001070 			tst	utask
+    190	007640	001770 				beq	2$
+    191	007642	016767 	001064 	001054 		mov	utaskp,opnwrd
+    192	007650	062767 	000342 	001046 		add	#tc.stt,opnwrd
+    193	007656	000167 	176770 			jmp	exword
+    194	007662				35$:
+    195	007662	120127 	000100 		indirt:	cmpb	r1,#'@
+    196	007666	001013 				bne	36$
+    197	007670	032767 	000001 	001024 		bit	#1,opntag
+    198	007676	001405 				beq	2$
+    199	007700	016767 	001022 	001016 		mov	opnval,opnwrd
+    200	007706	000167 	177346 			jmp	neword
+    201	007712	000167 	177050 		2$:	jmp	badwrd
+    202	007716				36$:
+    203	007716	120127 	000137 			cmpb	r1,#'_
+    204	007722	001014 				bne	37$
+    205	007724	032767 	000001 	000770 		bit	#1,opntag
+    206	007732	001767 				beq	2$
+    207	007734	066767 	000766 	000762 		add	opnval,opnwrd
+    208	007742	062767 	000002 	000754 		add	#2,opnwrd
+    209	007750	000167 	177304 			jmp	neword
+    210	007754				37$:
+    211	007754	120127 	000177 			cmpb	r1,#177
+    212	007760	001002 				bne	38$
+    213	007762	000167 	177000 			jmp	badwrd
+    214	007766				38$:
+    215
+    216	007766	120127 	000077 		trymnt:	cmpb	r1,#'?		;help message
+    217	007772	001012 				bne	1$
+    218	007774	012700 	004605'			mov	#crlf,r0
+    219	010000	004767 	175702 			jsr	pc,outlin
+    220	010004	012700 	005101'			mov	#mhepms,r0
+    221	010010	004767 	175672 			jsr	pc,outlin
+    222	010014	000167 	176566 			jmp	mtloop
+    223	010020	042701 	000040 		1$:	bic	#40,r1		;allow lower case
+    224
+    225	010024	120127 	000105 		stmtr:	cmpb	r1,#'E		;E for start metering
+    226	010030	001007 				bne	edmtr
+    227	010032	016504 	000004 			mov	ap.myd(ap),r4	;move console index to r4 for mtr tsk
+    228	010036	012700 	010742'			mov	#outstt,r0
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 5-4
+MAINTENANCE MODE
+
+    229	010042					$task
+    230	010044	000167 	000516 			jmp	mtdone
+    231
+    232	010050	120127 	000106 		edmtr:	cmpb	r1,#'F		;F for stop metering
+    233	010054	001021 				bne	who
+    234	010056	005467 	002002 			neg	metrlk
+    235	010062	000167 	000500 			jmp	mtdone
+    236
+    237					;	*** code for w request in m mode ***
+    238	010066	   040 	   040 	   040 	tab12:	.byte	40,40,40,40,40,40	;tab charictor for output
+	010071	   040 	   040 	   040
+    239	010074	   040 	   040 	   040 	tab6:	.byte	40,40,40,40,40,40,200,0
+	010077	   040 	   040 	   040
+	010102	   200 	   000
+    240	010104	   040 	   040 	   040 	tab7:	.byte	40,40,40,40,40,40,40,200
+	010107	   040 	   040 	   040
+	010112	   040 	   200
+    241	010114	000000 			count:	.word	0	;iteration counter for who
+    242	010116	000000 			side:	.word	0	;side of screen display for who
+    243	010120	120127 	000127 		who:	cmpb	r1,#'W		;for systat fo Who
+    244	010124	001116 				bne	kjob
+    245	010126	012700 	005457'			mov	#whohdr,r0
+    246	010132	004767 	175550 			jsr	pc,outlin
+    247	010136	012704 	000000G			mov	#nidevs,r4
+    248	010142	010467 	177746 			mov	r4,count	;init iteration counter
+    249	010146	005204 				inc	r4		;calc start of second col. for disp
+    250	010150	006204 				asr	r4		;(count+1)/2
+    251	010152	006304 				asl	r4
+    252	010154	010467 	177736 			mov	r4,side		;store start
+    253	010160	005004 				clr	r4		;start with dev 0
+    254	010162	010402 			1$:	mov	r4,r2
+    255	010164	006202 				asr	r2		;for printout
+    256	010166	004767 	001426 			jsr	pc,bindec
+    257	010172	016400 	000000G			mov	dvdesc(r4),r0	;get device description
+    258	010176	001002 				bne	4$
+    259	010200	016700 	000000G			mov	dftdsc,r0	;default description
+    260	010204	004767 	175476 		4$:	jsr	pc,outlin
+    261	010210	016401 	000000G			mov	ibftbl(r4),r1	;is it assigned?
+    262	010214	001424 				beq	6$
+    263	010216	016402 	000000G			mov	dvownr(r4),r2	;get job index
+    264	010222	006202 				asr	r2
+    265	010224	004767 	001370 			jsr	pc,bindec
+    266	010230	016401 	000000G			mov	ibftbl(r4),r1	;get buffer id
+    267	010234	016101 	000000 			mov	bf.tsk(r1),r1	;is it made for console wakeup?
+    268	010240	001417 				beq	7$
+    269	010242	005002 				clr	r2
+U   270	010244	026127 	000346 	000000 		cmp	tc.wat(r1),#w.iowt	;is the task in I/O wait?
+    271	010252	001002 				bne	2$		;no, print zero
+    272	010254	016102 	000350 			mov	tc.wtm(r1),r2	;see how long it has waited
+    273	010260	004767 	001334 		2$:	jsr	pc,bindec	;print wait time
+    274	010264	000411 				br	3$
+    275	010266	012700 	010066'		6$:	mov	#tab12,r0	;fill out first side
+    276	010272	004767 	175410 			jsr	pc,outlin
+    277	010276	000404 				br	3$
+    278	010300	012700 	010074'		7$:	mov	#tab6,r0
+    279	010304	004767 	175376 			jsr	pc,outlin
+    280	010310	012700 	004605'		3$:	mov	#crlf,r0
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 5-5
+MAINTENANCE MODE
+
+    281	010314	020467 	177576 			cmp	r4,side		;which side are we on
+    282	010320	101002 				bhi	5$		;end of line
+    283	010322	012700 	010104'			mov	#tab7,r0		;middel of line
+    284	010326	004767 	175354 		5$:	jsr	pc,outlin
+    285	010332	062704 	000002 			add	#2,r4
+    286	010336	010446 				mov	r4,-(sp)	;save last side
+    287	010340	016704 	177552 			mov	side,r4		;switch sides
+    288	010344	012667 	177546 			mov	(sp)+,side
+    289	010350	005367 	177540 			dec	count		;one more done
+    290	010354	001302 				bne	1$		;are we done yet?
+    291	010356	000167 	000204 			jmp	mtdone
+    292
+    293	010362	120127 	000113 		kjob:	cmpb	r1,#'K		;for killing job
+    294	010366	001056 				bne	40$
+    295	010370	004767 	001304 			jsr	pc,getdec
+    296	010374	103451 				bcs	4$
+    297	010376	120127 	000015 			cmpb	r1,#15		;was it ended by carriage return?
+    298	010402	001046 				bne	4$
+    299	010404	006300 				asl	r0		;make it index
+U   300	010406	020027 	000000 			cmp	r0,#2*mxjobs
+    301	010412	003037 				bgt	3$
+U   302	010414	016001 	000000 			mov	joblst(r0),r1	;get TCB ptr
+    303	010420	026100 	000020 			cmp	tc.jid(r1),r0	;see that it is goo
+    304	010424	001032 				bne	3$
+    305	010426					$mask			;mask for checking
+U   306	010430	026127 	000346 	000000 		cmp	tc.wat(r1),#w.iowt
+    307	010436	001022 				bne	2$
+    308	010440	026127 	000350 	005670 		cmp	tc.wtm(r1),#3000.	;some one minute
+    309	010446	103416 				blo	2$
+    310	010450	027101 	000012 			cmp	@10.(r1),r1		;task id ok?
+    311	010454	001013 				bne	2$
+    312	010456	012761 	001464'	000016 		mov	#qclse,14.(r1)		;set new pc
+    313	010464	005061 	000346 			clr	tc.wat(r1)
+    314	010470	012700 	005565'			mov	#kilmsg,r0
+    315	010474	004767 	175206 		1$:	jsr	pc,outlin
+    316	010500	000167 	176102 			jmp	mtloop
+    317	010504	012700 	005600'		2$:	mov	#notelg,r0
+    318	010510	000771 				br	1$
+    319	010512	012700 	005636'		3$:	mov	#badjid,r0
+    320	010516	000766 				br	1$
+    321	010520	000167 	000042 		4$:	jmp	mtdone
+    322
+    323	010524				40$:
+    324
+    325	010524	120127 	000121 		qmant:	cmpb	r1,#'Q		;for Quitting
+    326	010530	001010 				bne	qmat1
+    327	010532	012700 	005651'		qmantq:	mov	#qmtmsg,r0
+    328	010536	004767 	175144 			jsr	pc,outlin
+    329	010542	005067 	001314 			clr	mantlk
+    330	010546	000167 	167632 			jmp	loop
+    331	010552				qmat1:
+    332
+    333	010552	012700 	002706'			mov	#watcmd,r0
+    334	010556	004767 	175124 			jsr	pc,outlin
+    335	010562	000167 	176020 			jmp	mtloop
+    336
+    337	010566	012700 	004605'		mtdone:	mov	#crlf,r0
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 5-6
+MAINTENANCE MODE
+
+    338	010572	004767 	175110 			jsr	pc,outlin
+    339	010576	000167 	176004 			jmp	mtloop
+    340
+    341		016040 			mntidl = 7200.
+    342	010602	010102 			fido:	mov	r1,r2
+    343	010604	005000 				clr	r0
+    344	010606	162700 	016040 		1$:	sub	#mntidl,r0
+    345	010612	005400 				neg	r0
+    346	010614					$wait
+    347	010616	020267 	001240 			cmp	r2,mantlk
+    348	010622	001036 				bne	2$
+U   349	010624	026427 	000346 	000000 		cmp	tc.wat(r4),#w.iowt
+    350	010632	001365 				bne	1$
+    351	010634	016400 	000350 			mov	tc.wtm(r4),r0
+    352	010640	020027 	016040 			cmp	r0,#mntidl
+    353	010644	002760 				blt	1$
+    354	010646					$mask
+U   355	010650	026427 	000346 	000000 		cmp	tc.wat(r4),#w.iowt
+    356	010656	001353 				bne	1$
+    357	010660	026427 	000350 	016040 		cmp	tc.wtm(r4),#mntidl
+    358	010666	002747 				blt	1$
+    359	010670	020267 	001166 			cmp	r2,mantlk
+    360	010674	001011 				bne	2$
+    361	010676	005067 	001160 			clr	mantlk
+    362	010702	012764 	010532'	000016 		mov	#qmantq,14.(r4)
+    363	010710	010364 	000014 			mov	r3,12.(r4)
+    364	010714	005064 	000346 			clr	tc.wat(r4)
+    365	010720				2$:	$exit
+    366
+    367					;
+    368	010722	000000 			opntag:	.word	0
+    369	010724	000000 			opnwrd:	.word	0
+    370	010726	000000 			opnval:	.word	0
+    371	010730	000000 			utask:	.word	0
+    372	010732	000000 			utaskp:	.word	0
+    373	010734	000000 			temp4:	.word	0
+    374	010736	000000 			temp6:	.word	0
+    375	010740	000000 			ofset:	.word	0
+    376
+    377					;
+    378						.sbttl	Status and Metering
+    379
+    380	010742					.block	sto,st		;area for this guy
+    381	010742					sto	ato.ln		;use same basic automatic
+    382	010742					sto	tim,2		;current or old time
+    383	010742					sto	tmn,2		;new time
+    384	010742					sto	inh,2
+    385	010742					sto	inl,2
+    386	010742					sto	oth,2
+    387	010742					sto	otl,2
+    388	010742					sto	ihn,2
+    389	010742					sto	iln,2
+    390	010742					sto	ohn,2
+    391	010742					sto	oln,2
+    392	010742					sto	wat,2
+    393	010742					sto	fre,2
+    394	010742					sto	chg,2
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 5-7
+STATUS AND METERING
+
+    395	010742					sto	cgn,2
+    396	010742				outstt:			;this routine meters I/O and displays it
+    397	010742	162706 	000054 			sub	#sto.ln,sp	;make my own automatic
+    398	010746	010605 				mov	sp,ap
+    399	010750	010065 	000000 			mov	r0,ap.tsk(ap)	;save job id
+    400	010754	010165 	000002 			mov	r1,ap.jid(ap)	;save job index
+    401	010760	016465 	000000G	000006 		mov	botptr(r4),ap.myp(ap)	;output channel,r4 set by caller
+    402	010766	005065 	000020 			clr	st.tim(ap)	;initial time
+    403	010772					$mask			;only allow one meter process
+    404	010774	005267 	001064 			inc	metrlk		;increment it
+    405	011000	016704 	001060 			mov	metrlk,r4	;get it
+    406	011004	020427 	000001 			cmp	r4,#1		;are we the only one?
+    407	011010	001406 				beq	1$		;yes, good
+    408	011012	005367 	001046 			dec	metrlk		;restore it
+    409	011016	005767 	001042 		2$:	tst	metrlk
+    410	011022	002375 				bge	2$
+    411	011024					$exit			;just go away
+    412	011026	104401 			1$:	trap	1
+    413	011030	012700 	012077'			mov	#mtrmsg,r0	;let the world know
+    414	011034	004767 	174646 			jsr	pc,outlin
+    415	011040					$mask			;to get consistent data
+U   416	011042	005067 	000000 			clr	idlcpu		;clear it to restart metering
+U   417	011046	005067 	000000 			clr	trfcnt		;clear times in traffic controller
+U   418	011052	005067 	000000 			clr	trfcpu		;clear cpu time for traffic controller
+U   419	011056	016765 	000000 	000050 		mov	chgcpu,st.chg(ap)
+U   420	011064	016765 	000000 	000020 		mov	timlo,st.tim(ap)	;get local timer
+U   421	011072	016765 	000000 	000024 		mov	chrsih,st.inh(ap)	;chars in high
+U   422	011100	016765 	000000 	000026 		mov	chrsil,st.inl(ap)
+U   423	011106	016765 	000000 	000030 		mov	chrsoh,st.oth(ap)	;chars out high
+U   424	011114	016765 	000000 	000032 		mov	chrsol,st.otl(ap)
+    425	011122	012700 	012124'			mov	#mthdrm,r0
+    426	011126	004767 	174554 			jsr	pc,outlin	;header line
+    427	011132	012700 	003410 		mloop:	mov	#mtintv,r0	;setup for interval timer
+    428	011136					$wait			;wait awhile
+    429	011140					$mask
+U   430	011142	016765 	000000 	000052 		mov	chgcpu,st.cgn(ap)
+U   431	011150	016765 	000000 	000022 		mov	timlo,st.tmn(ap)
+U   432	011156	016765 	000000 	000034 		mov	chrsih,st.ihn(ap)
+U   433	011164	016765 	000000 	000036 		mov	chrsil,st.iln(ap)
+U   434	011172	016765 	000000 	000040 		mov	chrsoh,st.ohn(ap)
+U   435	011200	016765 	000000 	000042 		mov	chrsol,st.oln(ap)
+    436	011206	005002 				clr	r2		;for division
+    437	011210	016503 	000022 			mov	st.tmn(ap),r3	;get new time
+    438	011214	166503 	000020 			sub	st.tim(ap),r3	;subtract old time
+    439	011220	062703 	000035 			add	#29.,r3		;for rounding
+    440	011224	071227 	000074 			div	#60.,r2		;to make it seconds
+    441	011230	010265 	000020 			mov	r2,st.tim(ap)	;temp for elapsed time
+    442	011234	004767 	000360 			jsr	pc,bindec	;convert it to decimal
+    443	011240	016502 	000034 			mov	st.ihn(ap),r2	;chars in
+    444	011244	016503 	000036 			mov	st.iln(ap),r3
+    445	011250	166503 	000026 			sub	st.inl(ap),r3	;subtract old chars
+    446	011254	005602 				sbc	r2
+    447	011256	166502 	000024 			sub	st.inh(ap),r2	;finish double subtract
+    448	011262	071265 	000020 			div	st.tim(ap),r2	;divide for average
+    449	011266	004767 	000326 			jsr	pc,bindec	;print that
+    450	011272	016502 	000040 			mov	st.ohn(ap),r2	;chars out
+    451	011276	016503 	000042 			mov	st.oln(ap),r3
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 5-8
+STATUS AND METERING
+
+    452	011302	166503 	000032 			sub	st.otl(ap),r3	;subtract old chars
+    453	011306	005602 				sbc	r2
+    454	011310	166502 	000030 			sub	st.oth(ap),r2
+    455	011314	071265 	000020 			div	st.tim(ap),r2	;divide for average
+    456	011320	004767 	000274 			jsr	pc,bindec
+    457	011324					$mask
+U   458	011326	016765 	000000 	000044 		mov	watcnt,st.wat(ap)
+U   459	011334	016765 	000000 	000046 		mov	frecnt,st.fre(ap)
+U   460	011342	016702 	000000 			mov	actcnt,r2
+    461	011346	004767 	000246 			jsr	pc,bindec		;nbr active jobs
+    462	011352	016502 	000044 			mov	st.wat(ap),r2
+    463	011356	004767 	000236 			jsr	pc,bindec		;nbr of jobs in wait
+    464	011362	016502 	000046 			mov	st.fre(ap),r2
+    465	011366	004767 	000226 			jsr	pc,bindec		;nbr of free TCBs
+    466	011372	016502 	000052 			mov	st.cgn(ap),r2		;charged CPU time
+    467	011376	166502 	000050 			sub	st.chg(ap),r2		;subtract old
+    468	011402	004767 	000212 			jsr	pc,bindec
+    469	011406	016502 	000000 			mov	ap.tsk(ap),r2
+    470	011412	016202 	000344 			mov	tc.use(r2),r2		;get cpu time used for metering
+    471	011416	004767 	000176 			jsr	pc,bindec
+    472	011422					$mask
+U   473	011424	016746 	000000 			mov	trfcpu,-(sp)		;save on $MASKs
+U   474	011430	005067 	000000 			clr	trfcpu
+U   475	011434	016746 	000000 			mov	trfcnt,-(sp)
+U   476	011440	005067 	000000 			clr	trfcnt
+U   477	011444	016702 	000000 			mov	idlcpu,r2
+U   478	011450	005067 	000000 			clr	idlcpu
+    479	011454	004767 	000140 			jsr	pc,bindec		;CPU time in idle loop
+U   480	011460	016702 	000000 			mov	idlovl,r2
+    481	011464	004767 	000130 			jsr	pc,bindec		;times idle loop too slow
+U   482	011470	016702 	000000 			mov	totjbs,r2
+    483	011474	004767 	000120 			jsr	pc,bindec		;total jobs initiated
+    484	011500	012602 				mov	(sp)+,r2		;get trfcnt back
+    485	011502	004767 	000112 			jsr	pc,bindec
+    486	011506	012602 				mov	(sp)+,r2		;get trfcpu back
+    487	011510	004767 	000104 			jsr	pc,bindec
+    488	011514	012700 	004605'			mov	#crlf,r0		;newline
+    489	011520	004767 	174162 			jsr	pc,outline
+    490	011524	016565 	000052 	000050 		mov	st.cgn(ap),st.chg(ap)
+    491	011532	016565 	000022 	000020 		mov	st.tmn(ap),st.tim(ap)
+    492	011540	016565 	000040 	000030 		mov	st.ohn(ap),st.oth(ap)
+    493	011546	016565 	000042 	000032 		mov	st.oln(ap),st.otl(ap)
+    494	011554	016565 	000034 	000024 		mov	st.ihn(ap),st.inh(ap)
+    495	011562	016565 	000036 	000026 	k1:	mov	st.iln(ap),st.inl(ap)
+    496	011570	026727 	000270 	000001 		cmp	metrlk,#1
+    497	011576	001002 				bne	1$
+    498	011600	000167 	177326 			jmp	mloop
+    499	011604	005067 	000254 		1$:	clr	metrlk
+    500	011610					$exit
+    501					;
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 6
+STATUS AND METERING
+
+      1	011612	012700 	000010 		binoct:	mov	#8.,r0
+      2	011616	000402 				br	binchr
+      3	011620	012700 	000012 		bindec:	mov	#10.,r0
+      4	011624	010203 			binchr:	mov	r2,r3		;clear way
+      5	011626	012702 	000003 			mov	#3,r2		;for count
+      6	011632	012701 	012070'			mov	#declin+2,r1	;for blanks
+      7	011636	012721 	020040 		1$:	mov	#020040,(r1)+	;blank out area
+      8	011642	077203 				sob	r2,1$
+      9	011644	012701 	012076'			mov	#declin+8.,r1	;beyond end
+     10	011650	005002 			2$:	clr	r2
+     11	011652	071200 				div	r0,r2		;get quotient/remainder
+     12	011654	052703 	000060 			bis	#060,r3		;tag remainder
+     13	011660	110341 				movb	r3,-(r1)	;write low order digit
+     14	011662	010203 				mov	r2,r3		;next digit
+     15	011664	003371 				bgt	2$		;more to do
+     16	011666	012700 	012070'			mov	#declin+2,r0
+     17	011672	004767 	174010 			jsr	pc,outlin
+     18	011676	000207 				rts	pc
+     19
+     20	011700	010446 			getdec:	mov	r4,-(sp)
+     21	011702	012704 	000012 			mov	#10.,r4
+     22	011706	000403 				br	getnbr
+     23	011710	010446 			getoct:	mov	r4,-(sp)
+     24	011712	012704 	000010 			mov	#8.,r4
+     25	011716	010246 			getnbr:	mov	r2,-(sp)
+     26	011720	010346 				mov	r3,-(sp)
+     27	011722	005002 				clr	r2
+     28	011724	005003 				clr	r3
+     29	011726	004767 	174040 		5$:	jsr	pc,getkb
+     30	011732	120127 	000040 			cmpb	r1,#40		;allow leading spaces
+     31	011736	001773 				beq	5$
+     32	011740	000402 				br	6$
+     33	011742	004767 	174024 		1$:	jsr	pc,getkb
+     34	011746	120127 	000060 		6$:	cmpb	r1,#'0		;is within ranged?
+     35	011752	002413 				blt	2$
+     36	011754	120127 	000071 			cmpb	r1,#'9
+     37	011760	003010 				bgt	2$
+     38	011762	042701 	177760 			bic	#177760,r1
+     39	011766	020104 				cmp	r1,r4
+     40	011770	002004 				bge	2$
+     41	011772	005202 				inc	r2
+     42	011774	070304 				mul	r4,r3
+     43	011776	060103 				add	r1,r3
+     44	012000	000760 				br	1$
+     45	012002	120127 	000177 		2$:	cmpb	r1,#177
+     46	012006	001417 				beq	3$
+     47	012010	120127 	000015 			cmpb	r1,#15
+     48	012014	001004 				bne	4$
+     49	012016	012700 	004605'			mov	#crlf,r0
+     50	012022	004767 	173660 			jsr	pc,outlin
+     51	012026	005702 			4$:	tst	r2
+     52	012030	001406 				beq	3$
+     53	012032	010300 				mov	r3,r0
+     54	012034	012603 				mov	(sp)+,r3
+     55	012036	012602 				mov	(sp)+,r2
+     56	012040	012604 				mov	(sp)+,r4
+     57	012042	000241 				clc
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 6-1
+STATUS AND METERING
+
+     58	012044	000207 				rts	pc
+     59	012046	010300 			3$:	mov	r3,r0
+     60	012050	012603 				mov	(sp)+,r3
+     61	012052	012602 				mov	(sp)+,r2
+     62	012054	012604 				mov	(sp)+,r4
+     63	012056	000261 				sec
+     64	012060	000207 				rts	pc
+     65
+     66	012062	000000 			mantlk:	.word	0
+     67	012064	000000 			metrlk:	.word	0
+     68		003410 			mtintv = 60.*30.	;thrity seconds for now
+     69	012066	   040 	   040 		declin:	.byte	040,040
+     70						.blkb	6
+     71	012076	   200 				.byte	200
+     72						.nlist	bex
+     73	012077	   111 	   057 	   117 	mtrmsg:	.asciz	\I/O Meter\
+     74	012111	   040 	   040 	   040 	spac10:	.ascii	/          /<200>
+     75	012124	   111 	   156 	   164 	mthdrm:	.ascii	\Intrvl   Chrs/Sec  Active  Wait  Free  Used  Mtr  \
+     76	012206	   111 	   144 	   154 		.ascii	\Idle  Ovrld Jobs  Traf Time\<15><12>
+     77	012243	   040 	   040 	   040 		.asciz	\         In  Out\
+     78						.even
+     79						.list	bex
+     80
+     81		012266'			tmpctr = bufare
+     82	012264				lnbfs:
+U    83		000001 				.rept	mxjobs+1
+     84						.word	tmpctr
+     85						tmpctr = tmpctr+80.
+     86						.endr
+     87	012266				bufare:	.blkw	80.
+     88
+     89		000001 				.end
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 6-2
+SYMBOL TABLE
+
+ACTCNT= ******   	CHRSIL= ******   	HNDLNW  000124RG 	OPNMSG  003141R  	ST.IHN= 000034
+ALROPN  003024R  	CHRSOH= ******   	HNDSHK= 000002   	OPNTAG  010722R  	ST.ILN= 000036
+AP    =%000005   	CHRSOL= ******   	IBFTBL= ****** G 	OPNVAL  010726R  	ST.INH= 000024
+AP.ESC= 000016   	CLINE   006020R  	IDLCPU= ******   	OPNWRD  010724R  	ST.INL= 000026
+AP.FLG= 000017   	CLMSG   003012R  	IDLOVL= ******   	OTDVTB= ****** G 	ST.OHN= 000040
+AP.JID= 000002   	CMDS    000704R  	INBTBL= ****** G 	OTRMNT  004667R  	ST.OLN= 000042
+AP.MYD= 000004   	COUNT   010114R  	INDIRT  007662R  	OTRT1B= ******   	ST.OTH= 000030
+AP.MYK= 000010   	CR    = 000015   	ISCNSL= 100000   	OTRT1C= ******   	ST.OTL= 000032
+AP.MYP= 000006   	CRLF    004605R  	JOBLST= ******   	OUTDN   005762R  	ST.TIM= 000020
+AP.RMI= 000014   	CRONL   004610R  	KILMSG  005565R  	OUTLIN  005706R  	ST.TMN= 000022
+AP.RMO= 000012   	DECLIN  012066R  	KJOB    010362R  	OUTSTT  010742R  	ST.WAT= 000044
+AP.TSK= 000000   	DEL   = 000177   	K1      011562R  	PARITY  002464R  	SUPAR   007252R
+ATO.LN= 000020   	DEVTYP= ****** G 	LECHO = 000001   	PARNO   003311R  	SWTSTT  002606R
+A1      007136R  	DFTDSC= ****** G 	LF    = 000012   	PARYES  003335R  	SYSMSG  002654R
+BADCMD  002572R  	DLVHDL= ****** G 	LFED    007050R  	PUTCHR= ****** G 	TAB12   010066R
+BADESC  003224R  	DOCLSE  001444R  	LNBFS   012264R  	PUTCHS= ****** G 	TAB6    010074R
+BADJID  005636R  	DOOPEN  001044R  	LOOP    000404R  	PUTPR   006006R  	TAB7    010104R
+BADODT  007452R  	DRVCKS  006070R  	MANCSL  006440R  	PUTWRD  007152R  	TCB.LN= 000400
+BADOPN  003056R  	DRVCSR= 177100   	MANTLK  012062R  	QABRT   001540R  	TC.CHG= 000352
+BADRMT  004616R  	DRVEND  006430R  	METRLK  012064R  	QCLSE   001464R  	TC.GAR= 000334
+BADWRD  006766R  	DRVEN2  006440R  	MHEPMS  005101R  	QMANT   010524R  	TC.JID= 000020
+BASEL   007422R  	DRVERR  006374R  	MLOOP   011132R  	QMANTQ  010532R  	TC.NXT= 000336
+BASE0   007552R  	DRVGO   006224R  	MNTCSL  005024R  	QMARK   002715R  	TC.STE= 000022
+BELMSG  004612R  	DRVNXT  006074R  	MNTIDL= 016040   	QMAT1   010552R  	TC.STK= 000024
+BFCRAT= ****** G 	DRVPDL= 000100   	MTDONE  010566R  	QMTMSG  005651R  	TC.STT= 000342
+BF.ADR= 000020   	DRVPNT  006072R  	MTHDRM  012124R  	QUITMS  003151R  	TC.URG= 000000
+BF.BEN= 000016   	DRVRDB= 177104   	MTINTV= 003410   	REGS    007342R  	TC.USE= 000344
+BF.BFP= 000032   	DRVRDW  006410R  	MTLOOP  006606R  	RLSEDV= ****** G 	TC.WAT= 000346
+BF.BRK= 000002   	DRVSIZ= 000212   	MTRMSG  012077R  	RMCNSL= 040000   	TC.WQU= 000340
+BF.CNT= 000010   	DRVSTB  006376R  	MXJOBS= ******   	RUNSYS  000000RG 	TC.WTM= 000350
+BF.DTA= 000026   	DRVTAB  006216R  	NEWORD  007260R  	SALLNP  002652R  	TC.XXX= 000354
+BF.FLG= 000030   	DRVTDB= 177102   	NFJBS   004736R  	SALLST  002610R  	TEMP4   010734R
+BF.FST= 000012   	DVDESC= ****** G 	NIDEVS= ****** G 	SALLS1  002630R  	TEMP6   010736R
+BF.HDL= 000022   	DVOWNR= ****** G 	NOCON   002720R  	SBRK    001674R  	TIMLO = ******
+BF.INP= 000024   	EDMTR   010050R  	NODEVS= ****** G 	SCHR    000430R  	TIP     000162RG
+BF.LST= 000014   	ESCHR = 000134   	NOTELG  005600R  	SGBOOT  002026R  	TMPCTR= 012406R
+BF.SIZ= 000006   	EXWORD  006652R  	NOTFRE  003111R  	SHAKER  002362R  	TOTJBS= ******
+BF.TSK= 000000   	FIDO    010602R  	NSLMS   003355R  	SHKNO   003250R  	TPARTY= 000004
+BF.WCT= 000004   	FRECNT= ******   	NTCNSL  000132R  	SHKYES  003271R  	TRFCNT= ******
+BHNDR   007142R  	FREMS   003170R  	NWRD0   007102R  	SIDE    010116R  	TRFCPU= ******
+BINCHR  011624R  	FRMTTY  003513R  	NWRD1   007106R  	SLSHSP  004614R  	TRYMNT  007766R
+BINDEC  011620R  	GETCHR= ****** G 	NWSCRN  003522R  	SMSG    002074R  	T1      001556R
+BINOCT  011612R  	GETCHS= ****** G 	NXT1    007006R  	SPAC10  012111R  	T2      001642R
+BINPTR= ****** G 	GETDEC  011700R  	NXT3    007226R  	SPCE  = 000040   	UP    = 000044
+BOTPTR= ****** G 	GETDV = ****** G 	NXT4    007274R  	STMSG   002745R  	UTASK   010730R
+BUFARE  012266R  	GETKB   005772R  	ODPRET  007456R  	STMTR   010024R  	UTASKP  010732R
+BUF.LN= 000034   	GETNBR  011716R  	ODT     006562R  	STO.LN= 000054   	WATCMD  002706R
+B1      007270R  	GETOCT  011710R  	ODTLOP  006606R  	ST.   = 000000   	WATCNT= ******
+CHGCPU= ******   	GOTSAL  003451R  	ODTLPR  007466R  	ST.CGN= 000052   	WHO     010120R
+CHKODT  007474R  	HDLESC  000570R  	OFSET   010740R  	ST.CHG= 000050   	WHOHDR  005457R
+CHRCLR= ****** G 	HELP    002332R  	OKCNSL  006470R  	ST.FRE= 000046   	W.IOWT= ******
+CHRSIH= ******   	HELPMS  003525R  	OKMAIN  006514R
+
+. ABS.	000000	   000
+      	012526	   001
+ERRORS DETECTED:  42
+
+VIRTUAL MEMORY USED:  1453 WORDS  ( 6 PAGES)
+SWITCHER	MACRO V03.02B22-JUL-80 05:50:51 PAGE 6-3
+SYMBOL TABLE
+
+DYNAMIC MEMORY AVAILABLE FOR  43 PAGES
+DK:SWITCH,DK:SWITCH=DK:BLOCKS,DK:SWITCH
+

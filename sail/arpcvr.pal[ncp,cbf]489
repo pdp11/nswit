@@ -1,0 +1,108 @@
+;;; -*-midas-*-
+	.title	The Arpanet Transceiver
+
+;;; Funny packet format for the Chaos packets going over the Arpanet
+
+dsect <
+al.chn:: .blkw 1		;is the link for the packet list
+al.ipl:: .blkb ipl.ln		;is the Arpanet Host/Imp leader
+	>,cal.ln
+
+;;; This is the structure of the arpd1 table which holds the
+;;; pointer to the CIF table entry for the Arpanet
+
+dsect <
+ad.cif:: .blkw 1		;pointer for the CIF table entry
+	>,adt.ln
+
+.macro makarp
+	.word 0
+.endm
+
+arpatm==2*60./ticktm		;packets time out in 2 seconds
+arpmab==3.			;maximum number of times a packet can abort
+arprtl==1*60./ticktm		;retransmit latency, 1 second
+
+;;; This is the once only initialization for the Arpanet
+
+arponc:	mov #arpole,arpol	;initialze the output packet list
+	clr arpol		;make sure this is zero when nothing is
+				;chained on
+	kretrn
+
+arpini:	mov r1,@ci.dat(r1)	;save the cif table ptr in the arpd1 struct
+	bisb #%xmtrd,ci.sts(r1)	;xmtr is ready for first packet
+	bicb #%rcvrd,ci.sts(r1)	;rcvr never need do anything
+	mov #arpatm,ci.atm(r1)	;set the packet age time
+	mov #arpmab,ci.mab(r1)	;set the max abort count
+	kretrn
+
+	.sbttl Arpanet Transmitter Routine
+
+arpxmt:	mov r0,ci.pkt(r2)
+	push r0,r1,r2,r3,r4
+	mov r0,r2
+	mov pklen(r0),r3	;get size of data area
+	bic #pkfcnt,r3		;clear out the forwarding count
+	push r3			;save the value on the stack
+	add #1+cal.ln+<pkdat-pkbeg>,r3	;now add the size of the header
+	asr r3			;convert to words
+loop <	  kcall alcsiz		;get a packet in local memory to hold it
+	  exitl cc
+	  cocall
+	  rptl
+	  >
+	clr (r0)		;clear the link field
+	mov r0,r1		;save in r1
+	mov r2,r3		;save source packet in r3
+	add #pkbeg,r3		;point to first word of Chaos protocol info
+	clrb pktyp(r2)		;must be zero in the outside world
+	add #cal.ln,r1		;this is where we copy the packet
+	mov #<pkdat-pkbeg>/2,r4	;move in the packet header and swab
+loop <	  mov (r3)+,(r1)	;copy in the header
+	  swab (r1)+		;swap the bytes
+	  sorl r4
+	  >
+	pop r4			;get pack size of packet into r4
+	inc r4			;round up
+	asr r4			;round to nearest word
+	if ne,<
+	  cmpb pkop(r2),#300	;is it 16 bit data?
+	  bhis 1$		;yes, swap
+	  cmpb pkop(r2),#%coopn	;reverse bytes in open packet
+	  beq 1$
+	  cmpb pkop(r2),#%corut	;reverse bytes in routine packet
+	  beq 1$
+	  cmpb pkop(r2),#%costs	;reverse bytes in status packet
+	  beq 1$
+  loop <    mov (r3)+,(r1)+
+	    sorl r4
+	    >
+	  br 2$
+1$:
+  loop <    mov (r3)+,(r1)
+	    swab (r1)+
+	    sorl r4
+	    >
+2$:
+	  >
+	movb #17,al.ipl+il.fmt(r0)	;must tell the IMP what type of leader
+	clrb al.ipl+il.dsn(r0)		;set up imp leader
+	clrb al.ipl+il.flg(r0)
+	clrb al.ipl+il.hdl(r0)		;clear up handling type for now
+	movb #0,al.ipl+il.stp(r0)	;sub type zero message
+	clrb al.ipl+il.typ(r0)		;type zero message
+	mov #54,al.ipl+il.fip(r0)	;imp 54
+	swab al.ipl+il.fip(r0)		;the LH/DH likes words backwards
+	movb #0,al.ipl+il.fhs(r0)	;host MIT-XX
+	movb #227,al.ipl+il.lnk(r0)	;link 227 for this hack
+	mov r0,@arpole		;link onto the list
+	mov r0,arpole		;set up new end of list
+;	mov r2,r0		;free the original packet
+;	kcall frepck		;free it
+	pop r4,r3,r2,r1,r0
+	kretrn			;done with packet
+
+arprcv == 0			;there is no receiver routine
+
+

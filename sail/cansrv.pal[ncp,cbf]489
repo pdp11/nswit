@@ -1,0 +1,73 @@
+;;; -*-midas-*-
+	.title Canon Printer Server
+;;; This is the program that serves as the canon server.  It accepts chaos
+;;; connections with the contact name CANON and prints all the data on the
+;;; canon.
+
+.=100
+	.word 102
+	rti
+.=1000
+	.insrt dcls
+	.insrt defns
+	.insrt nutils
+	.insrt allint
+	.insrt cncp
+	.insrt nncptc
+
+tcbser:	0				;tcb of server task
+tcbpri:	0				;tcb of printer task
+chheap:	0
+
+start: go:
+	mtps #340
+	mov #1000,sp
+	mov #clkint,@#100
+	mov #341,@#102
+	clr clock
+	clr clock+2
+
+	initcb tcbare,tcbare+tcbsiz
+	call crtask,<#0,#0,#0,#0,#0,#0,#server>,tcbserver
+	call crtask,<#0,#0,#0,#0,#0,#0,#printer>,tcbprinter
+
+	mov #chsare,r1			;Make an area for the chaos NCP
+	mov r1,chheap
+	mov #chsize,r0
+	kcall makear
+	call chinit
+
+	mtps #0
+	jmp manlop
+	.sbttl	Server Task
+
+;;; The server task listens for connections to the contact name CANON and
+;;; reads characters from the connection and puts them into the page buffer.
+;;; When the page buffer is full the printer task is instructed to print
+;;; it on the CANON.  As the printer task scan converts the characters it
+;;; updates a shared variable with the location up to which it has read out
+;;; of the page buffer.  The server task is free to start putting the text for
+;;; the next page into the buffer up to this point.
+
+server:
+	call chlsn,<#canstr,0>,<r0,r1>	;listen for the connection
+	call chrply,<r0,r1,2>		;complete the open. window size of 2
+
+
+clkint:	adc clock
+	adc clock+2
+	rti
+clock:	0
+	0
+
+canstr:	.asciz /CANON/
+	.even
+
+tcbsiz==tcb.ln*5			;enough for 5 TCBs
+tcbare:	.blkb tcbsiz
+
+chsize==1000*2				;1000 words for the chaos NCP
+chsare:	.blkb chsize
+
+	.end start
+

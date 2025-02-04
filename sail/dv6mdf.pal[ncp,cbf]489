@@ -1,0 +1,51 @@
+;;; -*-midas-*-
+.if1
+	.print /Defining Device 6 Chaos Network configuration
+/
+.endc
+	.insrt	macs
+
+mxcilv == 7			;maximum interrupt level of all the interfaces
+
+setf ^/Use 9600 baud line instead of 19.2Kb line?/,asm96
+.if eq asm96
+inhst == 1			;the host number of this machine
+innet == 23			;the host net number
+	makcif 23,1,tty,176520,300
+.iff
+inhst == 1			;the host number of this machine
+innet == 23			;the host net number
+ 	makcif 23,1,tty,176510,310
+.endc
+
+	route <innet,2		;Net 1 9th floor Tech Square
+	,innet,2		;Subnet 2 AI 9th floor eathernet
+	,innet,2		;Subnet 3 MC IO 11 Pseudo net
+	,innet,2		;Subnet 4 AI CHAOS 11 pseudo net
+	,innet,2		;Subnet 5 XX Network 11 pseudo net
+	,innet,2		;Subnet 6 unassigned
+	,innet,2		;Subnet 7 unassigned
+	,innet,2		;Subnet 10 LCSnet
+	,innet,2		;Subnet 11 Arpanet pseudo net
+	,innet,2		;Subnet 12
+	,innet,2		;Subnet 13
+	,innet,2		;Subnet 14
+	,innet,2		;Subnet 15
+	,innet,2		;Subnet 16
+	,innet,2		;Subnet 17
+	,innet,2		;Subnet 20 Arpa-11 to Imp-11 TTY net
+	,innet,2		;Subnet 21 NM-crock net
+	,innet,2		;Subnet 22 MD-11 to Arap-11 TTY net
+	,0,1			;Subnet 23 Device-6 to Arpa-11 FTP subnet
+	,innet,2		;Subnet 24 Device-7 to Arpa-11 TTY test net
+	,innet,2		;Subnet 25 unused
+	,innet,2		;Subnet 26 unused
+	,innet,2		;Subnet 27 unused
+	,innet,2		;Subnet 30 unused
+	,innet,2		;Subnet 31 unused
+	,innet,2		;Subnet 32 unused
+	,innet,2		;Subnet 33 unused
+	>
+
+	rcvxmt <trncvr>
+
