@@ -1,0 +1,48 @@
+                          Arpa Machine
+                 Newman backplane 6th from top
+                                                -OTA 810524
+                                
+----------------------------------------------------------------
+|                    |                    |                    |
+----------------------------------------------------------------
+|                    |                    |                    |
+----------------------------------------------------------------
+|                    |                    |                    |
+----------------------------------------------------------------
+|                    |                    |                    |
+----------------------------------------------------------------
+|                    |                    |                    |
+----------------------------------------------------------------
+|                    |   MDB 176560/220   |   Netcom MPV11-A   |
+----------------------------------------------------------------
+|                    |      Memory28      | M9400-YD (Newman)  |
+----------------------------------------------------------------
+|                    |   DLV11-J 176700   |      Memory0       |
+----------------------------------------------------------------
+|                    |   DLV11-J 176500   |       LSI-11       |
+----------------------------------------------------------------
+
+LSI-11: /2 Processor, Non-refreshing, with EIS chip
+
+DLV11-J: 
+  J0] 176500 300 19200b, 8db, 1sb, np, RS422;  probably broken
+  J1] 176510 310 19200b, 8db, 1sb, np, RS422;  probably broken
+  J2] 176520 320  9600b, 8db, 1sb, np, RS232; -> EL9/KL0  Development 11
+  J3] 177560  60  9600b, 8db, 1sb, np, RS232; -> EL13/AL37 Switch port 3
+      Console line, halt on break.
+
+DLV11-J: 
+  J0] 176700 340 19200b, 8db, 1sb, np, RS???;  broken or unused
+  J1] 176710 350 19200b, 8db, 1sb, np, RS???;  broken or unused
+  J2] 176720 360  9600b, 8db, 1sb, np, RS422; -> EL1/BR33 Dev6 FTP line
+  J3] 176730 370  9600b, 8db, 1sb, np, RS232; -> EL5/BR23 IMP data line
+
+Memory: Monolithic 32K words, Self-refreshing, 0-28K 000000-157776
+
+Memory: Monolithic 32K words, Self-refreshing, 28-30K 160000-167776
+
+MDB 176560/220: 9600b, 8db, 1sb, np; -> ER29/EL29 MD-11 FTP/Telnet line
+
+M9400-YD (Newman): proc ID #4; 4 window, 177400
+
+Netcom MPV11-A: 173000-173777 OTA version 2 bootstrap/terminatorî

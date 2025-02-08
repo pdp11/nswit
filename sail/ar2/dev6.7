@@ -1,0 +1,57 @@
+                    S-1 Front-end 11 (Dev 6)
+                        Rack near Mark I
+						-OTA 810525
+
+----------------------------------------------------------------
+|                    |                    |   Netcom MPV-11A   |
+----------------------------------------------------------------
+|                    |      Versatec      |   TCU-50D 170770   |
+----------------------------------------------------------------
+|                    |   Western Peripherals Tape Controller   |
+----------------------------------------------------------------
+|                    |    PE formater     |   Floppy 177170    |
+----------------------------------------------------------------
+|                    |   DRV-11A (GDP)    |      From S-1      |
+----------------------------------------------------------------
+|               I/O Memory                |       To S-1       |
+----------------------------------------------------------------
+|                    |          Xebec Disk Controller          |
+----------------------------------------------------------------
+|                    |      DLV-11J       |       Memory       |
+----------------------------------------------------------------
+|              DUV-11 170050              |     LSI-11/02      |
+----------------------------------------------------------------
+
+LSI-11/02: Processor.
+
+Memory: Monolithic 32K words, 0-28K 000000-157776
+
+DUV-11: (XPATCH line to SAIL) 170050 400 connects to Bell 209 Modem
+
+DLV-11J: 176500/300 J0]  9600b, 8db, 1sb, np, RS232 -> Foonly
+	 176510/310 J1]  9600b, 8db, 1sb, np, RS422 -> ARPA Machine
+	 176520/320 J2] 19200b, 8db, 1sb, np, RS422 -> ARPA Machine
+	 177560/ 60 J3]  4800b, 8db, 1sb, np -> console line halt on break
+
+Xebec Disk Controller: 176700-176716 254 (250)
+
+To S-1: 172770-172776
+
+From S-1: 172760-172766 300
+
+I/O Memory: 160000-167776
+
+DRV-11A (GDP): 177100
+
+Floppy: 177170 264
+
+Western Peripherals Tape Controller: 176740-176756 270
+
+PE Formater: Phase encoder for 1600bpi tape controller
+
+TCU-50D: 170770 Calender clock card; day/month/hour/minute/second consec bytes
+
+Versatec: 
+
+Netcom MPV11-A: 173000-173777 OTA version 2 bootstrap/terminator
+

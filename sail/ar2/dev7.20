@@ -1,0 +1,60 @@
+                         Development 11
+                 Newman Backplane 2nd from top
+					        -CBF 810619
+
+----------------------------------------------------------------
+|                    |                    |                    |
+----------------------------------------------------------------
+|                    |   Netcom MPV11-A   |                    |
+----------------------------------------------------------------
+|                    |      TCU-50D       |     MDB (Unix)     |
+----------------------------------------------------------------
+| Dilog DQ200 disk controller 177400/220  | DLV11-J 176500/300 |
+----------------------------------------------------------------
+|       DU11 (Xpatch line to Sail)        |   DLV11-J 176540   |
+----------------------------------------------------------------
+|                    |   RX01 (floppy)    |  DLV11-E (Vadic)   |
+----------------------------------------------------------------
+|                    |      MDB (PP)      |      MDB (LPT)     |
+----------------------------------------------------------------
+|                    |   MDB (console)    | M9400-YD (Newman)  |
+----------------------------------------------------------------
+|                    |       Memory       |     LSI-11/23      |
+----------------------------------------------------------------
+
+LSI-11: /23 Processor
+
+Memory: Monolithic 32K words, Self-refreshing, 0-24K 000000-137776
+
+RX01 (floppy): 177170 264
+
+M9400-YA (Newman): proc ID #1; 2 window only (ie. from 140000-157776), 177200
+
+MDB (console): 177560 60 Halt on; 4800b, 8db, 1sb, np 
+				  -> AR5/AR25 run-boot sw:DM
+
+DU11 (Xpatch line to Sail): 170050 400 Connects to Bell 209 modem
+
+MDB (Unix): 177570 70 4800b, 8db, 1sb, np -> ER1/BR7 Unix Protoc line
+
+MDB (LPT): 176600 240 9600b, 8db, 1sb, np -> ER29/EL29 LPT-11
+
+DLV11-J 176500/300  J0] 9600b, 8db, 1sb, np -> HL0/EL9 Arpa-11
+	176510/310  J1] 9600b, 8db, 1sb, np -> HL5/EL25 Grinell-11
+	176520/320  J2]	9600b, 8db, 1sb, np -> HL9/BL21 Testbed-11
+	176530/330  J3]	9600b, 8db, 1sb, np -> HL13/BR37 IMP-11
+
+DLV11-J 176540/340  J0] 9600b, 8db, 1sb, np -> KL33/ER33 Telnet-11
+	176550/350  J1] 9600b, 8db, 1sb, np -> KL37/ER5 Telnet #2
+	176560/360  J2]	9600b, 8db, 1sb, np -> KL41/BR7 Dialer
+	176570/370  J3]	9600b, 8db, 1sb, np -> KL45/... Canon machine
+
+MDB (PP): 177550 70 9600b, 8db, 1sb, np -> ER17/AR27 run-boot sw:Switch
+
+DLV11-E (Vadic): M8017 175610 130 1200b, 8db, 1sb, np -> AR5
+		 wired specally for DTR control
+
+TCU-50D: 160770 Calender clock; day/month/hour/min/sec consecutive bytes
+
+Netcom MPV11-A: 173000-173777 OTA version 2 bootstrap/terminator
+

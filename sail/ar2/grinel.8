@@ -1,0 +1,67 @@
+                 Grinnell Machine (Device 13)
+                 Newman Backplane 7th from top
+						-OTA 810524
+
+----------------------------------------------------------------
+|                    |   Netcom MPV11-A   | M9400-YD (Newman)  |
+----------------------------------------------------------------
+|                    |         Quadrasync 20Ma (4 & 5)         |
+----------------------------------------------------------------
+|                    |         Quadrasync 20Ma (2 & 3)         |
+----------------------------------------------------------------
+|                    |         Quadrasync 20Ma (0 & 1)         |
+----------------------------------------------------------------
+|            DZV11 170210/410             | DLV11-J 176500/300 |
+----------------------------------------------------------------
+|            DZV11 170200/400             |   MDB 170010/120   |
+----------------------------------------------------------------
+|            DZV11 170220/430             | MDB (Development)  |
+----------------------------------------------------------------
+|           DRV11-B (Grinnell)            |   MDB (Console)    |
+----------------------------------------------------------------
+|                    |       Memory       |     LSI-11/23      |
+---------------------------------------------------------------- 
+
+LSI-11/23: start at 173000 on reset, line clock enabled
+
+Memory: Monolithic 32K words, self-refreshing, 0-20K, 000000-120000
+
+MDB (Console): 177560 60 Halt on framing error; 9600b, 8db, 1sb, np -> ER13-4
+	       connected to switch as console
+
+DZV11 170220/430: -> KR1-6, KR7-6, KR13-6, KR19-6
+
+MDB (Development): 176630 200 9600b, 8db, 1sp, np -> EL25-4
+
+DRV11-B (Grinnell): 172410 124 Interfaces to Grinnell 
+
+DZV11 170200/400: -> HR1-6, HR7-6, HR13-6, HR19-6
+
+MDB 170010/120: 1200b, 8db, 1sb, np, Active current loop -> AR9-4
+
+DLV11-J: J0] 176500 300 1200b, 8db, 1sb, np -> KL17-4
+	 J1] 176510 310 1200b, 8db, 1sb, np -> KL21-4
+	 J2] 176520 320 1200b, 8db, 1sb, np -> KL25-4
+	 J3] 176530 330 1200b, 8db, 1sb, np -> KL29-4
+
+DZV11 170210/410: -> HR25-6, HR31-6, HR37-6, HR43-6
+
+Quadrasync: J1] 170040 140 1200b, 8db, 1sb, np, Active current loop -> DL1-4
+  (0 & 1)   J2] 170050 150 1200b, 8db, 1sb, np, Active current loop -> DL5-4
+	    J3] 170060 160 1200b, 8db, 1sb, np, Active current loop -> DL9-4
+	    J4] 170070 170 1200b, 8db, 1sb, np, Active current loop -> DL13-4
+
+Quadrasync: J1] 170100 200 1200b, 8db, 1sb, np, Active current loop -> DL17-4
+  (2 & 3)   J2] 170110 210 1200b, 8db, 1sb, np, Active current loop -> DL21-4
+	    J3] 170120 220 1200b, 8db, 1sb, np, Active current loop -> DL25-4
+	    J4] 170130 230 1200b, 8db, 1sb, np, Active current loop -> DL29-4
+		input doesn't seem to work -CBF 13 May 80
+
+Quadrasync: J1] 170140 240 1200b, 8db, 1sb, np, Active current loop -> DL33-4
+  (4 & 5)   J2] 170150 250 1200b, 8db, 1sb, np, Active current loop -> DL37-4
+	    J3] 170160 260 1200b, 8db, 1sb, np, Active current loop -> DL41-4
+	    J4] 170170 270 1200b, 8db, 1sb, np, Active current loop -> DL45-4
+
+M9400-YD (Newman): proc id 7, 4 windows, 177400
+
+Netcom MPV11-A: 173000-173777 Boot program version 2 bootstrap/terminatorî

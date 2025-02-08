@@ -1,0 +1,80 @@
+                           The Switch
+               Newman Backplane 3rd from the top
+						-OTA 810524
+
+----------------------------------------------------------------
+|                    |   Netcom MPV11-A   | M9400-YD (Newman)  |
+----------------------------------------------------------------
+|            DZV11 171430/540             |   TCU-50D 160770   |
+----------------------------------------------------------------
+|                    |   MDB 170210/210   |   MDB 170300/330   |
+----------------------------------------------------------------
+|            DZV11 171420/530             |   MDB 170220/220   |
+----------------------------------------------------------------
+|            DZV11 171400/520             |   MDB 170200/200   |
+----------------------------------------------------------------
+|                    | DLV11-J 170240/240 |  Grant Continuity  |
+----------------------------------------------------------------
+|                    | TM 8/S 176500/400  | DLV11-J 170000/140 |
+----------------------------------------------------------------
+|                    | DLV11-E 175610/130 |   MDB 170230/230   |
+----------------------------------------------------------------
+|                    |       Memory       |     LSI-11/23      |
+----------------------------------------------------------------
+
+LSI-11: /23 Processor, start at 173000 on reset.
+
+Memory: Mostek 32K words, 0-24K 000000-140000
+
+DLV11-E 175610/130: 4800b, 8db, 1sb, np.  Micom line -> Micom Port 0
+
+MDB 170230/230: 9600B, 8db, 1sb, np, sw19->AL5-4/AL33 run-boot switch:DM2500
+
+TM 8/S:	176500/400: J0] 9600b, 8db, 1sb, np, sw12->EL33-4/KR1 Grinnell (LCW)
+	176510/410  J1]	9600b, 8db, 1sb, np, sw9 ->EL37-4/KR7 Grinnell (JBR)
+	176520/420  J2] 9600b, 8db, 1sb, np, sw10->EL41-4/KR13 Grinnell (PMF)
+	176530/430  J3] 9600b, 8db, 1sb, np, sw11->EL45-4/ER45 Telnet-11
+	175640/440  J4] 4800b, 8db, 1sb, np, sw4->AL13-4/BR45 Unix line
+	176550/450  J5] 9600b, 8db, 1sb, np, sw1->AL17-4/DR41 (EJG)
+	176560/460  J6] 9600b, 8db, 1sb, np, sw5->AL21-4/ER37 Telnet-11 line 2
+	177560/ 60  J7] 9600b, 8db, 1sb, np, sw0->AL25-4/BL13 Switch Console
+
+DLV11-J 170000/140: J0] 4800b, 8db, 1sb, np, sw6->AL29-4/AR41 run-boot sw:S-1
+	170010/150  J1]	9600b, 8db, 1sb, np, sw7->AL33-4/AR31 run-boot sw:Dev7
+	170020/160  J2] 4800b, 8db, 1sb, np, sw3->AL37-4/EL13 Arpa-11
+	170030/170  J3]	4800b, 8db, 1sb, np, sw29->AL41-4/EL17 Chaos-11
+
+DLV11-J 170240/240: J0] 9600b, 8db, 1sb, np, sw21->CL1-4/DR1 (CEG)
+	170250/250  J1] 9600b, 8db, 1sb, np, sw22->CL5-4/DR21 (LJS)
+	170260/260  J2]	9600b, 8db, 1sb, np, sw23->CL9-4/DR13 (LWR)
+	170270/270  J3] 1200b, 8db, 1sb, np, sw24->CL13-4/DR9 Diablo
+
+MDB 170200/200: 9600b, 8db, 1sb, np, sw13->CL17-4/ER13 Grinnell-11 console
+
+DZV11 171400/520: J0] sw30->HL1-6/HR1 Grinnell (DLW)
+		  J1] sw31->HL7-6/HR7 Grinnell (OTA)
+		  J2] sw32->HL13-6/HR13 Grinnell (CBF)
+		  J3] sw33->HL19-6/HR19 Grinnell (HWC)
+
+DZV11 171420/530: J0] sw34->HL25-6/HR25 Grinnell (TM)
+		  J1] sw35->HL31-6/HR31 Grinnell (JMB)
+		  J2] sw36->HL37-6/HR37 Grinnell (WRB)
+		  J3] sw37->HL43-6/HR43 Grinnell (SJC)
+
+DZV11 171420/540: J0] sw38->KR25-6/DR37 (TAW)
+		  J1] sw39->KR31-6/BR13 (Vadic dialin x23897)
+		  J2] sw40->KR37-6/KR19 Grinnell (LLW)
+		  J3] sw41->KR43-6/?? Device-41 Console
+
+MDB 170220/220: 9600b, 8db, 1sb, np, sw18->AL1-4/BL1 GDP-11
+
+MDB 170300/330: 9600b, 8db, 1sb, np, sw20->AL9-4/BL45 O-Group
+
+MDB 170210/210: 9600b, 8db, 1sb, np, sw17->CL21-4/DR5 CBF's 2nd line
+
+TCU-50D 160770: Calender clock card; day\month\hour\minute\second consec bytes
+
+M9400-YD (Newman): proc ID #6, 2 windows, 177200
+
+Netcom MPV11-A: 173000-173777 OTA version 2 bootstrap/terminatorî
+
